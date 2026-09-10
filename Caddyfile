@@ -1,0 +1,8 @@
+:8080 {
+	root * /srv/output
+	file_server
+	header Access-Control-Allow-Origin "*"
+	header Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+	header Access-Control-Allow-Headers "Range"
+	header Access-Control-Expose-Headers "Content-Range, Content-Length, Accept-Ranges"
+}

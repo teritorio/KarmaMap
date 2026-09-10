@@ -1,0 +1,26 @@
+services:
+  # No default command: pass arguments explicitly, e.g.
+  #   docker compose run --rm osh_change_index osh_change_index \
+  #     --input /data/input/region.osh.pbf --rocksdb /data/rocksdb --output-dir /data/output
+  #
+  # Host paths are read from .env (copy .env.template to .env to override).
+  # They default to ./data/... under the current directory when unset.
+  osh_change_index:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ${INPUT_DIR:-./data/input}:/data/input:ro
+      - ${ROCKSDB_DIR:-./data/rocksdb}:/data/rocksdb
+      - ${OUTPUT_DIR:-./data/output}:/data/output
+
+  # Serves the output directory (Parquet partitions + manifest.json) over
+  # plain HTTP, with range-request support (needed by hyparquet's
+  # asyncBufferFromUrl) and permissive CORS for local browser-side use.
+  caddy:
+    image: caddy:2
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${OUTPUT_DIR:-./data/output}:/srv/output:ro
+    ports:
+      - "8080:8080"
