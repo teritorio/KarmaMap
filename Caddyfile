@@ -6,3 +6,8 @@
 	header Access-Control-Allow-Headers "Range"
 	header Access-Control-Expose-Headers "Content-Range, Content-Length, Accept-Ranges"
 }
+
+:8081 {
+	root * /srv/web
+	file_server
+}

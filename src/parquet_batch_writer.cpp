@@ -7,6 +7,8 @@
 #include <stdexcept>
 #include <utility>
 
+#include "h3_utils.hpp"
+
 namespace parquet_out {
 
 namespace {
@@ -14,7 +16,7 @@ namespace {
 std::shared_ptr<arrow::Schema> make_schema() {
     return arrow::schema({
         arrow::field("h3_cell", arrow::uint64(), /*nullable=*/false),
-        arrow::field("change_date", arrow::date32(), /*nullable=*/false),
+        arrow::field("change_date", arrow::uint16(), /*nullable=*/false),
         arrow::field("count", arrow::uint32(), /*nullable=*/false),
     });
 }
@@ -60,7 +62,7 @@ void ParquetBatchWriter::flush(CountMap& counts) {
     if (counts.empty()) return;
 
     arrow::UInt64Builder cell_builder;
-    arrow::Date32Builder date_builder;
+    arrow::UInt16Builder date_builder;
     arrow::UInt32Builder count_builder;
 
     if (!cell_builder.Reserve(counts.size()).ok() || !date_builder.Reserve(counts.size()).ok() ||
@@ -70,7 +72,7 @@ void ParquetBatchWriter::flush(CountMap& counts) {
 
     for (const auto& [key, count] : counts) {
         auto s1 = cell_builder.Append(key.h3_cell);
-        auto s2 = date_builder.Append(key.day);
+        auto s2 = date_builder.Append(h3_utils::require_u16_day(key.day));
         auto s3 = count_builder.Append(count);
         if (!s1.ok() || !s2.ok() || !s3.ok()) {
             throw std::runtime_error("Failed to append a row to the Parquet batch");
@@ -87,9 +89,8 @@ void ParquetBatchWriter::flush(CountMap& counts) {
 
     auto table = arrow::Table::Make(impl_->schema, {cell_array, date_array, count_array});
 
-    // WriteTable() splits the table into row groups of `chunk_size` rows;
-    // successive calls append more row groups to the same file, without
-    // ever keeping the whole dataset in memory.
+    // Successive WriteTable() calls append row groups to the same file, so the
+    // whole dataset is never held in memory at once.
     auto write_status = impl_->writer->WriteTable(*table, /*chunk_size=*/counts.size());
     if (!write_status.ok()) {
         throw std::runtime_error("Failed to write Parquet row group: " +

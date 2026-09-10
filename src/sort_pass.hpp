@@ -1,23 +1,18 @@
 #pragma once
 
-// Pass 3: sorts every partition file produced by the node pass / way pass
-// (root_dir/year=YYYY/month=MM.parquet) by h3_cell, so that Parquet row
-// group min/max statistics become useful for bbox pruning.
-//
-// Files are rewritten under a different name first (<name>.sorted.parquet),
-// and the original is only removed once the sorted file has been written
-// successfully. No mid-run resume support: if the process is interrupted
-// between removing the original and the final rename, a stray
-// "<name>.sorted.parquet" can be left next to a missing original - not
-// handled automatically (consistent with the rest of the project, which
-// has no checkpoint/resume support elsewhere either).
+// Pass 3: for every month partition under root_dir, full-outer-joins the
+// staging files (nodes.parquet, ways.parquet) on (h3_cell, change_date) and
+// writes the result to data.parquet, sorted by (h3_cell, change_date) so
+// row-group min/max become useful for bbox and date-range pruning. The
+// result is written under a temp name and renamed into place.
 
 #include <string>
 
 namespace sort_pass {
 
-// Recursively finds every *.parquet file under root_dir and rewrites it
-// sorted by h3_cell, in place (same final path).
-void sort_partitions(const std::string& root_dir);
+// Merges every month partition found under root_dir (a single changes/
+// dataset root). Month directories that already hold only data.parquet
+// (both nodes.parquet and ways.parquet absent) are left untouched.
+void merge_and_sort_partitions(const std::string& root_dir);
 
 }  // namespace sort_pass

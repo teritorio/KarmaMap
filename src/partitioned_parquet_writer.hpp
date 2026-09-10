@@ -1,12 +1,10 @@
 #pragma once
 
 // Routes (h3_cell, day, count) increments to one Parquet file per calendar
-// month, under root_dir/year=YYYY/month=MM.parquet. Each partition flushes
-// independently once its own pending-row threshold is reached.
-//
-// Files written here are NOT sorted internally - see sort_pass.hpp for the
-// separate pass that sorts each partition file by h3_cell after both the
-// node pass and the way pass have completed.
+// month under root_dir/year=YYYY/month=MM/<file>. Pass 1 writes
+// nodes.parquet, pass 2 ways.parquet; pass 3 merges both into data.parquet.
+// Each partition flushes independently once its pending rows exceed a
+// threshold. Files here are NOT sorted - see sort_pass.hpp.
 
 #include <cstdint>
 #include <cstdio>
@@ -21,32 +19,45 @@
 
 namespace parquet_out {
 
-constexpr size_t kPartitionFlushThreshold = 500'000;  // pending rows before a partition flushes
+constexpr size_t kDefaultFlushThreshold = 500'000;
 
 class PartitionedParquetWriter {
 public:
-    explicit PartitionedParquetWriter(std::string root_dir) : root_dir_(std::move(root_dir)) {
+    explicit PartitionedParquetWriter(std::string root_dir, std::string output_file_name,
+                                      size_t flush_threshold = kDefaultFlushThreshold)
+        : root_dir_(std::move(root_dir)), output_file_name_(std::move(output_file_name)),
+          flush_threshold_(flush_threshold) {
         std::filesystem::create_directories(root_dir_);
     }
 
     void increment(uint64_t h3_cell, int32_t day) {
+        increments_++;  // INSTR
         int year = 0, month = 0;
         date_utils::year_month_from_day(day, &year, &month);
 
         Partition& p = get_partition(year, month);
         p.pending[{h3_cell, day}]++;
-        if (p.pending.size() >= kPartitionFlushThreshold) {
+        if (p.pending.size() >= flush_threshold_) {
             p.writer->flush(p.pending);
+            flushes_++;  // INSTR
         }
     }
 
     // Flushes and closes every partition opened so far.
     void finish() {
         for (auto& [key, p] : partitions_) {
-            if (!p.pending.empty()) p.writer->flush(p.pending);
+            if (!p.pending.empty()) {
+                p.writer->flush(p.pending);
+                flushes_++;  // INSTR
+            }
             p.writer->close();
         }
     }
+
+    // INSTR
+    uint64_t increments() const { return increments_; }
+    uint64_t flushes() const { return flushes_; }
+    uint64_t open_partitions() const { return open_partitions_; }
 
 private:
     struct Partition {
@@ -58,22 +69,31 @@ private:
         auto key = std::make_pair(year, month);
         auto it = partitions_.find(key);
         if (it != partitions_.end()) return it->second;
+        open_partitions_++;  // INSTR
 
         std::string year_dir = root_dir_ + "/year=" + std::to_string(year);
         std::filesystem::create_directories(year_dir);
 
         char month_str[3];
         std::snprintf(month_str, sizeof(month_str), "%02d", month);
-        std::string path = year_dir + "/month=" + month_str + ".parquet";
+        std::string month_dir = year_dir + "/month=" + month_str;
+        std::filesystem::create_directories(month_dir);
 
         Partition p;
-        p.writer = std::make_unique<ParquetBatchWriter>(path);
+        p.writer = std::make_unique<ParquetBatchWriter>(month_dir + "/" + output_file_name_);
         auto [inserted_it, _] = partitions_.emplace(key, std::move(p));
         return inserted_it->second;
     }
 
     std::string root_dir_;
+    std::string output_file_name_;
+    size_t flush_threshold_;
     std::map<std::pair<int, int>, Partition> partitions_;
+
+    // INSTR: diagnostic counters.
+    uint64_t increments_ = 0;
+    uint64_t flushes_ = 0;
+    uint64_t open_partitions_ = 0;
 };
 
 }  // namespace parquet_out

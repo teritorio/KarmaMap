@@ -1,202 +1,256 @@
 # osh_change_index
 
-Reads an OSM full-history file (`.osh.pbf`) and produces two partitioned
-Parquet datasets — `nodes_changes/` and `ways_changes/` — each containing
-`(h3_cell, change_date, count)` rows, laid out as
-`year=YYYY/month=MM.parquet` and sorted by `h3_cell` within each file, for
-efficient bbox + date-range queries (e.g. with DuckDB).
+Reads an OSM full-history file (`.osh.pbf`) and produces one partitioned
+Parquet dataset — `changes/` — with `(h3_cell, change_date, node_count,
+way_count)` rows, partitioned by calendar month
+(`year=YYYY/month=MM/data.parquet`, standard hive partitioning), for
+bbox + date-range queries (e.g. with DuckDB or the included web frontend).
+`node_count` counts node changes, `way_count` way changes, in the same file
+per month so a client reads one dataset per month. `change_date` is a raw
+UTC day count since 1970-01-01 stored as `uint16` — the same value the
+node-cache records use.
 
 A single binary, `osh_change_index`, runs three stages by default:
 
-1. Node pass: reads every node, writes a RocksDB cache
-   `(node_id, version) -> position`, counts node changes into
-   `nodes_changes/year=YYYY/month=MM.parquet`.
-2. Way pass: reads every way, resolves the position of each referenced
-   node via the RocksDB cache, traces the H3 cells crossed by every
-   segment, counts way changes into `ways_changes/year=YYYY/month=MM.parquet`.
-   Depends on the cache built by the node pass.
-3. Sort pass: rewrites every partition file sorted by `h3_cell`, so that
-   Parquet row group min/max statistics become useful for bbox pruning.
-   Depends on the files produced by passes 1 and 2.
+1. Node pass: builds the mmap node cache `(node_id, day) -> position` and
+   counts node changes into `changes/year=YYYY/month=MM/nodes.parquet`.
+2. Way pass: resolves each way's node positions via the cache and counts
+   way changes at the distinct cells of those positions into
+   `changes/year=YYYY/month=MM/ways.parquet`.
+3. Merge pass: full-outer-joins each month's `nodes.parquet` and
+   `ways.parquet` on `(h3_cell, change_date)` into `data.parquet`, sorted by
+   `(h3_cell, change_date)` so row-group min/max support bbox and
+   date-range pruning. Idempotent: an existing `data.parquet` supplies
+   whichever count's staging file is already gone, so re-merging never
+   zeroes it.
 
 ## Business rules
 
 | Case | Behavior |
 |---|---|
-| Node with valid coordinates | Written to the RocksDB cache + counted |
-| Deleted node with a previously known position | Counted on the last known position, no RocksDB write |
+| Node with valid coordinates | Written to the node cache + counted |
+| Deleted node with a previously known position | Counted on the last known position, no cache write |
 | Node with no coordinates and no previously known position | Skipped |
-| Way segment with an unresolved endpoint | Skipped |
-| Cells too far apart to trace (`gridPathCells` fails) | Segment skipped |
+| Way node with an unresolved position | The node is skipped |
 | Deleted way with a previously known geometry | Counted on the last known geometry |
 | Deleted way with no previously known geometry | Skipped |
-| Visible way with fewer than 2 nodes | Skipped |
+| Visible way with no nodes | Skipped |
 | Relations | Out of scope, ignored |
-| Cells crossed by a segment | All counted, no deduplication |
+| Node cells of a way | Each distinct node cell counted once per way version |
 | Time zone | Strict UTC |
-| Source file ordering | Assumed sorted by `(id, version)` ascending, confirmed by OSM's documented full-history format — not re-verified by the code |
+| Source file ordering | Assumed sorted by `(id, version)` ascending, as documented for OSM full-history files |
+
+## Resolution
+
+The pipeline uses a single H3 resolution:
+
+- **`--h3-resolution`** (default 9): the resolution of the cells stored in
+  the Parquet `h3_cell` column and used across all passes. Range 0-13 (the
+  node cache packs at most 13 H3 digits into 6 bytes).
+
+Rows are partitioned by the calendar month of `change_date`, not by H3
+cell, so the number of concurrently open Parquet writers is bounded by the
+number of months that contain data — independent of extract size or H3
+resolution.
 
 ## Output layout
 
 ```
 output-dir/
 ├── manifest.json
-├── nodes_changes/
-│   ├── year=2005/
-│   │   ├── month=01.parquet
-│   │   └── ...
-│   └── year=2026/
-│       └── ...
-└── ways_changes/
-    ├── year=2005/
-    │   └── ...
+└── changes/
+    └── year=2025/
+        ├── month=01/
+        │   ├── data.parquet      # (h3_cell, change_date, node_count, way_count)
+        │   ├── nodes.parquet     # staging, merged and removed by pass 3
+        │   └── ways.parquet      # staging, merged and removed by pass 3
+        ├── month=02/
+        │   └── data.parquet
+        └── ...
 ```
 
-Partitioning by month, rather than by year or by day, is a deliberate
-trade-off: fine enough that a small-time-range query only touches one or
-two files, coarse enough that the number of partition files stays in the
-hundreds (not the thousands), which matters because the source `.osh.pbf`
-file is not sorted by date — partitions can all be active at once during
-the node/way passes.
+`change_date` is stored as a `uint16` count of UTC days since the Unix
+epoch (1970-01-01) instead of Parquet's native `DATE` type, cutting the
+column from 4 to 2 bytes per row. Reconstruct the date in a query with
+`DATE '1970-01-01' + change_date`.
 
-`manifest.json` is (re)written at the end of every run, from a directory
-scan of the two dataset roots above — not from Parquet file contents. It
-exists so a client (e.g. a browser reading these files directly with
-hyparquet) doesn't have to guess the H3 resolution used or which months
-are actually available:
+`data.parquet` rows are sorted by `(h3_cell, change_date)` after the merge
+pass, so row-group min/max statistics are useful for both bbox pruning and
+date pruning within each month file.
+
+`manifest.json` is rewritten at the end of every run from a directory scan
+of the `changes/` root, so clients know the H3 resolution, which month
+partitions exist, and the overall date range:
 
 ```json
 {
   "h3_resolution": 9,
   "date_range": { "min_month": "2005-01", "max_month": "2026-08" },
   "datasets": {
-    "nodes_changes": { "path": "nodes_changes", "partitions": ["2005-01", "2005-02", "..."] },
-    "ways_changes":  { "path": "ways_changes",  "partitions": ["2005-01", "..."] }
+    "changes": {
+      "path": "changes",
+      "partitions": ["2005-01", "2005-02", "..."]
+    }
   }
 }
 ```
 
+`date_range` is `null` when the dataset is empty.
+
+## Node cache
+
+The `--node-cache` argument points at a single file that pass 1 builds and
+pass 2 reads (pass 1 deletes and recreates it):
+
+```
+record : [node_id 8B][day 2B][h3 cell 6B]   (16 bytes)
+file   : [header 40B][block 0]...[block N-1][directory 12*N]
+header : magic "OSNC", version, record_size, h3_resolution,
+         record count, block count, records per block, compression
+```
+
+Records are sorted by `(node_id, day)` ascending. `node_id` is stored
+big-endian with the sign bit flipped so byte order equals numeric order;
+`day` is the same uint16 UTC epoch-day value as `change_date`; the cell is
+the node's H3 index at `--h3-resolution` (0-13) packed into 6 little-endian
+bytes (`h3_utils::pack_cell`), with the resolution re-applied from the
+header on read. The writer
+enforces the ascending order while building (a decreasing node id or day
+aborts loudly), so the binary search and the way pass's sweep are safe. A
+node edited several times in one day is stored once (last position wins).
+Node deletions are not stored: resolving a deleted node returns its last
+known position — an accepted approximation.
+
+Records are grouped into blocks of 2¹⁸ (4 MiB raw) that are ZSTD-compressed
+on write and appended as-is; the block and record counts are patched into
+the header at finish, and a trailing directory holds each block's first
+node and compressed size (offsets cumulative, recomputed in RAM at open).
+The `compression`/`records-per-block` header fields act as a format stamp:
+a cache written by another record layout, or a truncated file, aborts with
+rebuild instructions. Worst case (incompressible data) ZSTD stores a block
+raw, so the file is never meaningfully larger than the uncompressed
+layout; the cost is one decompression per block on first access of each
+pass.
+
+The reader mmaps the file read-only and decompresses one block at a time
+into a 4 MiB cache. The per-block first keys narrow single lookups and
+reposition the way pass's sweep cursor between batches; no RAM sample index
+is kept.
+
 ## Configuration
 
 Host paths are read from a `.env` file (see `.env.template`) and used by
-`docker-compose.yml` to mount `--input`, `--rocksdb` and `--output-dir`
-directories into the container.
-
-### Setup
+`docker-compose.yml`. `DATA_DIR` is mounted at `/data` for the
+`osh_change_index` service — `--input`, `--node-cache` and `--output-dir`
+are absolute paths under it — and `OUTPUT_DIR` is served read-only by the
+`caddy` service.
 
 ```bash
 cp .env.template .env
 ```
 
-Then edit `.env` if the defaults don't fit:
-
 ```
-INPUT_DIR=./data/input
-ROCKSDB_DIR=./data/rocksdb
-OUTPUT_DIR=./data/output
+DATA_DIR=./data/
 ```
 
-These default to `./data/...` under the current directory, so `.env` can be
-skipped entirely if that layout works.
+Without a `.env`, the compose defaults `DATA_DIR=./data/` (mounted at `/data`)
+and `OUTPUT_DIR=./data/output` apply, so the examples in the next section
+work as written.
 
 ## Build
 
-Base image: Debian (`debian:bookworm` for the build stage,
-`debian:bookworm-slim` for the runtime stage).
+Base image: Debian (`debian:bookworm` build stage,
+`debian:bookworm-slim` runtime stage).
 
 ```bash
-docker compose build
+docker compose --profile=* build
 ```
 
-### Known build caveats
+## Tests
 
-The runtime stage does not install Arrow/Parquet/RocksDB via apt package
-names (those turned out to be fragile across version bumps). Instead, the
-build stage copies the compiled binary together with every shared library
-it actually links against, resolved via `ldd`. This means the runtime
-image only ever needs whatever the build stage really produced, with
-nothing to keep in sync manually.
+The C++ tests use Google Test (Debian `libgtest-dev`) and run through CTest.
+They are compiled and executed as part of the Docker build stage, so a
+failing test fails the image build. Run them manually with:
 
-`doxygen` and `graphviz` are installed in the build stage because H3's
-CMake build looks for Doxygen (including its `dot` component, provided by
-graphviz) regardless of the `ENABLE_DOCS` option in this setup; this
-avoids a configure-time failure.
+```bash
+docker build --target build -t osh_change_index:build . \
+  && docker run --rm osh_change_index:build bash -c "ctest --test-dir build --output-on-failure"
+```
 
-`src/sort_pass.cpp` sorts each partition manually with `std::sort` instead
-of `arrow::compute::SortIndices`/`Take`: on a real run, the Arrow build
-resolved via the `apache-arrow-apt-source` package raised `No function
-registered with name: sort_indices` — the vector compute kernels are not
-registered in that build (likely a trimmed package). Sorting is done by
-extracting typed columns, sorting a plain index vector, and rebuilding the
-table, which sidesteps the compute function registry entirely.
-
-The Parquet version resolved at build time was confirmed to be 24.0.0. Its
-`parquet::arrow::OpenFile` no longer has an out-parameter overload (only
-`arrow::Result`-returning), and `FileReader::ReadTable(shared_ptr<Table>*)`
-is deprecated in favor of a `Result`-returning overload — `sort_pass.cpp`
-was fixed for the former based on the compiler error, and updated for the
-latter based on the deprecation message rather than a confirmed successful
-build; watch for a similar error there on the next build attempt.
+Build without tests by configuring with `-DOSH_ENABLE_TESTS=OFF`.
 
 ## Usage
 
 ```
-osh_change_index --input <planet.osh.pbf> --rocksdb <dir> --output-dir <dir> [--resolution N] [--pass 1|2|3|all]
+osh_change_index --input <planet.osh.pbf> --node-cache <file> --output-dir <dir> [--h3-resolution N] [--way-batch-mb N] [--pass 1|2|3|all]
 ```
 
 | Option | Description |
 |---|---|
 | `--input` | OSM full-history file (`.osh.pbf`), required |
-| `--rocksdb` | RocksDB cache directory (created by pass 1, read by pass 2), required |
+| `--node-cache` | Node position cache file (wiped and rebuilt by pass 1, read by pass 2), required |
 | `--output-dir` | Output directory for the Parquet datasets, required (created if missing) |
-| `--resolution` | H3 resolution, 0-15 (default: `9`) |
-| `--pass` | `1` (nodes only), `2` (ways only, requires an already populated RocksDB cache), `3` (sort only, requires passes 1 and 2 to have already run), or `all` (default) |
+| `--h3-resolution` | Resolution of the data cells, 0-13 (default: `9`) |
+| `--way-batch-mb` | Way-pass lookup batch budget in MiB (default: `512`) |
+| `--pass` | `1` (nodes only), `2` (ways only, requires an already populated node cache), `3` (merge + sort only, requires passes 1 and 2 to have already run), or `all` (default) |
 
 ## Running
 
-Place the input file under `INPUT_DIR` (default `data/input/`), then:
+Place the input file under `DATA_DIR/input` (default `data/input/`), then:
 
 ```bash
-docker compose run --rm osh_change_index \
-  osh_change_index --input /data/input/region.osh.pbf --rocksdb /data/rocksdb --output-dir /data/output
+docker compose --profile=build run --rm osh_change_index \
+  osh_change_index --input /data/input/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/output
 ```
 
-### Splitting into separate steps
-
-Useful to resume after an earlier stage already completed.
+To resume after an earlier stage, run the passes one at a time (a way-only
+fix-up after a completed run re-runs `--pass 2` — which puts `ways.parquet`
+back next to the already-removed `nodes.parquet` — then `--pass 3`,
+sourcing node counts from the existing `data.parquet`):
 
 ```bash
-docker compose run --rm osh_change_index \
-  osh_change_index --input /data/input/region.osh.pbf --rocksdb /data/rocksdb --output-dir /data/output --pass 1
+docker compose --profile=build run --rm osh_change_index \
+  osh_change_index --input /data/input/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/output --pass 1
 
-docker compose run --rm osh_change_index \
-  osh_change_index --input /data/input/region.osh.pbf --rocksdb /data/rocksdb --output-dir /data/output --pass 2
+docker compose --profile=build run --rm osh_change_index \
+  osh_change_index --input /data/input/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/output --pass 2
 
-docker compose run --rm osh_change_index \
-  osh_change_index --input /data/input/region.osh.pbf --rocksdb /data/rocksdb --output-dir /data/output --pass 3
+docker compose --profile=build run --rm osh_change_index \
+  osh_change_index --input /data/input/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/output --pass 3
 ```
 
-## Serving the output for browser-side use
+Pass 1 wipes `changes/` (so a re-run never leaves stale partitions) and the
+node cache file before rebuilding; pass 2 does not wipe the root — it adds
+`ways.parquet` staging files next to `nodes.parquet`, so any pass can run
+alone. The manifest is rebuilt at the end of every run.
 
-The `caddy` service in `docker-compose.yml` serves `OUTPUT_DIR` as plain
-static files over HTTP, with range-request support and permissive CORS —
-what a browser-side Parquet reader (e.g. hyparquet) needs to query the
-Parquet partitions and `manifest.json` directly.
+## Serving the output and the web frontend
+
+The `caddy` service serves two things as static files, with range requests
+(and permissive CORS on the `:8080` data server):
+
+- `OUTPUT_DIR` (Parquet partitions + `manifest.json`) on port `8080` — what
+  the browser-side Parquet reader queries directly.
+- `web/` (the frontend) on port `8081`.
 
 ```bash
 docker compose up caddy
 ```
 
-Files become available at `http://localhost:8080/`, e.g.
-`http://localhost:8080/manifest.json` or
-`http://localhost:8080/nodes_changes/year=2024/month=03.parquet`.
+Then open `http://localhost:8081/`. The frontend (`web/`) is a small
+no-build bundle of ES modules (hyparquet, h3-js, maplibre-gl, echarts via
+an `importmap`). It reads `manifest.json` for the resolution and month
+partitions, fetches the selected month files, prunes rows via `parquetQuery`
+row-group/page statistics on the `h3_cell` and `change_date` columns, and
+renders aggregated H3 cells on the map plus a day-by-day histogram; pan/zoom
+and the date range re-query automatically (debounced). `BASE_URL` in
+`app.js` (default `http://localhost:8080`) is where `manifest.json` and the
+partitions are fetched from.
 
 ## Testing on a small region before the full planet
 
 Never run directly on `planet-latest.osh.pbf` (~150 GB) without first
 validating the pipeline on a small extract.
-
-### 1. Get a regional extract with full history
 
 ```bash
 wget -O data/input/region.osh.pbf \
@@ -204,85 +258,28 @@ wget -O data/input/region.osh.pbf \
 ```
 
 Check the exact URL on https://download.geofabrik.de/ — look for files
-suffixed `-internal.osh.pbf` or `-updates.osh.pbf` depending on the region
-(not every export includes full history).
-
-### 2. Run the full pipeline
+suffixed `-internal.osh.pbf` or `-updates.osh.pbf` (not every export
+includes full history). Then run the full pipeline and sanity-check with
+DuckDB:
 
 ```bash
 docker compose run --rm osh_change_index \
-  osh_change_index --input /data/input/region.osh.pbf --rocksdb /data/rocksdb --output-dir /data/output
+  osh_change_index --input /data/input/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/output
 ```
 
-### 3. Check the output with DuckDB
-
 ```sql
-SELECT change_date, SUM(count) AS total
-FROM read_parquet(
-  ['data/output/nodes_changes/*/*.parquet', 'data/output/ways_changes/*/*.parquet'],
-  hive_partitioning = true
-)
+SELECT DATE '1970-01-01' + change_date AS change_date,
+       SUM(node_count) + SUM(way_count) AS total
+FROM read_parquet('data/output/changes/year=*/month=*/data.parquet', hive_partitioning = true)
 GROUP BY change_date
 ORDER BY change_date
 LIMIT 20;
-
-SELECT COUNT(*) AS distinct_cell_days, SUM(count) AS total_changes
-FROM read_parquet('data/output/nodes_changes/*/*.parquet', hive_partitioning = true);
 ```
 
-### 4. Check the RocksDB cache size
-
-```bash
-du -sh data/rocksdb/
+```
+du -h data/node_positions.cache
 ```
 
-Use this as a reference to extrapolate disk space needs for a full planet
-run.
-
-### 5. Scale up gradually
-
-Once validated, re-run on a larger extract (a whole country) before the
-full planet, to validate processing time and stability.
-
-## Known caveats
-
-### RocksDB cache does not store node deletions
-
-If a node is deleted and a way still references it after that date,
-position resolution will still return its last known position before
-deletion. This is an accepted approximation of the design — keep it in
-mind if validation shows discrepancies.
-
-### Sort pass reads each partition file fully into memory
-
-`sort_pass.cpp` loads a whole partition file into an Arrow table before
-sorting it — no external/chunked sort. Monthly partitions are expected to
-stay small enough for this in practice, but this has not been measured on
-a full planet run. If a given month turns out too large, this would need
-revisiting.
-
-### Sort pass runs sequentially
-
-Each partition file is sorted independently and is trivially
-parallelizable, but the current implementation processes them one at a
-time. Left as a possible follow-up if the sort pass turns out to dominate
-total run time.
-
-### Sort pass has a narrow non-atomic window
-
-Each file is rewritten as `<name>.sorted.parquet`, and the original is
-only removed once that write succeeds; the file is then renamed to its
-final name. If the process is interrupted between removing the original
-and the final rename, a stray `<name>.sorted.parquet` can be left next to
-a missing original. Not handled automatically — consistent with the rest
-of the project, which has no checkpoint/resume support elsewhere either.
-
-### No mid-pass resume
-
-`--pass` lets you rerun a whole stage, not resume partway through one.
-
-### Way pass I/O pattern
-
-Heavy random RocksDB reads during the way pass (one `Seek` per referenced
-node): a likely bottleneck on the full planet — measure this on the test
-extract before considering parallelization.
+Use the cache size to extrapolate disk needs for a full planet run, then
+scale up gradually (a whole country before the planet) to validate
+processing time and stability.

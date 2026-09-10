@@ -9,14 +9,17 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+option(OSH_ENABLE_TESTS "Build the C++ test suite" ON)
+
 # ---------------------------------------------------------------------------
 # System dependencies (install before configuring):
 #   sudo apt install libosmium2-dev libprotozero-dev libexpat1-dev \
-#                     libbz2-dev zlib1g-dev librocksdb-dev \
-#                     libarrow-dev libparquet-dev
+#                     libbz2-dev zlib1g-dev libzstd-dev \
+#                     libarrow-dev libarrow-compute-dev libparquet-dev \
+#                     libgtest-dev
 #
 # H3 is fetched automatically via FetchContent, which exposes its public
-# header as <h3api.h> (no "h3/" prefix) - confirmed by a real build.
+# header as <h3api.h> (no "h3/" prefix).
 # ---------------------------------------------------------------------------
 
 find_path(OSMIUM_INCLUDE_DIR osmium/version.hpp)
@@ -28,6 +31,17 @@ find_package(EXPAT REQUIRED)
 find_package(BZip2 REQUIRED)
 find_package(ZLIB REQUIRED)
 
+# zstd (like protozero/osmium: located manually rather than via CMake config,
+# since Debian ships only a pkg-config file) compresses the node-cache blocks.
+find_path(ZSTD_INCLUDE_DIR zstd.h)
+if(NOT ZSTD_INCLUDE_DIR)
+  message(FATAL_ERROR "libzstd not found. Install libzstd-dev or set ZSTD_INCLUDE_DIR.")
+endif()
+find_library(ZSTD_LIBRARY zstd)
+if(NOT ZSTD_LIBRARY)
+  message(FATAL_ERROR "libzstd not found. Install libzstd-dev or set ZSTD_LIBRARY.")
+endif()
+
 # protozero is header-only and does not reliably ship a pkg-config file on
 # Debian, so it is located the same way as libosmium (find_path) rather
 # than via pkg_check_modules.
@@ -36,8 +50,8 @@ if(NOT PROTOZERO_INCLUDE_DIR)
   message(FATAL_ERROR "protozero not found. Install libprotozero-dev or set PROTOZERO_INCLUDE_DIR.")
 endif()
 
-find_package(RocksDB REQUIRED)
 find_package(Arrow REQUIRED)
+find_package(ArrowCompute REQUIRED)
 find_package(Parquet REQUIRED)
 
 include(FetchContent)
@@ -57,28 +71,39 @@ set(ENABLE_DOCS OFF CACHE BOOL "" FORCE)
 # as a fallback so configure succeeds either way.
 FetchContent_MakeAvailable(h3)
 
-add_executable(osh_change_index
-  src/main.cpp
+add_library(osh_change_index_core STATIC
   src/manifest.cpp
+  src/options.cpp
   src/parquet_batch_writer.cpp
   src/sort_pass.cpp
 )
 
-target_include_directories(osh_change_index PRIVATE
-  ${OSMIUM_INCLUDE_DIR}
-  ${PROTOZERO_INCLUDE_DIR}
-  src
-)
+target_include_directories(osh_change_index_core PUBLIC src)
 
-target_link_libraries(osh_change_index PRIVATE
+target_link_libraries(osh_change_index_core PUBLIC
   h3
-  RocksDB::rocksdb
   Arrow::arrow_shared
+  ArrowCompute::arrow_compute_shared
   Parquet::parquet_shared
   EXPAT::EXPAT
   BZip2::BZip2
   ZLIB::ZLIB
-  pthread
+  ${ZSTD_LIBRARY}
 )
 
-target_compile_options(osh_change_index PRIVATE -Wall -Wextra -O2)
+target_compile_options(osh_change_index_core PRIVATE -Wall -Wextra -O2)
+
+add_executable(osh_change_index src/main.cpp)
+
+target_include_directories(osh_change_index PRIVATE
+  ${OSMIUM_INCLUDE_DIR}
+  ${PROTOZERO_INCLUDE_DIR}
+  ${ZSTD_INCLUDE_DIR}
+)
+
+target_link_libraries(osh_change_index PRIVATE osh_change_index_core pthread)
+
+if(OSH_ENABLE_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()

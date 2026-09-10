@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>osh_change_index viewer</title>
+
+  <link href="https://cdn.jsdelivr.net/npm/maplibre-gl@6.9.0/dist/maplibre-gl.css" rel="stylesheet" />
+
+  <script type="importmap">
+  {
+    "imports": {
+      "hyparquet": "https://cdn.jsdelivr.net/npm/hyparquet@1.30.1/+esm",
+      "hyparquet-compressors": "https://cdn.jsdelivr.net/npm/hyparquet-compressors@1.1.1/+esm",
+      "h3-js": "https://cdn.jsdelivr.net/npm/h3-js@4.5.0/+esm",
+      "maplibre-gl": "https://cdn.jsdelivr.net/npm/maplibre-gl@6.9.0/+esm",
+      "echarts": "https://cdn.jsdelivr.net/npm/echarts@6.1.0/dist/echarts.esm.min.js"
+    }
+  }
+  </script>
+
+  <style>
+    html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; }
+    #app { display: flex; flex-direction: column; height: 100%; }
+    #controls {
+      display: flex; align-items: center; gap: 0.75rem;
+      padding: 0.75rem 1rem; background: #1f2937; color: white;
+    }
+    #controls label { font-size: 0.85rem; }
+    #controls input[type="date"], #controls button {
+      font-size: 0.9rem; padding: 0.3rem 0.5rem;
+    }
+    #status { margin-left: auto; font-size: 0.85rem; opacity: 0.85; }
+    #map { flex: 1; }
+
+    #histogram {
+      height: 140px;
+      width: 100%;
+      display: block;
+      flex-shrink: 0;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="controls">
+      <strong>osh_change_index</strong>
+
+      <label for="start-date">From</label>
+      <input type="date" id="start-date" />
+
+      <label for="end-date">To</label>
+      <input type="date" id="end-date" />
+
+      <label for="log-scale"><input type="checkbox" id="log-scale" checked /> Log scale</label>
+
+      <span id="status">Loading...</span>
+    </div>
+    <div id="histogram"></div>
+    <div id="map"></div>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

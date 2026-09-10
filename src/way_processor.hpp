@@ -1,149 +1,267 @@
 #pragma once
 
-// Handler applied to the way stream of an .osh.pbf file (full history,
-// assumed sorted by (id, version) ascending). Requires a RocksDB cache
-// already populated by the node pass (node_id, version -> position).
+// Handler applied to the way stream of an .osh.pbf file (assumed sorted by
+// (id, version) ascending), resolving referenced node positions against an
+// mmap node cache built by the node pass.
 //
-// Business rules:
-//  - Position resolved via the LAST known version of the node whose
-//    timestamp <= the timestamp of the way version being processed.
-//  - A segment with an unresolved endpoint -> skipped.
-//  - gridPathCells() failure -> segment skipped.
-//  - No deduplication: every segment independently increments every cell
-//    it crosses.
-//  - Deleted way (visible=false) -> counted as a change, using the LAST
-//    known geometry. If no geometry was ever known before deletion ->
-//    nothing to count.
-//  - Visible way with fewer than 2 nodes -> skipped.
+// A way is counted at the distinct cells of its resolved node positions
+// (each cell once per version); unresolved nodes are skipped, deleted ways
+// count on their last known geometry. A node's position is its last cache
+// record with day <= the way's day.
 //
-// Counts are routed straight to a PartitionedParquetWriter (one Parquet
-// file per calendar month); that writer owns its own per-partition
-// buffering and flush thresholds, so this handler holds no counters of
-// its own.
+// Lookups are batched (--way-batch-mb): a batch's refs are sorted by
+// (node_id, day) and resolved with one forward-only sweep over the cache, so
+// the page cache is read sequentially. A way never spans two batches;
+// deleted-way geometry carries across batches via a cell list.
 
-#include <h3api.h>
 #include <osmium/handler.hpp>
 #include <osmium/osm/way.hpp>
 
-#include <rocksdb/db.h>
-#include <rocksdb/iterator.h>
-
-#include <memory>
-#include <stdexcept>
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <iostream>
 #include <vector>
 
 #include "h3_utils.hpp"
+#include "node_cache.hpp"
 #include "partitioned_parquet_writer.hpp"
-#include "rocks_codec.hpp"
 
 namespace way_pass {
 
-// A resolved position, or "absent" if the node could not be found in the
-// RocksDB cache at the target date.
-struct ResolvedPoint {
-    bool valid = false;
-    double lat = 0.0;
-    double lon = 0.0;
+struct NodeRef {
+    int64_t node;
+    uint16_t day;
+    uint32_t slot;
+};
+
+struct ResolvedRef {
+    uint32_t slot;
+    uint64_t cell;
 };
 
 class WayProcessor : public osmium::handler::Handler {
 public:
-    WayProcessor(rocksdb::DB* db, parquet_out::PartitionedParquetWriter* parquet_writer,
-                 int h3_resolution)
-        : db_(db), parquet_writer_(parquet_writer), h3_resolution_(h3_resolution) {}
+    WayProcessor(node_cache::Reader* cache_reader,
+                 parquet_out::PartitionedParquetWriter* parquet_writer,
+                 size_t batch_bytes)
+        : cache_reader_(cache_reader),
+          parquet_writer_(parquet_writer),
+          batch_max_refs_(std::max<size_t>(1, batch_bytes / sizeof(NodeRef))) {}
 
     void way(const osmium::Way& w) {
-        if (w.id() != current_way_id_) {
-            current_way_id_ = w.id();
-            has_last_geometry_ = false;
-            last_known_geometry_.clear();
-        }
-
+        ways_++;  // INSTR
         const int64_t ts = w.timestamp().seconds_since_epoch();
-        const int32_t day = h3_utils::timestamp_to_utc_day(ts);
+        const uint16_t day = h3_utils::require_u16_day(h3_utils::timestamp_to_utc_day(ts));
 
-        if (w.visible() && w.nodes().size() >= 2) {
-            std::vector<ResolvedPoint> geometry;
-            geometry.reserve(w.nodes().size());
-            for (const auto& nr : w.nodes()) geometry.push_back(resolve_position(nr.ref(), ts));
+        if (w.visible() && !w.nodes().empty()) {
+            const uint32_t slot = static_cast<uint32_t>(slot_counter_++);
+            if (slot_days_.size() <= slot) slot_days_.resize(slot + 1);
+            if (slot_del_days_.size() <= slot) slot_del_days_.resize(slot + 1);
+            slot_days_[slot] = day;
 
-            count_way_segments(geometry, day);
+            for (const auto& nr : w.nodes()) {
+                refs_.push_back({nr.ref(), day, slot});
+            }
 
-            last_known_geometry_ = std::move(geometry);
-            has_last_geometry_ = true;
-
-        } else if (!w.visible() && has_last_geometry_) {
-            count_way_segments(last_known_geometry_, day);
-        }
-        // Otherwise (visible way with < 2 nodes, or deletion with no known
-        // geometry): nothing to do.
-    }
-
-private:
-    // Looks up, in RocksDB, the last known version of the node whose
-    // timestamp is <= target_ts. Entries are sorted by (node_id, version)
-    // ascending, and timestamp increases with version, so scanning in
-    // order and stopping at the first timestamp > target_ts is correct.
-    ResolvedPoint resolve_position(int64_t node_id, int64_t target_ts) {
-        std::unique_ptr<rocksdb::Iterator> it(db_->NewIterator(rocksdb::ReadOptions()));
-
-        ResolvedPoint result;
-        const std::string prefix = rocks_codec::encode_prefix(node_id);
-
-        for (it->Seek(prefix); it->Valid(); it->Next()) {
-            rocksdb::Slice key = it->key();
-            if (key.size() != rocks_codec::kKeySize) break;
-
-            auto decoded_key = rocks_codec::decode_key(key.data(), key.size());
-            if (decoded_key.node_id != node_id) break;  // left the prefix
-
-            rocksdb::Slice value = it->value();
-            auto record = rocks_codec::decode_value(value.data(), value.size());
-            if (record.timestamp > target_ts) break;  // future versions, stop here
-
-            result.valid = true;
-            result.lat = record.lat();
-            result.lon = record.lon();
-        }
-
-        return result;
-    }
-
-    void count_way_segments(const std::vector<ResolvedPoint>& geometry, int32_t day) {
-        for (size_t i = 1; i < geometry.size(); ++i) {
-            const auto& a = geometry[i - 1];
-            const auto& b = geometry[i];
-            if (!a.valid || !b.valid) continue;  // broken segment -> skip
-
-            uint64_t c1 = h3_utils::location_to_cell(a.lat, a.lon, h3_resolution_);
-            uint64_t c2 = h3_utils::location_to_cell(b.lat, b.lon, h3_resolution_);
-
-            int64_t path_size = 0;
-            H3Error size_err = gridPathCellsSize(static_cast<H3Index>(c1),
-                                                  static_cast<H3Index>(c2), &path_size);
-            if (size_err != E_SUCCESS || path_size <= 0) continue;  // segment skipped
-
-            path_buffer_.resize(static_cast<size_t>(path_size));
-            H3Error path_err = gridPathCells(static_cast<H3Index>(c1), static_cast<H3Index>(c2),
-                                              path_buffer_.data());
-            if (path_err != E_SUCCESS) continue;  // segment skipped
-
-            for (int64_t k = 0; k < path_size; ++k) {
-                uint64_t cell = static_cast<uint64_t>(path_buffer_[static_cast<size_t>(k)]);
-                parquet_writer_->increment(cell, day);  // no dedup
+            // Flush only on way boundaries so a way is never split across
+            // two batches (distinct-cell counting is per batch).
+            if (refs_.size() >= batch_max_refs_) flush_batch();
+        } else if (!w.visible()) {
+            if (slot_counter_ > 0) {
+                // Previous visible version of this way is in the current
+                // batch: count it there, at this deletion's day.
+                const size_t slot = slot_counter_ - 1;
+                if (slot_del_days_.size() <= slot) slot_del_days_.resize(slot + 1);
+                slot_del_days_[slot].push_back(day);
+            } else if (has_carry_) {
+                // Previous visible version ended in an earlier batch; its
+                // geometry is carried, count it directly.
+                for (const auto& cell : carry_cells_) {
+                    parquet_writer_->increment(cell, day);
+                    points_++;  // INSTR
+                }
             }
         }
     }
 
-    rocksdb::DB* db_;
+    // Flushes the final batch; call after the full read.
+    void finish() { flush_batch(); }
+
+    // INSTR
+    void print_stats() const {
+        const double total_ns = static_cast<double>(resolve_ns_) + static_cast<double>(points_ns_);
+        const double resolve_pct = total_ns > 0 ? 100.0 * resolve_ns_ / total_ns : 0.0;
+        const double points_pct = total_ns > 0 ? 100.0 * points_ns_ / total_ns : 0.0;
+        std::cerr << "[way pass] ways=" << ways_ << " batches=" << batches_
+                  << " lookups=" << node_lookups_
+                  << " scanned=" << records_scanned_
+                  << " (" << records_scanned_ / static_cast<double>(node_lookups_ ? node_lookups_ : 1)
+                  << "/lookup) misses=" << lookup_misses_
+                  << " (" << 100.0 * lookup_misses_ / static_cast<double>(node_lookups_ ? node_lookups_ : 1)
+                  << "%) points=" << points_ << "\n";
+        std::cerr << "[way pass] resolve=" << resolve_ns_ / 1e6 << "ms (" << resolve_pct
+                  << "%) points=" << points_ns_ / 1e6 << "ms (" << points_pct
+                  << "%) instrumented_total=" << total_ns / 1e6 << "ms\n";
+    }
+
+private:
+    void flush_batch() {
+        if (refs_.empty() && slot_counter_ == 0) {
+            return;
+        }
+
+        const auto t0 = std::chrono::steady_clock::now();
+
+        // Sort refs by (node, day) and resolve with a forward-only sweep.
+        std::sort(refs_.begin(), refs_.end(), [](const NodeRef& a, const NodeRef& b) {
+            if (a.node != b.node) return a.node < b.node;
+            if (a.day != b.day) return a.day < b.day;
+            return a.slot < b.slot;
+        });
+
+        resolved_.clear();
+        resolved_.reserve(refs_.size());
+        if (!refs_.empty()) {
+            size_t rec = cache_reader_->sweep_start(refs_.front().node);
+            bool key_valid = false;
+            int64_t key_node = 0;
+            uint16_t key_day = 0;
+            bool key_found = false;
+            uint64_t key_cell = 0;
+
+            for (const NodeRef& ref : refs_) {
+                node_lookups_++;  // INSTR
+
+                bool found;
+                uint64_t cell;
+                if (key_valid && ref.node == key_node && ref.day == key_day) {
+                    // Identical key as the previous ref: reuse its result.
+                    found = key_found;
+                    cell = key_cell;
+                } else {
+                    found = false;
+                    const size_t rec0 = rec;  // INSTR
+                    while (rec < cache_reader_->size()) {
+                        const int64_t rn = cache_reader_->node_at(rec);
+                        if (rn < ref.node) {
+                            rec++;
+                            continue;
+                        }
+                        if (rn == ref.node) {
+                            const uint16_t rd = cache_reader_->day_at(rec);
+                            if (rd <= ref.day) {
+                                found = true;
+                                cell = cache_reader_->cell_at(rec);
+                                rec++;
+                                continue;
+                            }
+                            break;  // future version of this node
+                        }
+                        break;  // past this node
+                    }
+                    records_scanned_ += rec - rec0;  // INSTR
+                    key_valid = true;
+                    key_node = ref.node;
+                    key_day = ref.day;
+                    key_found = found;
+                    key_cell = cell;
+                }
+
+                if (found) {
+                    resolved_.push_back({ref.slot, cell});
+                } else {
+                    lookup_misses_++;  // INSTR
+                }
+            }
+        }
+
+        resolve_ns_ += std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           std::chrono::steady_clock::now() - t0)
+                           .count();  // INSTR
+        const auto t1 = std::chrono::steady_clock::now();  // INSTR
+
+        // Distinct cells per slot by sorted adjacency.
+        if (!resolved_.empty() || slot_counter_ > 0) {
+            std::sort(resolved_.begin(), resolved_.end(), [](const ResolvedRef& a,
+                                                             const ResolvedRef& b) {
+                if (a.slot != b.slot) return a.slot < b.slot;
+                return a.cell < b.cell;
+            });
+
+            std::vector<uint64_t> new_carry;
+            const size_t last_slot = slot_counter_ > 0 ? slot_counter_ - 1 : 0;
+
+            size_t i = 0;
+            while (i < resolved_.size()) {
+                const uint32_t slot = resolved_[i].slot;
+                size_t j = i;
+                while (j < resolved_.size() && resolved_[j].slot == slot) j++;
+
+                const uint16_t vis_day = slot_days_[slot];
+                const std::vector<uint16_t>& del_days = slot_del_days_[slot];
+
+                for (size_t k = i; k < j;) {
+                    size_t m = k;
+                    while (m < j && resolved_[m].cell == resolved_[k].cell) m++;
+
+                    const uint64_t cell = resolved_[k].cell;
+                    parquet_writer_->increment(cell, vis_day);
+                    points_++;  // INSTR
+                    for (uint16_t d : del_days) {
+                        parquet_writer_->increment(cell, d);
+                        points_++;  // INSTR
+                    }
+                    if (slot_counter_ > 0 && slot == last_slot) {
+                        new_carry.push_back(resolved_[k].cell);
+                    }
+                    k = m;
+                }
+                i = j;
+            }
+
+            if (slot_counter_ > 0) {
+                // Last rendered geometry, carried over to the next batch for
+                // deleted ways that follow it there.
+                has_carry_ = true;
+                carry_cells_ = std::move(new_carry);
+            }
+        }
+
+        points_ns_ += std::chrono::duration_cast<std::chrono::nanoseconds>(
+                          std::chrono::steady_clock::now() - t1)
+                          .count();  // INSTR
+
+        refs_.clear();
+        resolved_.clear();
+        slot_days_.clear();
+        slot_del_days_.clear();
+        slot_counter_ = 0;
+        batches_++;  // INSTR
+    }
+
+    node_cache::Reader* cache_reader_;
     parquet_out::PartitionedParquetWriter* parquet_writer_;
-    int h3_resolution_;
+    size_t batch_max_refs_;
 
-    std::vector<H3Index> path_buffer_;  // reused across segments
+    std::vector<NodeRef> refs_;
+    std::vector<ResolvedRef> resolved_;
+    std::vector<uint16_t> slot_days_;
+    std::vector<std::vector<uint16_t>> slot_del_days_;
+    size_t slot_counter_ = 0;
 
-    int64_t current_way_id_ = -1;
-    bool has_last_geometry_ = false;
-    std::vector<ResolvedPoint> last_known_geometry_;
+    bool has_carry_ = false;
+    std::vector<uint64_t> carry_cells_;
+
+    // INSTR: diagnostic counters.
+    uint64_t ways_ = 0;
+    uint64_t batches_ = 0;
+    uint64_t node_lookups_ = 0;
+    uint64_t records_scanned_ = 0;
+    uint64_t lookup_misses_ = 0;
+    uint64_t points_ = 0;  // distinct node cells incremented
+    int64_t resolve_ns_ = 0;
+    int64_t points_ns_ = 0;
 };
 
 }  // namespace way_pass

@@ -5,8 +5,8 @@
 // H3 resolution used, overall month coverage, and the list of partitions
 // actually present for each dataset.
 //
-// Built purely from a directory scan (year=YYYY/month=MM.parquet layout),
-// not from Parquet file contents - cheap, and correct regardless of which
+// Built purely from a directory scan (year=YYYY/month=MM layout), not
+// from Parquet file contents - cheap, and correct regardless of which
 // --pass combination produced the files on disk.
 
 #include <string>
