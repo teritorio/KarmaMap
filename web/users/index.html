@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>osh_change_index users</title>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "hyparquet": "https://cdn.jsdelivr.net/npm/hyparquet@1.30.1/+esm",
+      "hyparquet-compressors": "https://cdn.jsdelivr.net/npm/hyparquet-compressors@1.1.1/+esm",
+      "echarts": "https://cdn.jsdelivr.net/npm/echarts@6.1.0/dist/echarts.esm.min.js"
+    }
+  }
+  </script>
+
+  <style>
+    html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; background: #f3f4f6; }
+    #controls {
+      display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
+      padding: 0.75rem 1rem; background: #1f2937; color: white;
+    }
+    #controls a { color: #93c5fd; text-decoration: none; font-size: 0.9rem; }
+    #controls label { font-size: 0.85rem; }
+    #controls input[type="text"], #controls button {
+      font-size: 0.9rem; padding: 0.3rem 0.5rem;
+    }
+    #status { margin-left: auto; font-size: 0.85rem; opacity: 0.85; }
+
+    #profile {
+      display: flex; gap: 1.5rem; flex-wrap: wrap; align-items: center;
+      padding: 0.75rem 1rem; background: #fff; border-bottom: 1px solid #e5e7eb;
+    }
+    #profile .field strong { display: block; font-size: 0.75rem; color: #6b7280; }
+    #profile .field span { font-size: 0.95rem; }
+    .badge { padding: 0.15rem 0.45rem; border-radius: 9999px; font-size: 0.8rem; color: #fff; }
+    .badge-yes { background: #b91c1c; }
+    .badge-no { background: #6b7280; }
+
+    #scores {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 0.75rem; padding: 1rem;
+    }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; padding: 0.6rem 0.8rem; }
+    .card .label { font-size: 0.75rem; color: #6b7280; }
+    .card .value { font-size: 1.4rem; font-weight: 600; }
+    .card.total { border-color: #1f2937; }
+
+    #timeline { height: 260px; margin: 0 1rem 1rem; }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <strong>osh_change_index</strong>
+    <a href="../changes/">changes</a>
+    <a href="./index.html">users</a>
+
+    <label for="username">OSM username</label>
+    <input type="text" id="username" placeholder="e.g. alice" autocomplete="off" />
+    <button id="search" type="button">Search</button>
+
+    <span id="status">Loading...</span>
+  </div>
+
+  <div id="profile"></div>
+  <div id="scores"></div>
+  <div id="timeline"></div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
