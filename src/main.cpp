@@ -28,6 +28,7 @@
 #include "options.hpp"
 #include "partitioned_parquet_writer.hpp"
 #include "sort_pass.hpp"
+#include "user_indicators.hpp"
 #include "way_processor.hpp"
 
 namespace {
@@ -129,6 +130,29 @@ void run_sort_pass(const Options& opts) {
     std::cerr << "[sort pass] done in " << elapsed << "s\n";
 }
 
+void run_user_indicator_pass(const Options& opts) {
+    user_indicators::Thresholds thresholds;
+    thresholds.relocate_meters = opts.relocate_meters;
+    thresholds.short_life_days = opts.short_life_days;
+    thresholds.rapid_edit_versions = opts.rapid_edit_versions;
+    thresholds.rapid_edit_window_days = opts.rapid_edit_window_days;
+    thresholds.new_user_window_days = opts.new_user_window_days;
+    thresholds.bulk_edit_min = opts.bulk_edit_min;
+
+    const std::string stage_dir = opts.output_dir + "/user_indicator_stage";
+    const std::string profiles_path = opts.output_dir + "/user_profiles.parquet";
+    const std::string indicators_path = opts.output_dir + "/user_indicators.parquet";
+
+    // A re-run never reuses stale outputs: wipe stage + final files before
+    // scanning, so an empty scan cannot leave last run's rows behind.
+    std::filesystem::remove_all(stage_dir);
+    std::filesystem::remove(profiles_path);
+    std::filesystem::remove(indicators_path);
+
+    user_indicators::run_scan(opts.input_path, stage_dir, thresholds);
+    user_indicators::run_finalize(stage_dir, profiles_path, indicators_path, thresholds);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -156,6 +180,9 @@ int main(int argc, char** argv) {
         }
         if (opts.run_sort_pass) {
             run_sort_pass(opts);
+        }
+        if (opts.run_user_indicators) {
+            run_user_indicator_pass(opts);
         }
 
         std::cerr << "[manifest] writing " << opts.output_dir << "/manifest.json\n";

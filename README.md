@@ -24,6 +24,96 @@ A single binary, `osh_change_index`, runs three stages by default:
    whichever count's staging file is already gone, so re-merging never
    zeroes it.
 
+Passes 1-3 are independent of the optional user-indicator pass described
+below.
+
+## User indicators (`--user-indicators`)
+
+An optional, H3-independent pass that scores history **per user and per UTC
+day** with cheap OSMPatrol-style heuristics, targeting vandalism/bulk
+editors. It is a single streaming scan over the node and way history
+(no changeset metadata is needed) plus one in-memory finalize, and is
+independent of passes 1-3. It writes two non-partitioned Parquet files:
+
+```
+output-dir/
+├── user_profiles.parquet   # identity catalog, one row per (uid, username)
+└── user_indicators.parquet # daily counters + flags, one row per (uid, change_date)
+```
+
+- `user_profiles.parquet` — one row per username segment of a user:
+
+  | Column | Type | Meaning |
+  |---|---|---|
+  | `uid` | `int64` | OSM user id (0 = anonymous) |
+  | `username` | `string` | Username; `"<uid>"` when the source has none |
+  | `first_edit_day` | `uint16` | First UTC day this uid used this username |
+  | `first_seen_day` | `uint16` | First UTC day this uid ever edited |
+  | `bulk_new_user` | `bool` | ≥ `--bulk-edit-min` edits within `--new-user-window-days` of `first_seen_day` |
+
+  Sorted by `(uid, first_edit_day)`. A username change creates a new row
+  (a new segment) for the same `uid`.
+
+- `user_indicators.parquet` — one row per `(uid, change_date)`:
+
+  | Column | Type | Meaning |
+  |---|---|---|
+  | `uid` | `int64` | OSM user id |
+  | `change_date` | `uint16` | UTC day (same encoding as `changes/`) |
+  | `node_created`, `node_modified`, `node_deleted` | `uint32` | Node change counters |
+  | `way_created`, `way_modified`, `way_deleted` | `uint32` | Way change counters |
+  | `relocated` | `uint32` | Node versions moved > `--relocate-meters` |
+  | `short_lived` | `uint32` | Deletes of objects created ≤ `--short-life-days` earlier |
+  | `rapid_edit` | `uint32` | Object versions arriving with ≥ `--rapid-edit-versions` versions within `--rapid-edit-window-days` |
+
+  Sorted by `(uid, change_date)`.
+
+Derivation notes:
+
+- Every version event is attributed to the editing `(uid, day)`; day totals
+  are sums of the six change counters. `relocated` compares consecutive
+  versions of the same node (version-to-version move), `short_lived` counts
+  an object's delete relative to its own first version, and `rapid_edit`
+  counts each version that brings its object's rolling window up to threshold.
+- `bulk_new_user` is derived in finalize from the daily rows themselves
+  (the events within `new_user_window_days` of the user's first seen day),
+  so it needs no extra history scan; it is uid-level and shared across a
+  user's username segments.
+- Rule thresholds (defaults in parentheses) come from `--` flags:
+
+  | Flag | Default | Role |
+  |---|---|---|
+  | `--relocate-meters` | `1000` | Node move distance counting as a relocation |
+  | `--short-life-days` | `7` | Max age (days) of a created+deleted object |
+  | `--rapid-edit-versions` | `5` | Versions that trigger the rapid-edit flag |
+  | `--rapid-edit-window-days` | `7` | Rolling window for rapid-edit counting |
+  | `--new-user-window-days` | `30` | Days after first seen edit a user counts as new |
+  | `--bulk-edit-min` | `10` | Edits within the window that flag `bulk_new_user` |
+
+These are documented starting points, not calibrated against ground truth:
+suspicion only. Join the two files on `uid` to prioritize users, e.g. with
+DuckDB:
+
+```sql
+SELECT p.username,
+       DATE '1970-01-01' + i.change_date AS change_date,
+       i.node_created + i.node_modified + i.node_deleted +
+       i.way_created + i.way_modified + i.way_deleted AS edits,
+       i.relocated, i.short_lived, i.rapid_edit
+FROM read_parquet('output-dir/user_profiles.parquet') p
+JOIN read_parquet('output-dir/user_indicators.parquet') i USING (uid)
+WHERE p.bulk_new_user
+ORDER BY edits DESC
+LIMIT 20;
+```
+
+Scaling: OSM full history is `(id, version)`-sorted, so the scan is a
+running pass with O(1) object state, writing day-aggregates to a staged
+`user_indicator_stage/stage_*.parquet` directory that finalize merges,
+sorts by `(uid, change_date)`, derives the profile rows, and removes.
+Non-partitioned single files keep the join cheap and the numerics-only
+indicators file small.
+
 ## Business rules
 
 | Case | Behavior |
@@ -58,6 +148,8 @@ resolution.
 ```
 output-dir/
 ├── manifest.json
+├── user_profiles.parquet      # only with --user-indicators
+├── user_indicators.parquet    # only with --user-indicators
 └── changes/
     └── year=2025/
         ├── month=01/
@@ -90,12 +182,17 @@ partitions exist, and the overall date range:
     "changes": {
       "path": "changes",
       "partitions": ["2005-01", "2005-02", "..."]
-    }
+    },
+    "user_indicators": { "path": "user_indicators.parquet", "partitions": [] },
+    "user_profiles": { "path": "user_profiles.parquet", "partitions": [] }
   }
 }
 ```
 
-`date_range` is `null` when the dataset is empty.
+`date_range` is `null` when the dataset is empty. The user-indicator
+entries appear only when their files exist; an empty partition list signals
+a non-partitioned single file, which month-based query clients (the web
+frontend) skip.
 
 ## Node cache
 
@@ -182,17 +279,38 @@ Build without tests by configuring with `-DOSH_ENABLE_TESTS=OFF`.
 ## Usage
 
 ```
-osh_change_index --input <planet.osh.pbf> --node-cache <file> --output-dir <dir> [--h3-resolution N] [--way-batch-mb N] [--pass 1|2|3|all]
+osh_change_index --input <planet.osh.pbf> --node-cache <file> --output-dir <dir> [core options] [fine-tuning options]
 ```
+
+### Core options
 
 | Option | Description |
 |---|---|
 | `--input` | OSM full-history file (`.osh.pbf`), required |
 | `--node-cache` | Node position cache file (wiped and rebuilt by pass 1, read by pass 2), required |
 | `--output-dir` | Output directory for the Parquet datasets, required (created if missing) |
-| `--h3-resolution` | Resolution of the data cells, 0-13 (default: `9`) |
-| `--way-batch-mb` | Way-pass lookup batch budget in MiB (default: `512`) |
 | `--pass` | `1` (nodes only), `2` (ways only, requires an already populated node cache), `3` (merge + sort only, requires passes 1 and 2 to have already run), or `all` (default) |
+| `--way-batch-mb` | Way-pass lookup batch budget in MiB (default: `512`) |
+
+### Fine-tuning options
+
+H3 cell:
+
+| Option | Description |
+|---|---|
+| `--h3-resolution` | Resolution of the data cells, 0-13 (default: `9`) |
+
+User stats (`--user-indicators`):
+
+| Option | Description |
+|---|---|
+| `--user-indicators` | Also run the user-indicator pass (see above); independent of passes 1-3 |
+| `--relocate-meters` | Relocation threshold in meters (default: `1000`) |
+| `--short-life-days` | Short-lived delete window in days (default: `7`) |
+| `--rapid-edit-versions` | Rapid-edit version threshold (default: `5`) |
+| `--rapid-edit-window-days` | Rapid-edit rolling window in days (default: `7`) |
+| `--new-user-window-days` | New-user window after first edit in days (default: `30`) |
+| `--bulk-edit-min` | Edits within the window that flag `bulk_new_user` (default: `10`) |
 
 ## Running
 

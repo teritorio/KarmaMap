@@ -99,6 +99,10 @@ export async function queryChanges({
   for (const month of months) {
     for (const datasetName of Object.keys(manifest.datasets)) {
       const dataset = manifest.datasets[datasetName]
+      // Non-partitioned datasets (e.g. the user-indicator files) declare an
+      // empty partition list; they are not part of the month-partitioned
+      // bbox query and are skipped entirely.
+      if (!Array.isArray(dataset.partitions) || dataset.partitions.length === 0) continue
       if (!dataset.partitions.includes(month)) continue // no file for this month, skip the fetch entirely
 
       const path = partitionPath(dataset.path, month)

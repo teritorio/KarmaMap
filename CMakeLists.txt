@@ -76,9 +76,18 @@ add_library(osh_change_index_core STATIC
   src/options.cpp
   src/parquet_batch_writer.cpp
   src/sort_pass.cpp
+  src/user_indicators.cpp
 )
 
 target_include_directories(osh_change_index_core PUBLIC src)
+
+# User-indicator scan (user_indicators.cpp) pulls in libosmium and protozero;
+# made PUBLIC so the executable and the test binaries inherit them too.
+target_include_directories(osh_change_index_core PUBLIC
+  ${OSMIUM_INCLUDE_DIR}
+  ${PROTOZERO_INCLUDE_DIR}
+  ${ZSTD_INCLUDE_DIR}
+)
 
 target_link_libraries(osh_change_index_core PUBLIC
   h3
@@ -94,12 +103,6 @@ target_link_libraries(osh_change_index_core PUBLIC
 target_compile_options(osh_change_index_core PRIVATE -Wall -Wextra -O2)
 
 add_executable(osh_change_index src/main.cpp)
-
-target_include_directories(osh_change_index PRIVATE
-  ${OSMIUM_INCLUDE_DIR}
-  ${PROTOZERO_INCLUDE_DIR}
-  ${ZSTD_INCLUDE_DIR}
-)
 
 target_link_libraries(osh_change_index PRIVATE osh_change_index_core pthread)
 

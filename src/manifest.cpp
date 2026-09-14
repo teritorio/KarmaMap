@@ -69,9 +69,24 @@ void write_manifest(const std::string& output_dir, int h3_resolution) {
     }
 
     out << "  \"datasets\": {\n";
-    out << "    \"changes\": { \"path\": \"changes\", \"partitions\": "
-        << json_string_array(partitions) << " }\n";
-    out << "  }\n";
+    bool first_dataset = true;
+    auto write_dataset = [&](const std::string& name, const std::string& path,
+                             const std::vector<std::string>& parts) {
+        if (!first_dataset) out << ",\n";
+        first_dataset = false;
+        out << "    \"" << name << "\": { \"path\": \"" << path << "\", \"partitions\": "
+            << json_string_array(parts) << " }";
+    };
+    write_dataset("changes", "changes", partitions);
+    // The user-indicator outputs are non-partitioned single files; the empty
+    // partition list tells month-based query clients to skip them.
+    if (std::filesystem::exists(output_dir + "/user_indicators.parquet")) {
+        write_dataset("user_indicators", "user_indicators.parquet", {});
+    }
+    if (std::filesystem::exists(output_dir + "/user_profiles.parquet")) {
+        write_dataset("user_profiles", "user_profiles.parquet", {});
+    }
+    out << "\n  }\n";
     out << "}\n";
 }
 

@@ -14,6 +14,13 @@ struct Options {
     bool run_node_pass = true;
     bool run_way_pass = true;
     bool run_sort_pass = true;
+    bool run_user_indicators = false;
+    double relocate_meters = 1000.0;      // node move distance that counts
+    int short_life_days = 7;              // created+deleted within N days
+    int rapid_edit_versions = 5;          // >= K versions ...
+    int rapid_edit_window_days = 7;       // ... within N days
+    int new_user_window_days = 30;        // account younger than N days
+    int bulk_edit_min = 10;               // >= N events to flag a new user
 };
 
 void print_usage(const char* argv0);

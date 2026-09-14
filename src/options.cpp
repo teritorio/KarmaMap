@@ -10,16 +10,37 @@ void print_usage(const char* argv0) {
     std::cerr
         << "Usage: " << argv0
         << " --input <planet.osh.pbf> --node-cache <file> --output-dir <dir> "
-           "[--h3-resolution N] [--way-batch-mb N] [--pass 1|2|3|all]\n\n"
+           "[core options] [fine-tuning options]\n\n"
+        << "Core options:\n"
         << "  --input                OSM full-history file (.osh.pbf)\n"
         << "  --node-cache           Node position cache file (wiped and rebuilt by pass 1, read by pass 2)\n"
         << "  --output-dir           Output directory for the Parquet datasets\n"
-        << "  --h3-resolution        Resolution of the data cells, 0-13 (default: 9)\n"
-        << "  --way-batch-mb         Way-pass lookup batch budget in MiB (default: 512)\n"
         << "  --pass                 1 (nodes only), 2 (ways only, requires an already\n"
         << "                         populated node cache), 3 (merge + sort only,\n"
         << "                         requires passes 1 and 2 to have already run),\n"
-        << "                         or all (default)\n";
+        << "                         or all (default)\n"
+        << "  --way-batch-mb         Way-pass lookup batch budget in MiB (default: 512)\n\n"
+        << "Fine-tuning options:\n"
+        << "  h3 cell:\n"
+        << "    --h3-resolution      Resolution of the data cells, 0-13 (default: 9)\n"
+        << "  user stats (--user-indicators):\n"
+        << "    --user-indicators    Additionally score history per user and per UTC day,\n"
+        << "                         writing user_profiles.parquet and\n"
+        << "                         user_indicators.parquet (non-partitioned single\n"
+        << "                         files, independent of passes 1-3)\n"
+        << "    --relocate-meters    Node move distance (meters) that counts as a\n"
+        << "                         relocation (default: 1000)\n"
+        << "    --short-life-days    A delete counts as short-lived if the object was\n"
+        << "                         created within this many days (default: 7)\n"
+        << "    --rapid-edit-versions  At least this many object versions within the\n"
+        << "                         rapid-edit window flag rapid editing (default: 5)\n"
+        << "    --rapid-edit-window-days  Rolling window for rapid-edit counting\n"
+        << "                         (default: 7)\n"
+        << "    --new-user-window-days  A user is a new user within this many days of\n"
+        << "                         their first edit (default: 30)\n"
+        << "    --bulk-edit-min       A new user is bulk-editing when making at least\n"
+        << "                         this many edits within the new-user window\n"
+        << "                         (default: 10)\n";
 }
 
 bool parse_args(int argc, char** argv, Options* opts) {
@@ -54,6 +75,20 @@ bool parse_args(int argc, char** argv, Options* opts) {
             if (v != "1" && v != "2" && v != "3" && v != "all") {
                 throw std::runtime_error("--pass must be 1, 2, 3 or all (got: " + v + ")");
             }
+        } else if (arg == "--user-indicators") {
+            opts->run_user_indicators = true;
+        } else if (arg == "--relocate-meters") {
+            opts->relocate_meters = std::stod(next_value("--relocate-meters"));
+        } else if (arg == "--short-life-days") {
+            opts->short_life_days = std::stoi(next_value("--short-life-days"));
+        } else if (arg == "--rapid-edit-versions") {
+            opts->rapid_edit_versions = std::stoi(next_value("--rapid-edit-versions"));
+        } else if (arg == "--rapid-edit-window-days") {
+            opts->rapid_edit_window_days = std::stoi(next_value("--rapid-edit-window-days"));
+        } else if (arg == "--new-user-window-days") {
+            opts->new_user_window_days = std::stoi(next_value("--new-user-window-days"));
+        } else if (arg == "--bulk-edit-min") {
+            opts->bulk_edit_min = std::stoi(next_value("--bulk-edit-min"));
         } else if (arg == "--help" || arg == "-h") {
             return false;
         } else {
@@ -69,6 +104,13 @@ bool parse_args(int argc, char** argv, Options* opts) {
         throw std::runtime_error(
             "H3 resolution must be in range 0-13 (the 6-byte cache cell "
             "encoding holds at most 13 digits)");
+    }
+    if (opts->relocate_meters < 0.0 || opts->short_life_days < 1 ||
+        opts->rapid_edit_versions < 2 || opts->rapid_edit_window_days < 1 ||
+        opts->new_user_window_days < 1 || opts->bulk_edit_min < 1) {
+        throw std::runtime_error(
+            "User-indicator thresholds must be positive "
+            "(rapid_edit_versions >= 2)");
     }
     // For a way-pass-only run the cache must already exist; not checked
     // here - opening read-only fails cleanly if it is absent.

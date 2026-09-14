@@ -2,9 +2,6 @@
 
 #include <arrow/api.h>
 #include <arrow/compute/api.h>
-#include <arrow/io/api.h>
-#include <parquet/arrow/reader.h>
-#include <parquet/arrow/writer.h>
 
 #include <cstdint>
 #include <filesystem>
@@ -16,64 +13,13 @@
 #include <utility>
 #include <vector>
 
+#include "arrow_table_io.hpp"
 #include "h3_utils.hpp"
 #include "parquet_batch_writer.hpp"
 
 namespace sort_pass {
 
 namespace {
-
-std::shared_ptr<arrow::Table> read_table(const std::string& path) {
-    auto infile_result = arrow::io::ReadableFile::Open(path);
-    if (!infile_result.ok()) {
-        throw std::runtime_error("Failed to open " + path + " for reading: " +
-                                  infile_result.status().ToString());
-    }
-
-    auto reader_result = parquet::arrow::OpenFile(*infile_result, arrow::default_memory_pool());
-    if (!reader_result.ok()) {
-        throw std::runtime_error("Failed to open Parquet reader for " + path + ": " +
-                                  reader_result.status().ToString());
-    }
-    std::unique_ptr<parquet::arrow::FileReader> reader = std::move(*reader_result);
-
-    // ReadTable() no-arg: the out-param overload is deprecated in Parquet 24.0.0.
-    auto table_result = reader->ReadTable();
-    if (!table_result.ok()) {
-        throw std::runtime_error("Failed to read table from " + path + ": " +
-                                  table_result.status().ToString());
-    }
-    return *table_result;
-}
-
-void write_table(const std::string& path, const std::shared_ptr<arrow::Table>& table) {
-    auto outfile_result = arrow::io::FileOutputStream::Open(path);
-    if (!outfile_result.ok()) {
-        throw std::runtime_error("Failed to open " + path + " for writing: " +
-                                  outfile_result.status().ToString());
-    }
-
-    parquet::WriterProperties::Builder props_builder;
-    props_builder.compression(parquet::Compression::ZSTD);
-    auto writer_props = props_builder.build();
-
-    // One row group per file, bounded by a single partition's data.
-    const int64_t chunk_size = table->num_rows() > 0 ? table->num_rows() : 1;
-
-    auto write_status = parquet::arrow::WriteTable(*table, arrow::default_memory_pool(),
-                                                     *outfile_result, chunk_size, writer_props);
-    if (!write_status.ok()) {
-        throw std::runtime_error("Failed to write " + path + ": " + write_status.ToString());
-    }
-
-    // Fail fast on disk errors surfaced by closing/flushing the underlying
-    // file (e.g. ENOSPC delayed until metadata is flushed on close), instead
-    // of silently leaving a truncated partition behind.
-    auto close_status = (*outfile_result)->Close();
-    if (!close_status.ok()) {
-        throw std::runtime_error("Failed to finalize " + path + ": " + close_status.ToString());
-    }
-}
 
 // Orders a table by (h3_cell, change_date) with Arrow's compute kernels
 // (SortIndices + Take), so row-group min/max ranges stay compact for bbox
@@ -177,16 +123,16 @@ void merge_one_month(const std::string& month_dir) {
 
     MergedMap merged;
     if (has_nodes) {
-        merge_source(read_table(nodes_path), "count", /*is_node=*/true, merged);
+        merge_source(arrow_table_io::read_table(nodes_path), "count", /*is_node=*/true, merged);
     } else if (has_data) {
         // No nodes.parquet, but an earlier data.parquet is present. Its
         // node_count is the fallback so a re-merge never zeroes the column.
-        merge_source(read_table(output_path), "node_count", /*is_node=*/true, merged);
+        merge_source(arrow_table_io::read_table(output_path), "node_count", /*is_node=*/true, merged);
     }
     if (has_ways) {
-        merge_source(read_table(ways_path), "count", /*is_node=*/false, merged);
+        merge_source(arrow_table_io::read_table(ways_path), "count", /*is_node=*/false, merged);
     } else if (has_data) {
-        merge_source(read_table(output_path), "way_count", /*is_node=*/false, merged);
+        merge_source(arrow_table_io::read_table(output_path), "way_count", /*is_node=*/false, merged);
     }
 
     // Columns are built in map order; sort_by_h3_day reorders them by
@@ -232,7 +178,7 @@ void merge_one_month(const std::string& month_dir) {
     // staging files. A re-run reads whatever staging files survived and, for
     // counts whose staging file was already removed, reuses data.parquet
     // (only ever created by a completed rename).
-    write_table(tmp_path, merged_table);
+    arrow_table_io::write_table(tmp_path, merged_table);
     std::filesystem::rename(tmp_path, output_path);
     if (has_nodes) std::filesystem::remove(nodes_path);
     if (has_ways) std::filesystem::remove(ways_path);
