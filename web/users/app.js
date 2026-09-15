@@ -13,8 +13,8 @@ import {
 } from './query.js'
 import { initHistogram, setHistogramData, setLogScale } from './histogram.js'
 
-// Where the Caddy service serves output-dir/.
-const BASE_URL = 'http://localhost:8080'
+// Where the Caddy service serves output-dir/ from (the web root at /).
+const BASE_URL = 'http://localhost:8080/data'
 
 const usernameEl = document.getElementById('username')
 const searchBtn = document.getElementById('search')

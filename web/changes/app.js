@@ -5,8 +5,8 @@ import { initMap, renderResults, getViewportBbox, setResultsLogScale } from './m
 import { initHistogram, setHistogramData, setHistogramWindow, setLogScale, onHistogramRangeChange } from './histogram.js'
 import { readPermalink, writePermalink } from './permalink.js'
 
-// Where the Caddy service serves output-dir/.
-const BASE_URL = 'http://localhost:8080'
+// Where the Caddy service serves output-dir/ from (the web root at /).
+const BASE_URL = 'http://localhost:8080/data'
 
 // Minimum map zoom for a query; below this the bbox covers too many cells.
 const MIN_ZOOM = 12

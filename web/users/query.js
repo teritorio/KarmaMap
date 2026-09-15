@@ -1,5 +1,5 @@
 // User-profile + user-indicator queries across the non-partitioned Parquet
-// files written by --user-indicators, served by the :8080 data server.
+// files written by --user-indicators, served under /data/ by the :8080 server.
 // user_profiles.parquet is matched by exact username; the matching uid(s)
 // then select rows from user_indicators.parquet (uid-sorted, so a range
 // filter prunes pages, with exact membership kept client-side) and are
