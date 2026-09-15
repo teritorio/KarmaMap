@@ -40,6 +40,19 @@ struct StageRow {
     uint32_t relocated;
     uint32_t short_lived;
     uint32_t rapid_edit;
+    uint32_t relation_created;
+    uint32_t tag_amenity;
+    uint32_t tag_boundary;
+    uint32_t tag_building;
+    uint32_t tag_highway;
+    uint32_t tag_landuse;
+    uint32_t tag_leisure;
+    uint32_t tag_name;
+    uint32_t tag_natural;
+    uint32_t tag_place;
+    uint32_t tag_railway;
+    uint32_t tag_sport;
+    uint32_t tag_waterway;
 };
 
 // Writes one stage file with the exact schema the scan produces.
@@ -52,31 +65,36 @@ void write_stage(const std::string& path, const std::vector<StageRow>& rows) {
     arrow::UInt16Builder day;
     std::vector<arrow::UInt32Builder*> counters;
     std::vector<std::unique_ptr<arrow::UInt32Builder>> owned_counters;
-    for (size_t i = 0; i < 9; ++i) {
+    for (size_t i = 0; i < 22; ++i) {
         owned_counters.push_back(std::make_unique<arrow::UInt32Builder>());
         counters.push_back(owned_counters.back().get());
     }
 
     // Non-const accessors for the counter fields in declaration order.
-    uint32_t (StageRow::*members[9]) = {
+    uint32_t (StageRow::*members[22]) = {
         &StageRow::node_created, &StageRow::node_modified, &StageRow::node_deleted,
         &StageRow::way_created,  &StageRow::way_modified,  &StageRow::way_deleted,
         &StageRow::relocated,    &StageRow::short_lived,   &StageRow::rapid_edit,
+        &StageRow::relation_created,
+        &StageRow::tag_amenity,   &StageRow::tag_boundary,  &StageRow::tag_building,
+        &StageRow::tag_highway,   &StageRow::tag_landuse,   &StageRow::tag_leisure,
+        &StageRow::tag_name,      &StageRow::tag_natural,   &StageRow::tag_place,
+        &StageRow::tag_railway,   &StageRow::tag_sport,     &StageRow::tag_waterway,
     };
 
     for (const auto& r : rows) {
         append_ok(uid, r.uid);
         append_ok(username, r.username);
         append_ok(day, r.day);
-        for (size_t i = 0; i < 9; ++i) append_ok(*counters[i], r.*members[i]);
+        for (size_t i = 0; i < 22; ++i) append_ok(*counters[i], r.*members[i]);
     }
 
     std::shared_ptr<arrow::Array> a_uid, a_user, a_day;
-    std::vector<std::shared_ptr<arrow::Array>> a_counters(9);
+    std::vector<std::shared_ptr<arrow::Array>> a_counters(22);
     finish_ok(uid, &a_uid);
     finish_ok(username, &a_user);
     finish_ok(day, &a_day);
-    for (size_t i = 0; i < 9; ++i) finish_ok(*counters[i], &a_counters[i]);
+    for (size_t i = 0; i < 22; ++i) finish_ok(*counters[i], &a_counters[i]);
 
     auto schema = arrow::schema({
         arrow::field("uid", arrow::int64(), false),
@@ -91,6 +109,19 @@ void write_stage(const std::string& path, const std::vector<StageRow>& rows) {
         arrow::field("relocated", arrow::uint32(), false),
         arrow::field("short_lived", arrow::uint32(), false),
         arrow::field("rapid_edit", arrow::uint32(), false),
+        arrow::field("relation_created", arrow::uint32(), false),
+        arrow::field("tag_amenity", arrow::uint32(), false),
+        arrow::field("tag_boundary", arrow::uint32(), false),
+        arrow::field("tag_building", arrow::uint32(), false),
+        arrow::field("tag_highway", arrow::uint32(), false),
+        arrow::field("tag_landuse", arrow::uint32(), false),
+        arrow::field("tag_leisure", arrow::uint32(), false),
+        arrow::field("tag_name", arrow::uint32(), false),
+        arrow::field("tag_natural", arrow::uint32(), false),
+        arrow::field("tag_place", arrow::uint32(), false),
+        arrow::field("tag_railway", arrow::uint32(), false),
+        arrow::field("tag_sport", arrow::uint32(), false),
+        arrow::field("tag_waterway", arrow::uint32(), false),
     });
     std::vector<std::shared_ptr<arrow::Array>> columns = {a_uid, a_user, a_day};
     columns.insert(columns.end(), a_counters.begin(), a_counters.end());
@@ -112,6 +143,11 @@ struct IndicatorRows {
     std::vector<uint32_t> node_created;
     std::vector<uint32_t> relocated;
     std::vector<uint32_t> rapid_edit;
+    std::vector<uint32_t> relation_created;
+    std::vector<uint32_t> tag_amenity;
+    std::vector<uint32_t> tag_building;
+    std::vector<uint32_t> tag_highway;
+    std::vector<uint32_t> tag_waterway;
 };
 
 IndicatorRows read_indicators(const std::string& path) {
@@ -128,12 +164,27 @@ IndicatorRows read_indicators(const std::string& path) {
         static_cast<const arrow::UInt32Array*>(t->column(8)->chunk(0).get());
     const auto* rapid_edit =
         static_cast<const arrow::UInt32Array*>(t->column(10)->chunk(0).get());
+    const auto* relation_created =
+        static_cast<const arrow::UInt32Array*>(t->column(11)->chunk(0).get());
+    const auto* tag_amenity =
+        static_cast<const arrow::UInt32Array*>(t->column(12)->chunk(0).get());
+    const auto* tag_building =
+        static_cast<const arrow::UInt32Array*>(t->column(14)->chunk(0).get());
+    const auto* tag_highway =
+        static_cast<const arrow::UInt32Array*>(t->column(15)->chunk(0).get());
+    const auto* tag_waterway =
+        static_cast<const arrow::UInt32Array*>(t->column(23)->chunk(0).get());
     for (int64_t i = 0; i < t->num_rows(); ++i) {
         out.uid.push_back(uid->Value(i));
         out.day.push_back(day->Value(i));
         out.node_created.push_back(node_created->Value(i));
         out.relocated.push_back(relocated->Value(i));
         out.rapid_edit.push_back(rapid_edit->Value(i));
+        out.relation_created.push_back(relation_created->Value(i));
+        out.tag_amenity.push_back(tag_amenity->Value(i));
+        out.tag_building.push_back(tag_building->Value(i));
+        out.tag_highway.push_back(tag_highway->Value(i));
+        out.tag_waterway.push_back(tag_waterway->Value(i));
     }
     return out;
 }
@@ -180,15 +231,15 @@ TEST(UserIndicatorFinalize, ConcatenatesSortsAndDerives) {
     // Unsorted on purpose: uid 11's rows precede uid 10's in this file.
     write_stage(stage + "/stage_00000.parquet",
                 {
-                    {11, "bob", 2000, 0, 4, 0, 0, 0, 0, 0, 0, 0},
-                    {10, "alice", 1005, 6, 0, 0, 0, 0, 0, 0, 0, 0},
-                    {10, "alice", 1000, 5, 0, 0, 0, 0, 0, 0, 0, 1},
+                    {11, "bob", 2000, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                    {10, "alice", 1005, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                    {10, "alice", 1000, 5, 0, 0, 0, 0, 0, 0, 0, 1, 3, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0},
                 });
     // Second file: exercises multi-file concatenation.
     write_stage(stage + "/stage_00001.parquet",
                 {
-                    {10, "alice_alias", 1050, 0, 0, 0, 2, 0, 0, 0, 0, 0},
-                    {12, "", 3000, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+                    {10, "alice_alias", 1050, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+                    {12, "", 3000, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0},
                 });
 
     user_indicators::Thresholds thresholds;  // defaults: window 30, bulk 10
@@ -213,6 +264,15 @@ TEST(UserIndicatorFinalize, ConcatenatesSortsAndDerives) {
     EXPECT_EQ(ind.node_created[4], 1);  // uid 12
     EXPECT_EQ(ind.rapid_edit[0], 1);    // uid 10 day 1000, padded in the staging row
     EXPECT_EQ(ind.relocated[0], 0);
+    EXPECT_EQ(ind.relation_created[0], 3);       // uid 10 day 1000
+    EXPECT_EQ(ind.relation_created[1], 0);       // uid 10 day 1005
+    EXPECT_EQ(ind.relation_created[4], 0);       // uid 12
+    // Top12 tag counters survive per (uid, day).
+    EXPECT_EQ(ind.tag_amenity[0], 0);
+    EXPECT_EQ(ind.tag_building[0], 2);       // uid 10 day 1000
+    EXPECT_EQ(ind.tag_waterway[2], 1);       // uid 10 day 1050
+    EXPECT_EQ(ind.tag_highway[4], 1);        // uid 12
+    EXPECT_EQ(ind.tag_waterway[4], 0);
 
     const auto prof = read_profiles(profiles);
     // alice (bulk: 5+6 = 11 events within window >= 10), then alice_alias,
@@ -272,9 +332,9 @@ TEST(UserIndicatorFinalize, WindowAndBulkThresholdsApply) {
     // timeline is early; uid 21: 12 events across 8 days exceed the window.
     write_stage(stage + "/stage_00000.parquet",
                 {
-                    {21, "mallory", 1000, 6, 0, 0, 0, 0, 0, 0, 0, 0},
-                    {20, "eve", 5000, 3, 0, 0, 0, 0, 0, 0, 0, 0},
-                    {21, "mallory", 1006, 6, 0, 0, 0, 0, 0, 0, 0, 0},
+                    {21, "mallory", 1000, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                    {20, "eve", 5000, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                    {21, "mallory", 1006, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
                 });
 
     user_indicators::Thresholds thresholds;

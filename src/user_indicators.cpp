@@ -4,6 +4,8 @@
 #include <osmium/io/any_input.hpp>
 #include <osmium/osm/node.hpp>
 #include <osmium/osm/object.hpp>
+#include <osmium/osm/relation.hpp>
+#include <osmium/osm/tag.hpp>
 #include <osmium/osm/way.hpp>
 #include <osmium/visitor.hpp>
 
@@ -16,6 +18,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -34,10 +37,24 @@ namespace user_indicators {
 namespace {
 
 // Column order mirrors DayRow's member order.
-constexpr std::array<uint32_t DayRow::*, 9> kDayCounterMembers = {
+constexpr std::array<uint32_t DayRow::*, 22> kDayCounterMembers = {
     &DayRow::node_created, &DayRow::node_modified, &DayRow::node_deleted,
     &DayRow::way_created,  &DayRow::way_modified,  &DayRow::way_deleted,
     &DayRow::relocated,    &DayRow::short_lived,   &DayRow::rapid_edit,
+    &DayRow::relation_created,
+    &DayRow::tag_amenity,   &DayRow::tag_boundary,  &DayRow::tag_building,
+    &DayRow::tag_highway,   &DayRow::tag_landuse,   &DayRow::tag_leisure,
+    &DayRow::tag_name,      &DayRow::tag_natural,   &DayRow::tag_place,
+    &DayRow::tag_railway,   &DayRow::tag_sport,     &DayRow::tag_waterway,
+};
+
+// Top12 tag keys, in reputation aspect order (paper sec. 4, with "address"
+// replaced by "place": OSM address tagging uses the addr: prefix). Bit i of a
+// created object's tag mask maps to kTop12TagKeys[i] and the i-th tag_*
+// DayRow member / schema column.
+constexpr std::array<const char*, 12> kTop12TagKeys = {
+    "amenity", "boundary", "building", "highway", "landuse", "leisure",
+    "name",    "natural",  "place",    "railway", "sport",   "waterway",
 };
 
 // Builder Appends only fail on allocation; throw instead of ignoring the
@@ -74,6 +91,19 @@ std::shared_ptr<arrow::Schema> stage_schema() {
         arrow::field("relocated", arrow::uint32(), false),
         arrow::field("short_lived", arrow::uint32(), false),
         arrow::field("rapid_edit", arrow::uint32(), false),
+        arrow::field("relation_created", arrow::uint32(), false),
+        arrow::field("tag_amenity", arrow::uint32(), false),
+        arrow::field("tag_boundary", arrow::uint32(), false),
+        arrow::field("tag_building", arrow::uint32(), false),
+        arrow::field("tag_highway", arrow::uint32(), false),
+        arrow::field("tag_landuse", arrow::uint32(), false),
+        arrow::field("tag_leisure", arrow::uint32(), false),
+        arrow::field("tag_name", arrow::uint32(), false),
+        arrow::field("tag_natural", arrow::uint32(), false),
+        arrow::field("tag_place", arrow::uint32(), false),
+        arrow::field("tag_railway", arrow::uint32(), false),
+        arrow::field("tag_sport", arrow::uint32(), false),
+        arrow::field("tag_waterway", arrow::uint32(), false),
     });
 }
 
@@ -85,13 +115,13 @@ void write_stage_file(const std::string& path,
     arrow::Int64Builder uid_builder;
     arrow::StringBuilder username_builder;
     arrow::UInt16Builder date_builder;
-    std::array<arrow::UInt32Builder, 9> counter_builders;
+    std::array<arrow::UInt32Builder, 22> counter_builders;
 
     if (!uid_builder.Reserve(n).ok() || !username_builder.Reserve(n).ok() ||
         !date_builder.Reserve(n).ok()) {
         throw std::runtime_error("Reserve() failed while flushing user-indicator stage");
     }
-    for (size_t i = 0; i < 9; ++i) {
+    for (size_t i = 0; i < 22; ++i) {
         if (!counter_builders[i].Reserve(n).ok()) {
             throw std::runtime_error("Reserve() failed while flushing user-indicator stage");
         }
@@ -102,15 +132,15 @@ void write_stage_file(const std::string& path,
         append_checked(username_builder, entry.username);
         append_checked(date_builder, key.day);
         const DayRow& r = entry.row;
-        for (size_t i = 0; i < 9; ++i) append_checked(counter_builders[i], r.*kDayCounterMembers[i]);
+        for (size_t i = 0; i < 22; ++i) append_checked(counter_builders[i], r.*kDayCounterMembers[i]);
     }
 
     std::shared_ptr<arrow::Array> uid, username, date;
-    std::array<std::shared_ptr<arrow::Array>, 9> counters;
+    std::array<std::shared_ptr<arrow::Array>, 22> counters;
     finish_checked(uid_builder, &uid);
     finish_checked(username_builder, &username);
     finish_checked(date_builder, &date);
-    for (size_t i = 0; i < 9; ++i) finish_checked(counter_builders[i], &counters[i]);
+    for (size_t i = 0; i < 22; ++i) finish_checked(counter_builders[i], &counters[i]);
 
     std::vector<std::shared_ptr<arrow::Array>> columns = {uid, username, date};
     columns.insert(columns.end(), counters.begin(), counters.end());
@@ -142,14 +172,31 @@ public:
                     has_coords
                         ? std::optional<std::pair<double, double>>(
                               std::make_pair(loc.lat(), loc.lon()))
-                        : std::nullopt);
+                        : std::nullopt,
+                    created_tag_bits(node));
     }
 
     void way(const osmium::Way& way) {
         begin_object(ObjectKind::Way, way.id());
         add_version(static_cast<int64_t>(way.uid()), object_user(way),
                     version_day(way.timestamp()), way.visible(),
-                    static_cast<uint32_t>(way.version()), ObjectKind::Way, std::nullopt);
+                    static_cast<uint32_t>(way.version()), ObjectKind::Way, std::nullopt,
+                    created_tag_bits(way));
+    }
+
+    // Relations feed only the created counter: the OSMPatrol reputation is
+    // built from created objects, and relation runs must not touch the
+    // node/way run state. Location-less by nature, so no coords handling.
+    void relation(const osmium::Relation& relation) {
+        if (relation.visible() && relation.version() == 1) {
+            stats_.record_relation_created(static_cast<int64_t>(relation.uid()),
+                                           object_user(relation),
+                                           version_day(relation.timestamp()),
+                                           created_tag_bits(relation));
+            // Relation-only stretches never reach add_version()'s threshold
+            // check, so keep the accumulator bounded here too.
+            if (stats_.size() >= kFlushThreshold) flush_stage();
+        }
     }
 
     void finish() {
@@ -182,6 +229,25 @@ private:
         return std::string(user ? user : "");
     }
 
+    // Bitmask of which Top12 tag keys an object carries; tag aspect is
+    // counted on created objects only (paper sec. 4), so bare objects pass 0.
+    static uint32_t created_tag_bits(const osmium::OSMObject& object) {
+        return object.visible() && object.version() == 1 ? top12_tag_bits(object.tags()) : 0;
+    }
+
+    static uint32_t top12_tag_bits(const osmium::TagList& tags) {
+        uint32_t bits = 0;
+        for (const osmium::Tag& tag : tags) {
+            for (size_t i = 0; i < kTop12TagKeys.size(); ++i) {
+                if (std::strcmp(tag.key(), kTop12TagKeys[i]) == 0) {
+                    bits |= 1u << i;
+                    break;
+                }
+            }
+        }
+        return bits;
+    }
+
     static uint16_t version_day(const osmium::Timestamp& ts) {
         return h3_utils::require_u16_day(
             h3_utils::timestamp_to_utc_day(ts.seconds_since_epoch()));
@@ -189,9 +255,11 @@ private:
 
     void add_version(int64_t uid, const std::string& username, uint16_t day, bool visible,
                      uint32_t version, ObjectKind kind,
-                     std::optional<std::pair<double, double>> coords) {
+                     std::optional<std::pair<double, double>> coords,
+                     uint32_t created_tag_bits = 0) {
         versions_++;
-        stats_.add_version(uid, username, day, visible, version, kind, std::move(coords));
+        stats_.add_version(uid, username, day, visible, version, kind, std::move(coords),
+                           created_tag_bits);
         if (stats_.size() >= kFlushThreshold) flush_stage();
     }
 
@@ -276,7 +344,8 @@ void run_scan(const std::string& input_path, const std::string& stage_dir,
 
     osmium::io::File input_file(input_path);
     osmium::io::Reader reader(input_file,
-                              osmium::osm_entity_bits::node | osmium::osm_entity_bits::way);
+                              osmium::osm_entity_bits::node | osmium::osm_entity_bits::way |
+                                  osmium::osm_entity_bits::relation);
 
     ScanHandler handler(stage_dir, thresholds);
 
@@ -333,6 +402,11 @@ void run_finalize(const std::string& stage_dir, const std::string& profiles_path
 
     std::vector<std::shared_ptr<arrow::Array>> columns(schema->num_fields());
     for (size_t f = 0; f < column_lists.size(); ++f) {
+        if (column_lists[f].empty()) {
+            throw std::runtime_error("Stage column '" + schema->field(f)->name() +
+                                     "' is missing; rerun --user-indicators to "
+                                     "regenerate the stage files");
+        }
         if (column_lists[f].size() == 1) {
             columns[f] = column_lists[f][0];
         } else {
@@ -353,8 +427,8 @@ void run_finalize(const std::string& stage_dir, const std::string& profiles_path
     const auto* user_array = static_cast<const arrow::StringArray*>(combined->column(1)->chunk(0).get());
     const auto* day_array = static_cast<const arrow::UInt16Array*>(combined->column(2)->chunk(0).get());
 
-    std::array<std::shared_ptr<arrow::Array>, 9> counter_arrays;
-    for (size_t i = 0; i < 9; ++i) {
+    std::array<std::shared_ptr<arrow::Array>, 22> counter_arrays;
+    for (size_t i = 0; i < 22; ++i) {
         counter_arrays[i] = combined->column(3 + static_cast<int>(i))->chunk(0);
     }
 
@@ -363,7 +437,7 @@ void run_finalize(const std::string& stage_dir, const std::string& profiles_path
     // day, and the events within the new-user window.
     arrow::Int64Builder ind_uid_builder;
     arrow::UInt16Builder ind_day_builder;
-    std::array<arrow::UInt32Builder, 9> ind_counter_builders;
+    std::array<arrow::UInt32Builder, 22> ind_counter_builders;
 
     arrow::Int64Builder prof_uid_builder;
     arrow::StringBuilder prof_user_builder;
@@ -410,7 +484,7 @@ void run_finalize(const std::string& stage_dir, const std::string& profiles_path
 
         const uint16_t day = day_array->Value(i);
         DayRow day_row;
-        for (size_t c = 0; c < 9; ++c) {
+        for (size_t c = 0; c < 22; ++c) {
             const auto* arr = static_cast<const arrow::UInt32Array*>(counter_arrays[c].get());
             day_row.*kDayCounterMembers[c] = arr->Value(i);
         }
@@ -431,17 +505,17 @@ void run_finalize(const std::string& stage_dir, const std::string& profiles_path
 
         append_checked(ind_uid_builder, uid);
         append_checked(ind_day_builder, day);
-        for (size_t c = 0; c < 9; ++c) {
+        for (size_t c = 0; c < 22; ++c) {
             append_checked(ind_counter_builders[c], day_row.*kDayCounterMembers[c]);
         }
     }
     if (in_group) flush_profiles_group();
 
     std::shared_ptr<arrow::Array> ind_uid, ind_day;
-    std::array<std::shared_ptr<arrow::Array>, 9> ind_counters;
+    std::array<std::shared_ptr<arrow::Array>, 22> ind_counters;
     finish_checked(ind_uid_builder, &ind_uid);
     finish_checked(ind_day_builder, &ind_day);
-    for (size_t c = 0; c < 9; ++c) finish_checked(ind_counter_builders[c], &ind_counters[c]);
+    for (size_t c = 0; c < 22; ++c) finish_checked(ind_counter_builders[c], &ind_counters[c]);
 
     auto indicator_schema = arrow::schema({
         arrow::field("uid", arrow::int64(), false),
@@ -455,6 +529,19 @@ void run_finalize(const std::string& stage_dir, const std::string& profiles_path
         arrow::field("relocated", arrow::uint32(), false),
         arrow::field("short_lived", arrow::uint32(), false),
         arrow::field("rapid_edit", arrow::uint32(), false),
+        arrow::field("relation_created", arrow::uint32(), false),
+        arrow::field("tag_amenity", arrow::uint32(), false),
+        arrow::field("tag_boundary", arrow::uint32(), false),
+        arrow::field("tag_building", arrow::uint32(), false),
+        arrow::field("tag_highway", arrow::uint32(), false),
+        arrow::field("tag_landuse", arrow::uint32(), false),
+        arrow::field("tag_leisure", arrow::uint32(), false),
+        arrow::field("tag_name", arrow::uint32(), false),
+        arrow::field("tag_natural", arrow::uint32(), false),
+        arrow::field("tag_place", arrow::uint32(), false),
+        arrow::field("tag_railway", arrow::uint32(), false),
+        arrow::field("tag_sport", arrow::uint32(), false),
+        arrow::field("tag_waterway", arrow::uint32(), false),
     });
     std::vector<std::shared_ptr<arrow::Array>> indicator_columns = {ind_uid, ind_day};
     indicator_columns.insert(indicator_columns.end(), ind_counters.begin(), ind_counters.end());

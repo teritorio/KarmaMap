@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -178,6 +179,111 @@ TEST(UserIndicatorRules, ZeroUidIsCounted) {
     s.end_object();
     EXPECT_EQ(row_of(s, 0, day(100)).row.node_created, 1);
     EXPECT_EQ(row_of(s, 0, day(100)).username, "");
+}
+
+TEST(UserIndicatorRules, RelationCreatedIsIsolated) {
+    Thresholds t;
+    UserEventStats s(t);
+    // Relations count only visible v1 versions and never touch the node/way
+    // run state (no short_lived/rapid_edit, no total_events contribution).
+    s.record_relation_created(6, "alice", day(100));
+    s.record_relation_created(6, "alice", day(100));
+    s.record_relation_created(6, "alice", day(101));
+
+    EXPECT_EQ(row_of(s, 6, day(100)).row.relation_created, 2);
+    EXPECT_EQ(row_of(s, 6, day(100)).row.total_events(), 0);
+    EXPECT_EQ(row_of(s, 6, day(101)).row.relation_created, 1);
+}
+
+TEST(UserIndicatorRules, RelationCreatedKeepsNodeRunState) {
+    Thresholds t;
+    UserEventStats s(t);
+    s.begin_object();
+    s.add_version(6, "alice", day(100), true, 1, ObjectKind::Node, std::nullopt);
+    s.end_object();
+    // A relation creation does not disturb the node/way counters already
+    // recorded, and shares the (uid, day) entry.
+    s.record_relation_created(6, "alice", day(100));
+
+    auto r = row_of(s, 6, day(100));
+    EXPECT_EQ(r.row.node_created, 1);
+    EXPECT_EQ(r.row.relation_created, 1);
+    EXPECT_EQ(r.username, "alice");
+}
+
+TEST(UserIndicatorRules, CreatedTagsAccumulatePerDayAndObject) {
+    Thresholds t;
+    UserEventStats s(t);
+    // amenity + building on one node, building on a way, same (uid, day).
+    s.begin_object();
+    s.add_version(7, "alice", day(100), true, 1, ObjectKind::Node, std::nullopt, 0b101);
+    s.end_object();
+    s.begin_object();
+    s.add_version(7, "alice", day(100), true, 1, ObjectKind::Way, std::nullopt, 0b100);
+    s.end_object();
+
+    auto r = row_of(s, 7, day(100));
+    EXPECT_EQ(r.row.tag_amenity, 1);    // bit 0
+    EXPECT_EQ(r.row.tag_building, 2);   // bit 2: both objects
+    EXPECT_EQ(r.row.tag_boundary, 0);
+    EXPECT_EQ(r.row.tag_highway, 0);    // bit 3
+    EXPECT_EQ(r.row.relation_created, 0);
+}
+
+TEST(UserIndicatorRules, TagsIgnoredOnModifyAndDelete) {
+    Thresholds t;
+    UserEventStats s(t);
+    s.begin_object();
+    s.add_version(7, "alice", day(100), true, 1, ObjectKind::Node, std::nullopt, 0b001);
+    s.add_version(7, "alice", day(101), true, 2, ObjectKind::Node, std::nullopt, 0b001);
+    s.add_version(7, "alice", day(102), false, 3, ObjectKind::Node, std::nullopt, 0b001);
+    s.add_version(7, "alice", day(103), true, 1, ObjectKind::Way, std::nullopt, 0b001);
+    s.end_object();
+
+    // Tags count on the creation only; later versions of the same object add
+    // nothing even if the caller passes a mask.
+    EXPECT_EQ(row_of(s, 7, day(100)).row.tag_amenity, 1);
+    EXPECT_EQ(row_of(s, 7, day(101)).row.tag_amenity, 0);
+    EXPECT_EQ(row_of(s, 7, day(102)).row.tag_amenity, 0);
+    EXPECT_EQ(row_of(s, 7, day(103)).row.tag_amenity, 1);
+}
+
+TEST(UserIndicatorRules, RelationCreatedTagsAccumulate) {
+    Thresholds t;
+    UserEventStats s(t);
+    s.record_relation_created(6, "alice", day(100), 0b110);  // boundary + building
+    s.record_relation_created(6, "alice", day(100), 0b100);  // building again
+
+    auto r = row_of(s, 6, day(100));
+    EXPECT_EQ(r.row.relation_created, 2);
+    EXPECT_EQ(r.row.tag_boundary, 1);
+    EXPECT_EQ(r.row.tag_building, 2);
+    EXPECT_EQ(r.row.tag_waterway, 0);
+}
+
+TEST(UserIndicatorRules, TagBitsMapToIndependentCounters) {
+    Thresholds t;
+    UserEventStats s(t);
+    // Bit i of a created object's mask touches exactly the i-th tag counter.
+    const std::uint32_t kTagCount = 12;
+    for (std::uint32_t i = 0; i < kTagCount; ++i) {
+        // One object per (uid, day), so each row shows a single isolated bit.
+        s.begin_object();
+        s.add_version(9, "alice", day(100 + i), true, 1, ObjectKind::Node, std::nullopt,
+                      1u << i);
+        s.end_object();
+    }
+    for (std::uint32_t i = 0; i < kTagCount; ++i) {
+        const auto& row = row_of(s, 9, day(100 + i)).row;
+        const std::array<std::uint32_t, kTagCount> tag_total = {
+            row.tag_amenity,  row.tag_boundary,  row.tag_building, row.tag_highway,
+            row.tag_landuse,  row.tag_leisure,   row.tag_name,     row.tag_natural,
+            row.tag_place,    row.tag_railway,   row.tag_sport,    row.tag_waterway,
+        };
+        for (std::uint32_t j = 0; j < kTagCount; ++j) {
+            EXPECT_EQ(tag_total[j], (i == j) ? 1u : 0u) << "bit " << i << " vs counter " << j;
+        }
+    }
 }
 
 }  // namespace

@@ -7,18 +7,37 @@
 //                            (uid, username, first_edit_day, first_seen_day,
 //                             bulk_new_user)
 //   user_indicators.parquet  per (uid, change_date) activity counters
-//                            (uid, change_date, 9 counters)
+//                            (uid, change_date, node/way/relation counters,
+//                             relocated, short_lived, rapid_edit, tag_*)
 //
 // Both are non-partitioned, with user_profiles sorted by (uid,
 // first_edit_day) and user_indicators by (uid, change_date), for cheap
 // joins on uid.
 //
 // The scan is a single streaming pass over the history (entity bits
-// node|way). OSM full-history files are sorted by (object id, version), so
-// all versions of one object are contiguous: each object's run is scored and
-// forgotten as the stream advances (O(1) object state), and every event is
-// attributed to the editing (uid, day). No changeset metadata is required.
+// node|way|relation). OSM full-history files are sorted by (object id,
+// version), so all versions of one object are contiguous: each object's run
+// is scored and forgotten as the stream advances (O(1) object state), and
+// every event is attributed to the editing (uid, day). No changeset
+// metadata is required.
+//
+// Relations contribute only a created counter (record_relation_created).
+// Following the OSMPatrol model (Neis, Goetz & Zipf 2012), the per-user
+// reputation is built from the objects a contributor created; modifications
+// and deletions only feed the edit-level vandalism value (former-owner
+// reputation, former version number, edit date), approximated here by the
+// short_lived and rapid_edit counters. Relation modifies/deletes are
+// therefore not counted, and total_events() deliberately excludes them too.
+//
+// The reputation's tag aspect counts the "Top12" most-used tags (up to 4
+// points each, paper sec. 4) on created objects, one counter per tag (see
+// kTop12TagKeys in user_indicators.cpp for the key order: bit i of a created
+// object's tag mask maps to DayRow member i). The paper's "address" key is
+// replaced by "place", since OSM address tagging uses the addr: prefix.
+// Like relation_created, tag usage is reputation-only and never part of
+// total_events().
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -46,7 +65,8 @@ struct Thresholds {
 
 enum class ObjectKind { Node, Way };
 
-// Per-(uid, change_date) counters.
+// Per-(uid, change_date) counters. The tag_* counters mirror the Top12 tag
+// key order in kTop12TagKeys (user_indicators.cpp); see apply_created_tags().
 struct DayRow {
     uint32_t node_created = 0;
     uint32_t node_modified = 0;
@@ -57,7 +77,22 @@ struct DayRow {
     uint32_t relocated = 0;
     uint32_t short_lived = 0;
     uint32_t rapid_edit = 0;
+    uint32_t relation_created = 0;
+    uint32_t tag_amenity = 0;
+    uint32_t tag_boundary = 0;
+    uint32_t tag_building = 0;
+    uint32_t tag_highway = 0;
+    uint32_t tag_landuse = 0;
+    uint32_t tag_leisure = 0;
+    uint32_t tag_name = 0;
+    uint32_t tag_natural = 0;
+    uint32_t tag_place = 0;
+    uint32_t tag_railway = 0;
+    uint32_t tag_sport = 0;
+    uint32_t tag_waterway = 0;
 
+    // Only node/way events count as edits; relations are tracked for the
+    // reputation's created-relations aspect, not for activity volume.
     uint32_t total_events() const {
         return node_created + node_modified + node_deleted + way_created +
                way_modified + way_deleted;
@@ -114,7 +149,8 @@ public:
 
     void add_version(int64_t uid, const std::string& username, uint16_t day, bool visible,
                      uint32_t version, ObjectKind kind,
-                     std::optional<std::pair<double, double>> coords) {
+                     std::optional<std::pair<double, double>> coords,
+                     uint32_t created_tag_bits = 0) {
         if (!run_.active) begin_object();
         if (!run_.first_seen) {
             run_.first_day = day;
@@ -142,6 +178,9 @@ public:
             } else {
                 r.way_created++;
             }
+            // Reputation's tag aspect counts the Top12 tags used during the
+            // creation only (paper sec. 4).
+            apply_created_tags(r, created_tag_bits);
         } else {
             if (kind == ObjectKind::Node) {
                 r.node_modified++;
@@ -177,6 +216,18 @@ public:
 
     void end_object() { run_.active = false; }
 
+    // Isolated relation-created accounting: relations arrive as their own
+    // contiguous runs, but only visible v1 versions count, and they must not
+    // influence the node/way totalled run state (short_lived, rapid_edit).
+    void record_relation_created(int64_t uid, const std::string& username, uint16_t day,
+                                 uint32_t created_tag_bits = 0) {
+        UserDayEntry& e = days_[UserDayKey{uid, day}];
+        if (e.username.empty()) e.username = username;
+        DayRow& r = e.row;
+        r.relation_created++;
+        apply_created_tags(r, created_tag_bits);
+    }
+
     const std::unordered_map<UserDayKey, UserDayEntry, UserDayKeyHash>& days() const {
         return days_;
     }
@@ -186,6 +237,22 @@ public:
     size_t size() const { return days_.size(); }
 
 private:
+    // Spreads a created object's Top12 tag mask into the per-tag counters.
+    // Bit i of the mask corresponds to kTop12TagKeys[i] and the i-th tag_*
+    // DayRow member (declaration order above).
+    static constexpr size_t kTagCount = 12;
+    static void apply_created_tags(DayRow& r, uint32_t bits) {
+        static constexpr std::array<uint32_t DayRow::*, kTagCount> kTagMembers = {
+            &DayRow::tag_amenity,   &DayRow::tag_boundary,  &DayRow::tag_building,
+            &DayRow::tag_highway,   &DayRow::tag_landuse,   &DayRow::tag_leisure,
+            &DayRow::tag_name,      &DayRow::tag_natural,   &DayRow::tag_place,
+            &DayRow::tag_railway,   &DayRow::tag_sport,     &DayRow::tag_waterway,
+        };
+        for (uint32_t i = 0; i < kTagCount; ++i) {
+            if (bits & (1u << i)) ++(r.*kTagMembers[i]);
+        }
+    }
+
     struct RunState {
         bool active = false;
         bool first_seen = false;

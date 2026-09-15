@@ -31,9 +31,10 @@ below.
 
 An optional, H3-independent pass that scores history **per user and per UTC
 day** with cheap OSMPatrol-style heuristics, targeting vandalism/bulk
-editors. It is a single streaming scan over the node and way history
-(no changeset metadata is needed) plus one in-memory finalize, and is
-independent of passes 1-3. It writes two non-partitioned Parquet files:
+editors. It is a single streaming scan over the node and way history plus
+relation creations (no changeset metadata is needed) and one in-memory
+finalize, and is independent of passes 1-3. It writes two non-partitioned
+Parquet files:
 
 ```
 output-dir/
@@ -65,16 +66,29 @@ output-dir/
   | `relocated` | `uint32` | Node versions moved > `--relocate-meters` |
   | `short_lived` | `uint32` | Deletes of objects created ≤ `--short-life-days` earlier |
   | `rapid_edit` | `uint32` | Object versions arriving with ≥ `--rapid-edit-versions` versions within `--rapid-edit-window-days` |
+  | `relation_created` | `uint32` | Relation creations (reputation only, see below) |
+  | `tag_amenity` … `tag_waterway` | `uint32` | Top12 tag usage on created objects (reputation, see below) |
 
   Sorted by `(uid, change_date)`.
 
 Derivation notes:
 
 - Every version event is attributed to the editing `(uid, day)`; day totals
-  are sums of the six change counters. `relocated` compares consecutive
-  versions of the same node (version-to-version move), `short_lived` counts
-  an object's delete relative to its own first version, and `rapid_edit`
-  counts each version that brings its object's rolling window up to threshold.
+  are sums of the six node/way change counters. `relocated` compares
+  consecutive versions of the same node (version-to-version move),
+  `short_lived` counts an object's delete relative to its own first version,
+  and `rapid_edit` counts each version that brings its object's rolling
+  window up to threshold.
+- `relation_created` is counted for visible version-1 relations only.
+  Relation creations feed the OSMPatrol reputation (built from *created*
+  objects only); modifies/deletes are not counted, and relations are
+  excluded from day totals and `bulk_new_user`. The heuristic follows
+  Neis, Goetz & Zipf, *ISPRS Int. J. Geo-Inf.* 2012, 1(3), 315-332.
+- The `tag_*` columns mirror the paper's "Top12" most-used tags, one counter
+  per tag (12 × 4 = 48 reputation points), counted only at object creation.
+  The paper's `address` key is replaced by `place`, as OSM address tagging
+  uses the `addr:` prefix. Like relations, tag usage is reputation-only and
+  excluded from day totals.
 - `bulk_new_user` is derived in finalize from the daily rows themselves
   (the events within `new_user_window_days` of the user's first seen day),
   so it needs no extra history scan; it is uid-level and shared across a
@@ -99,7 +113,8 @@ SELECT p.username,
        DATE '1970-01-01' + i.change_date AS change_date,
        i.node_created + i.node_modified + i.node_deleted +
        i.way_created + i.way_modified + i.way_deleted AS edits,
-       i.relocated, i.short_lived, i.rapid_edit
+       i.relocated, i.short_lived, i.rapid_edit, i.relation_created,
+       i.tag_highway, i.tag_building
 FROM read_parquet('output-dir/user_profiles.parquet') p
 JOIN read_parquet('output-dir/user_indicators.parquet') i USING (uid)
 WHERE p.bulk_new_user
@@ -125,7 +140,7 @@ indicators file small.
 | Deleted way with a previously known geometry | Counted on the last known geometry |
 | Deleted way with no previously known geometry | Skipped |
 | Visible way with no nodes | Skipped |
-| Relations | Out of scope, ignored |
+| Relations | Out of scope for the change-counting passes; the `--user-indicators` pass counts relation creations only |
 | Node cells of a way | Each distinct node cell counted once per way version |
 | Time zone | Strict UTC |
 | Source file ordering | Assumed sorted by `(id, version)` ascending, as documented for OSM full-history files |
@@ -355,15 +370,18 @@ The `caddy` service serves two things as static files, with range requests
 docker compose up caddy
 ```
 
-Then open `http://localhost:8081/`. The frontend (`web/`) is a small
-no-build bundle of ES modules (hyparquet, h3-js, maplibre-gl, echarts via
-an `importmap`). It reads `manifest.json` for the resolution and month
-partitions, fetches the selected month files, prunes rows via `parquetQuery`
-row-group/page statistics on the `h3_cell` and `change_date` columns, and
-renders aggregated H3 cells on the map plus a day-by-day histogram; pan/zoom
-and the date range re-query automatically (debounced). `BASE_URL` in
-`app.js` (default `http://localhost:8080`) is where `manifest.json` and the
-partitions are fetched from.
+Then open `http://localhost:8081/`.
+
+- **`/changes/`** — the changes viewer: a map of aggregated H3 cells and a
+  day-by-day histogram. Pan/zoom and the date range re-query automatically
+  (debounced). `BASE_URL` in `app.js` (default `http://localhost:8080`) is
+  where `manifest.json` and the partitions are fetched from.
+- **`/users/`** — the users viewer: look up an OSM username to see their
+  OSMPatrol reputation (0-100, built from created nodes/ways/relations and
+  capped at the paper's per-aspect weights, with edit-suspicion chips), raw
+  indicator totals (relocated, short-lived, rapid-edits, etc.) and an
+  edit-activity timeline over the user-indicator files generated by
+  `--user-indicators`.
 
 ## Testing on a small region before the full planet
 
