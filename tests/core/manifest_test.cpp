@@ -76,7 +76,7 @@ TEST(Manifest, WritesUserDatasetEntries) {
     {
         std::ofstream(dir.join("user_indicators.parquet")) << "x\n";
         std::ofstream(dir.join("user_profiles.parquet")) << "y\n";
-        std::ofstream(dir.join("user_reputation_distribution.parquet")) << "z\n";
+        std::ofstream(dir.join("user_reputation.parquet")) << "z\n";
     }
     manifest::write_manifest(dir.path(), 4);
 
@@ -85,7 +85,7 @@ TEST(Manifest, WritesUserDatasetEntries) {
               std::string::npos);
     EXPECT_NE(json.find("\"user_profiles\": { \"path\": \"user_profiles.parquet\", \"partitions\": [] }"),
               std::string::npos);
-    EXPECT_NE(json.find("\"user_reputation_distribution\": { \"path\": \"user_reputation_distribution.parquet\", \"partitions\": [] }"),
+    EXPECT_NE(json.find("\"user_reputation\": { \"path\": \"user_reputation.parquet\", \"partitions\": [] }"),
               std::string::npos);
 }
 
@@ -97,7 +97,7 @@ TEST(Manifest, SkipsUserDatasetsWhenAbsent) {
     const std::string json = read_file(dir.join("manifest.json"));
     EXPECT_EQ(json.find("\"user_indicators\""), std::string::npos);
     EXPECT_EQ(json.find("\"user_profiles\""), std::string::npos);
-    EXPECT_EQ(json.find("\"user_reputation_distribution\""), std::string::npos);
+    EXPECT_EQ(json.find("\"user_reputation\""), std::string::npos);
 }
 
 TEST(Manifest, MissingOutputDirThrows) {

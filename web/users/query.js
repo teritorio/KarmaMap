@@ -1,11 +1,13 @@
-// User-profile + user-indicator queries across the two non-partitioned
-// Parquet files written by --user-indicators, served by the :8080 data
-// server. user_profiles.parquet is matched by exact username; the matching
-// uid(s) then select rows from user_indicators.parquet (uid-sorted, so a
-// range filter prunes pages, with exact membership kept client-side) and
-// are aggregated into raw per-indicator totals, an OSMPatrol reputation
-// (created objects only, per the paper), edit-suspicion signals, and a
-// per-day edit timeline.
+// User-profile + user-indicator queries across the non-partitioned Parquet
+// files written by --user-indicators, served by the :8080 data server.
+// user_profiles.parquet is matched by exact username; the matching uid(s)
+// then select rows from user_indicators.parquet (uid-sorted, so a range
+// filter prunes pages, with exact membership kept client-side) and are
+// aggregated into raw per-indicator totals, an OSMPatrol reputation, and a
+// per-day edit timeline. The reputation itself comes from
+// user_reputation.parquet (one exact per-uid row: reputation + all indicator
+// totals + per-aspect points/pct/active/max computed in C++), so no ranking
+// or percentile math runs in the browser.
 
 import { parquetQuery, asyncBufferFromUrl } from 'hyparquet'
 import { compressors } from 'hyparquet-compressors'
@@ -43,49 +45,6 @@ export const REP_FORMULA =
 // new/low-reputation (reputation < 5%) users. Daily counters approximate the
 // hourly rule with a per-day cutoff; the pipeline flags relocation at 500 m.
 const SUSPICION_CHANGES_PER_DAY = 500
-
-// One pass over user_reputation_distribution.parquet yields the per-aspect
-// equal-mass CDF samples used to rank each contributor's percentile. The file
-// is written by run_finalize (C++) and is small enough to cache once per
-// page-session. A missing file degrades each aspect to 0.
-let distCache = null
-let distCachePath = null
-
-// The per-aspect shape consumed by computeReputation; an empty instance
-// degrades every aspect to 0 (used when the distribution file is absent).
-export function emptyDistribution() {
-  const newDist = () => ({ entries: [], active: 0, max: 0 })
-  return {
-    nodes: newDist(),
-    ways: newDist(),
-    relations: newDist(),
-    tags: Array.from({ length: TOP12_TAGS.length }, newDist),
-  }
-}
-
-export async function datasetDistribution(baseUrl, path) {
-  if (distCache && distCachePath === path) return distCache
-  const rows = await queryRows(baseUrl, path, () => true)
-  const distribution = emptyDistribution()
-  const map = new Map([
-    ['node_created', distribution.nodes],
-    ['way_created', distribution.ways],
-    ['relation_created', distribution.relations],
-    ...TOP12_TAGS.map((key, i) => [`tag_${key}`, distribution.tags[i]]),
-  ])
-  for (const row of rows) {
-    const dist = map.get(row.aspect)
-    if (!dist) continue
-    dist.entries.push({ value: Number(row.value), less: Number(row.less) })
-    dist.active = Number(row.active)
-  }
-  for (const dist of map.values()) {
-    if (dist.entries.length > 0) dist.max = dist.entries[dist.entries.length - 1].value
-  }
-  distCache = distribution
-  distCachePath = path
-  return distribution
-}
 
 export function dayKey(changeDate) {
   return new Date(Number(changeDate) * 86400000).toISOString().slice(0, 10)
@@ -129,56 +88,62 @@ export async function queryIndicators(baseUrl, path, uids) {
   return rows.filter((row) => uidSet.has(Number(row.uid)))
 }
 
-// OSMPatrol reputation (0..100): each created-object and Top12-tag aspect is
-// capped at its paper weight and scored by the user's percentile rank among
-// the dataset's contributors active on that aspect (raw count > 0): no
-// activity scores 0, a unique busiest contributor scores the full weight, and
-// equal counts share the same rank.
-export function computeReputation(counters, distribution) {
-  const rankPoint = (total, cap, dist) => {
-    if (total <= 0 || dist.active === 0) return { points: 0, pct: 0 }
-    if (dist.active === 1) return { points: cap, pct: 100 }
-    const entries = dist.entries
-    let lo = 0
-    let hi = entries.length
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1
-      if (entries[mid].value <= total) lo = mid + 1
-      else hi = mid
+// Same uid-range pattern on user_reputation.parquet (uid-sorted, one row per
+// user). Fetching does not download the per-day indicator table.
+export async function queryReputation(baseUrl, path, uids) {
+  if (uids.length === 0) return []
+  const minUid = Math.min(...uids)
+  const maxUid = Math.max(...uids)
+  const uidSet = new Set(uids)
+  const rows = await queryRows(baseUrl, path, { uid: { $gte: minUid, $lte: maxUid } })
+  return rows.filter((row) => uidSet.has(Number(row.uid)))
+}
+
+// OSMPatrol reputation (0..100): taken verbatim from the exact per-uid row of
+// user_reputation.parquet, whose per-aspect points/pct/active/max were
+// computed in C++ (aspect capped at its paper weight, scored by the user's
+// percentile rank among the contributors active on that aspect: no activity
+// scores 0, a unique busiest contributor scores the full weight, and equal
+// counts share the same rank). `row` is one wide per-uid row; when it is
+// absent (dataset missing from the manifest), every aspect degrades to 0.
+export function computeReputation(row) {
+  if (!row) {
+    const detail = (key, label, cap) => ({
+      key, label, cap, raw: 0, max: 0, active: 0, points: 0, pct: 0,
+    })
+    return {
+      value: 0,
+      max: REP_MAX,
+      note: REP_NOTE,
+      details: [
+        detail('node', 'Created nodes', REP_CAPS.node),
+        detail('way', 'Created ways', REP_CAPS.way),
+        detail('relation', 'Created relations', REP_CAPS.relation),
+        ...TOP12_TAGS.map((key) => detail(`tag_${key}`, `Tag ${key}`, REP_TAG_CAP)),
+      ],
     }
-    const less = lo === 0 ? 0 : entries[lo - 1].less
-    const pct = (100 * less) / (dist.active - 1)
-    return { points: (cap * less) / (dist.active - 1), pct }
   }
-  const round = (v) => Math.round(v * 100) / 100
-  const node = rankPoint(counters.node_created, REP_CAPS.node, distribution.nodes)
-  const way = rankPoint(counters.way_created, REP_CAPS.way, distribution.ways)
-  const relation = rankPoint(counters.relation_created, REP_CAPS.relation, distribution.relations)
-  const tags = TOP12_TAGS.map((_, i) =>
-    rankPoint(counters[TAG_COUNTERS[i]], REP_TAG_CAP, distribution.tags[i]))
-  const detail = (key, label, cap, raw, dist, points, pct) => ({
-    key, label, cap,
-    raw: Number(raw ?? 0),
-    max: dist.max,
-    active: dist.active,
-    points: round(points),
-    pct,
+  const round = (v) => Math.round(Number(v) * 100) / 100
+  const detail = (key, label, cap, counter) => ({
+    key,
+    label,
+    cap,
+    raw: Number(row[counter] ?? 0),
+    max: Number(row[`${key}_max`] ?? 0),
+    active: Number(row[`${key}_active`] ?? 0),
+    points: round(row[`${key}_points`] ?? 0),
+    pct: Number(row[`${key}_pct`] ?? 0),
   })
-  const objectDetails = [
-    detail('node', 'Created nodes', REP_CAPS.node, counters.node_created, distribution.nodes, node.points, node.pct),
-    detail('way', 'Created ways', REP_CAPS.way, counters.way_created, distribution.ways, way.points, way.pct),
-    detail('relation', 'Created relations', REP_CAPS.relation, counters.relation_created, distribution.relations, relation.points, relation.pct),
-  ]
-  const tagDetails = TOP12_TAGS.map((key, i) =>
-    detail(TAG_COUNTERS[i], `Tag ${key}`, REP_TAG_CAP, counters[TAG_COUNTERS[i]],
-      distribution.tags[i], tags[i].points, tags[i].pct))
-  const tagPoints = tags.reduce((sum, t) => sum + t.points, 0)
-  const details = [...objectDetails, ...tagDetails]
   return {
-    value: Math.round(node.points + way.points + relation.points + tagPoints),
+    value: Number(row.reputation),
     max: REP_MAX,
     note: REP_NOTE,
-    details,
+    details: [
+      detail('node', 'Created nodes', REP_CAPS.node, 'node_created'),
+      detail('way', 'Created ways', REP_CAPS.way, 'way_created'),
+      detail('relation', 'Created relations', REP_CAPS.relation, 'relation_created'),
+      ...TAG_COUNTERS.map((key) => detail(key, `Tag ${key.slice(4)}`, REP_TAG_CAP, key)),
+    ],
   }
 }
 
@@ -200,7 +165,7 @@ export function computeSuspicion(counters, bulkNewUser, maxDayChanges, reputatio
 // Raw totals across the user's full timeline: every counter summed, total
 // edits, the activity-by-day timeline, and the profile summary values,
 // together with the OSMPatrol reputation and edit-suspicion signals.
-export function computeScores(profiles, indicatorRows, distribution) {
+export function computeScores(profiles, indicatorRows, reputationRows) {
   const counters = {}
   for (const key of ALL_COUNTERS) counters[key] = 0
 
@@ -222,7 +187,9 @@ export function computeScores(profiles, indicatorRows, distribution) {
 
   const totalEdits = CHANGE_COUNTERS.reduce((sum, k) => sum + counters[k], 0)
   const bulkNewUser = profiles.some((p) => p.bulk_new_user)
-  const reputation = computeReputation(counters, distribution)
+  // One reputation row per uid; a username maps to a single uid in practice,
+  // so the first match carries the score (missing dataset degrades to 0).
+  const reputation = computeReputation(reputationRows.length ? reputationRows[0] : null)
   return {
     uid: profiles.length ? Math.min(...profiles.map((p) => p.uid)) : null,
     firstSeenDay: profiles.length ? Math.min(...profiles.map((p) => p.first_seen_day)) : null,

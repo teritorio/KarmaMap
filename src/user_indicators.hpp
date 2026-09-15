@@ -1,7 +1,7 @@
 #pragma once
 
 // User-indicator computation: an optional, H3-independent mode that scores
-// the OSM full history per contributing user and per UTC day. Two outputs:
+// the OSM full history per contributing user and per UTC day. Three outputs:
 //
 //   user_profiles.parquet    per (uid, username) validity segment
 //                            (uid, username, first_edit_day, first_seen_day,
@@ -9,10 +9,13 @@
 //   user_indicators.parquet  per (uid, change_date) activity counters
 //                            (uid, change_date, node/way/relation counters,
 //                             relocated, short_lived, rapid_edit, tag_*)
+//   user_reputation.parquet  per-uid reputation + full indicator totals
+//                            (uid, reputation, 22 counter totals,
+//                             per-aspect points/pct/active/max)
 //
-// Both are non-partitioned, with user_profiles sorted by (uid,
-// first_edit_day) and user_indicators by (uid, change_date), for cheap
-// joins on uid.
+// All three are non-partitioned, with user_profiles sorted by (uid,
+// first_edit_day), user_indicators by (uid, change_date) and
+// user_reputation.parquet by uid, for cheap joins on uid.
 //
 // The scan is a single streaming pass over the history (entity bits
 // node|way|relation). OSM full-history files are sorted by (object id,

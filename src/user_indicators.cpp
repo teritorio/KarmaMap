@@ -30,7 +30,7 @@
 
 #include "arrow_table_io.hpp"
 #include "h3_utils.hpp"
-#include "reputation_distribution.hpp"
+#include "reputation.hpp"
 
 namespace user_indicators {
 
@@ -521,11 +521,13 @@ void run_finalize(const std::string& stage_dir, const std::string& profiles_path
     std::filesystem::rename(indicators_tmp, indicators_path);
     std::filesystem::rename(profiles_tmp, profiles_path);
 
-    // Per-uid sums of the reputation counters (created objects + Top12 tags)
-    // feed the compact CDF proxy written next to the indicators file. The
-    // three created-object aspects are bound to their kCounters columns by
-    // name; the tag columns are always the trailing kTagCount entries, in
-    // kTop12TagKeys order, so a schema change cannot silently move an aspect.
+    // Per-uid sums of all 22 indicator counters, in the (uid) order of the
+    // sorted indicator table. The three created-object aspects are bound to
+    // their kCounters columns by name; the tag columns are always the
+    // trailing kTagCount entries, in kTop12TagKeys order, so a schema change
+    // cannot silently move an aspect. Storing every counter total (not just
+    // the reputation aspects) lets the file double as the running per-user
+    // totals for a later incremental update pass.
     constexpr size_t kRepAspectCount = 3 + kTagCount;
     constexpr auto counter_index = [](std::string_view name) -> size_t {
         for (size_t i = 0; i < kCounterCount; ++i) {
@@ -537,22 +539,20 @@ void run_finalize(const std::string& stage_dir, const std::string& profiles_path
     std::array<size_t, kRepAspectCount> rep_counter_idx = {
         counter_index("node_created"), counter_index("way_created"),
         counter_index("relation_created")};
-    std::array<std::string, kRepAspectCount> rep_aspect_names = {
-        "node_created", "way_created", "relation_created"};
-    for (size_t i = 0; i < kTagCount; ++i) {
-        rep_counter_idx[3 + i] = kFirstTag + i;
-        rep_aspect_names[3 + i] = "tag_" + std::string(kTop12TagKeys[i]);
-    }
-    std::array<std::vector<uint64_t>, kRepAspectCount> rep_totals;
+    for (size_t i = 0; i < kTagCount; ++i) rep_counter_idx[3 + i] = kFirstTag + i;
+
+    std::vector<int64_t> rep_uids;
+    std::array<std::vector<uint64_t>, kCounterCount> counter_sums;
     {
-        std::array<uint64_t, kRepAspectCount> acc{};
+        std::array<uint64_t, kCounterCount> acc{};
         int64_t cur = 0;
         bool in = false;
         const auto* uid_arr = static_cast<const arrow::Int64Array*>(ind_uid.get());
         const auto flush = [&]() {
             if (!in) return;
-            for (size_t a = 0; a < kRepAspectCount; ++a) {
-                if (acc[a] > 0) rep_totals[a].push_back(acc[a]);
+            rep_uids.push_back(cur);
+            for (size_t c = 0; c < kCounterCount; ++c) {
+                counter_sums[c].push_back(acc[c]);
             }
         };
         for (int64_t i = 0; i < uid_arr->length(); ++i) {
@@ -566,56 +566,112 @@ void run_finalize(const std::string& stage_dir, const std::string& profiles_path
                 cur = u;
                 acc.fill(0);
             }
-            for (size_t a = 0; a < kRepAspectCount; ++a) {
+            for (size_t c = 0; c < kCounterCount; ++c) {
                 const auto* arr =
-                    static_cast<const arrow::UInt32Array*>(ind_counters[rep_counter_idx[a]].get());
-                acc[a] += arr->Value(i);
+                    static_cast<const arrow::UInt32Array*>(ind_counters[c].get());
+                acc[c] += arr->Value(i);
             }
         }
         flush();
     }
 
-    arrow::StringBuilder dist_aspect_builder;
-    arrow::UInt64Builder dist_value_builder;
-    arrow::UInt64Builder dist_less_builder;
-    arrow::UInt64Builder dist_active_builder;
+    // Exact reputation: each aspect is ranked over the whole contributor
+    // population (no sampling), computed in C++ so clients need no
+    // distribution file or ranking math.
+    std::array<std::vector<uint64_t>, kRepAspectCount> rep_totals;
     for (size_t a = 0; a < kRepAspectCount; ++a) {
-        const auto dist = reputation_distribution::build(
-            rep_totals[a], reputation_distribution::kSamplesPerAspect);
-        for (const auto& p : dist.points) {
-            append_checked(dist_aspect_builder, rep_aspect_names[a]);
-            append_checked(dist_value_builder, p.value);
-            append_checked(dist_less_builder, p.less);
-            append_checked(dist_active_builder, dist.active);
+        rep_totals[a].resize(rep_uids.size());
+        for (size_t i = 0; i < rep_uids.size(); ++i) {
+            rep_totals[a][i] = counter_sums[rep_counter_idx[a]][i];
         }
     }
-    std::shared_ptr<arrow::Array> dist_aspect, dist_value, dist_less, dist_active;
-    finish_checked(dist_aspect_builder, &dist_aspect);
-    finish_checked(dist_value_builder, &dist_value);
-    finish_checked(dist_less_builder, &dist_less);
-    finish_checked(dist_active_builder, &dist_active);
-    auto dist_table = arrow::Table::Make(
-        arrow::schema({
-            arrow::field("aspect", arrow::utf8(), false),
-            arrow::field("value", arrow::uint64(), false),
-            arrow::field("less", arrow::uint64(), false),
-            arrow::field("active", arrow::uint64(), false),
-        }),
-        {dist_aspect, dist_value, dist_less, dist_active});
+    const reputation::Result rep = reputation::compute(rep_uids, rep_totals);
+
+    std::array<std::string, kRepAspectCount> rep_aspect_names = {"node", "way",
+                                                                  "relation"};
+    for (size_t i = 0; i < kTagCount; ++i) {
+        rep_aspect_names[3 + i] = "tag_" + std::string(kTop12TagKeys[i]);
+    }
+
+    // Wide one-row-per-uid table: uid, reputation, the 22 indicator totals,
+    // and per-aspect detail columns (points/pct/active/max), uid-sorted.
+    arrow::Int64Builder rep_uid_builder;
+    arrow::UInt8Builder rep_score_builder;
+    std::array<arrow::UInt32Builder, kCounterCount> rep_counter_builders;
+    std::array<arrow::DoubleBuilder, kRepAspectCount> rep_points_builders;
+    std::array<arrow::DoubleBuilder, kRepAspectCount> rep_pct_builders;
+    std::array<arrow::UInt64Builder, kRepAspectCount> rep_active_builders;
+    std::array<arrow::UInt64Builder, kRepAspectCount> rep_max_builders;
+    for (size_t i = 0; i < rep_uids.size(); ++i) {
+        append_checked(rep_uid_builder, rep_uids[i]);
+        append_checked(rep_score_builder, rep.reputation[i]);
+        for (size_t c = 0; c < kCounterCount; ++c) {
+            append_checked(rep_counter_builders[c], counter_sums[c][i]);
+        }
+        for (size_t a = 0; a < kRepAspectCount; ++a) {
+            append_checked(rep_points_builders[a], rep.points[a][i]);
+            append_checked(rep_pct_builders[a], rep.pct[a][i]);
+            append_checked(rep_active_builders[a], rep.active[a]);
+            append_checked(rep_max_builders[a], rep.max[a]);
+        }
+    }
+
+    std::vector<std::shared_ptr<arrow::Field>> rep_fields = {
+        arrow::field("uid", arrow::int64(), false),
+        arrow::field("reputation", arrow::uint8(), false),
+    };
+    for (const auto& c : kCounters) {
+        rep_fields.push_back(arrow::field(c.name, arrow::uint32(), false));
+    }
+    for (size_t a = 0; a < kRepAspectCount; ++a) {
+        rep_fields.push_back(
+            arrow::field(rep_aspect_names[a] + "_points", arrow::float64(), false));
+        rep_fields.push_back(
+            arrow::field(rep_aspect_names[a] + "_pct", arrow::float64(), false));
+        rep_fields.push_back(
+            arrow::field(rep_aspect_names[a] + "_active", arrow::uint64(), false));
+        rep_fields.push_back(
+            arrow::field(rep_aspect_names[a] + "_max", arrow::uint64(), false));
+    }
+
+    std::vector<std::shared_ptr<arrow::Array>> rep_columns;
+    rep_columns.reserve(2 + kCounterCount + 4 * kRepAspectCount);
+    std::shared_ptr<arrow::Array> rep_uid, rep_score;
+    finish_checked(rep_uid_builder, &rep_uid);
+    finish_checked(rep_score_builder, &rep_score);
+    rep_columns.push_back(rep_uid);
+    rep_columns.push_back(rep_score);
+    for (size_t c = 0; c < kCounterCount; ++c) {
+        std::shared_ptr<arrow::Array> arr;
+        finish_checked(rep_counter_builders[c], &arr);
+        rep_columns.push_back(arr);
+    }
+    for (size_t a = 0; a < kRepAspectCount; ++a) {
+        std::shared_ptr<arrow::Array> arr;
+        finish_checked(rep_points_builders[a], &arr);
+        rep_columns.push_back(arr);
+        finish_checked(rep_pct_builders[a], &arr);
+        rep_columns.push_back(arr);
+        finish_checked(rep_active_builders[a], &arr);
+        rep_columns.push_back(arr);
+        finish_checked(rep_max_builders[a], &arr);
+        rep_columns.push_back(arr);
+    }
+    auto rep_table = arrow::Table::Make(arrow::schema(rep_fields), rep_columns);
 
     const std::filesystem::path indicators_parent =
         std::filesystem::path(indicators_path).parent_path();
-    const std::string distribution_path =
-        (indicators_parent / "user_reputation_distribution.parquet").string();
-    const std::string distribution_tmp = distribution_path + ".tmp";
-    arrow_table_io::write_table(distribution_tmp, dist_table);
-    std::filesystem::rename(distribution_tmp, distribution_path);
+    const std::string reputation_path =
+        (indicators_parent / "user_reputation.parquet").string();
+    const std::string reputation_tmp = reputation_path + ".tmp";
+    arrow_table_io::write_table(reputation_tmp, rep_table);
+    std::filesystem::rename(reputation_tmp, reputation_path);
 
     std::filesystem::remove_all(stage_dir);
 
     std::cerr << "[user indicators] finalized " << indicator_table->num_rows()
               << " indicator rows, " << profile_table->num_rows() << " profile rows, "
-              << dist_table->num_rows() << " distribution rows\n";
+              << rep_uids.size() << " reputation rows\n";
 }
 
 }  // namespace user_indicators

@@ -19,7 +19,7 @@ add_executable(unit_tests
   unit/date_utils_test.cpp
   unit/node_cache_test.cpp
   unit/user_indicator_rules_test.cpp
-  unit/reputation_distribution_test.cpp
+  unit/reputation_test.cpp
   unit/options_test.cpp
 )
 
@@ -40,7 +40,7 @@ add_executable(core_tests
   core/manifest_test.cpp
   core/sort_pass_test.cpp
   core/user_indicator_finalize_test.cpp
-  core/reputation_distribution_test.cpp
+  core/reputation_test.cpp
 )
 
 target_compile_features(core_tests PRIVATE cxx_std_17)

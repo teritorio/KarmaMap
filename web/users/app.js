@@ -1,13 +1,14 @@
 // Users viewer: looks up an OSM username in user_profiles.parquet, fetches
-// that user's daily rows from user_indicators.parquet, and renders the
-// OSMPatrol reputation (with edit-suspicion chips), raw indicator totals and
-// an edit-activity timeline. Same architecture as the changes viewer (page +
-// app + query + histogram + permalink modules), but no spatial component.
+// that user's exact reputation row from user_reputation.parquet and daily
+// rows from user_indicators.parquet, and renders the OSMPatrol reputation
+// (with edit-suspicion chips), raw indicator totals and an edit-activity
+// timeline. Same architecture as the changes viewer (page + app + query +
+// histogram + permalink modules), but no spatial component.
 
 import { loadManifest } from './manifest.js'
 import { readPermalink, writePermalink } from './permalink.js'
 import {
-  queryProfiles, queryIndicators, computeScores, datasetDistribution, emptyDistribution,
+  queryProfiles, queryIndicators, queryReputation, computeScores,
   dayKey, TAG_COUNTERS, REP_CAPS, REP_FORMULA,
 } from './query.js'
 import { initHistogram, setHistogramData, setLogScale } from './histogram.js'
@@ -132,7 +133,7 @@ function renderScores(scores) {
         : d.pct >= 100
           ? `top among ${d.active.toLocaleString()} contributors on this aspect (dataset max ${d.max.toLocaleString()})`
           : d.pct <= 0
-            ? `below the sampled minimum on this aspect (${d.active.toLocaleString()} active)`
+            ? `lowest on this aspect (${d.active.toLocaleString()} active)`
             : `above ${pct}% of ${d.active.toLocaleString()} contributors on this aspect (dataset max ${d.max.toLocaleString()})`
     return `<td class="role" title="${rankNote}">${d.points} pts \u00b7 ${pctLabel}</td>`
   }
@@ -187,13 +188,13 @@ async function search(manifest) {
       return
     }
 
-    const distDataset = manifest.datasets.user_reputation_distribution
-    const distribution = distDataset
-      ? await datasetDistribution(BASE_URL, distDataset.path)
-      : emptyDistribution()
     const uids = [...new Set(profiles.map((p) => p.uid))]
+    const repDataset = manifest.datasets.user_reputation
+    const reputationRows = repDataset
+      ? await queryReputation(BASE_URL, repDataset.path, uids)
+      : []
     const indicators = await queryIndicators(BASE_URL, manifest.datasets.user_indicators.path, uids)
-    const scores = computeScores(profiles, indicators, distribution)
+    const scores = computeScores(profiles, indicators, reputationRows)
 
     renderProfile(name, scores)
     renderScore(scores)
