@@ -31,11 +31,11 @@
 //
 // The reputation's tag aspect counts the "Top12" most-used tags (up to 4
 // points each, paper sec. 4) on created objects, one counter per tag (see
-// kTop12TagKeys in user_indicators.cpp for the key order: bit i of a created
-// object's tag mask maps to DayRow member i). The paper's "address" key is
-// replaced by "place", since OSM address tagging uses the addr: prefix.
-// Like relation_created, tag usage is reputation-only and never part of
-// total_events().
+// kTop12TagKeys below: bit i of a created object's tag mask maps to the
+// i-th tag_* DayRow member and the i-th trailing entry in kCounters).
+// The paper's "address" key is replaced by "place", since OSM address
+// tagging uses the addr: prefix. Like relation_created, tag usage is
+// reputation-only and never part of total_events().
 
 #include <array>
 #include <cmath>
@@ -44,6 +44,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -66,7 +67,7 @@ struct Thresholds {
 enum class ObjectKind { Node, Way };
 
 // Per-(uid, change_date) counters. The tag_* counters mirror the Top12 tag
-// key order in kTop12TagKeys (user_indicators.cpp); see apply_created_tags().
+// key order in kTop12TagKeys; see apply_created_tags() and kCounters.
 struct DayRow {
     uint32_t node_created = 0;
     uint32_t node_modified = 0;
@@ -98,6 +99,52 @@ struct DayRow {
                way_modified + way_deleted;
     }
 };
+
+// Top12 tag keys in reputation-aspect order (bit i of a created object's
+// tag mask ↔ kTop12TagKeys[i] ↔ the i-th trailing tag entry in kCounters).
+// "address" from the paper is replaced by "place" (OSM addr: prefix).
+constexpr size_t kTagCount = 12;
+constexpr std::array<std::string_view, kTagCount> kTop12TagKeys = {
+    "amenity", "boundary", "building", "highway", "landuse", "leisure",
+    "name",    "natural",  "place",    "railway", "sport",   "waterway",
+};
+
+// Single source of truth for the Parquet column names, the stage/finalize
+// loops and the created-tag bit spreading. The kTagCount trailing entries
+// are in kTop12TagKeys order; DayRow's tag_* members must mirror them.
+struct CounterSpec {
+    const char* name;
+    uint32_t DayRow::* member;
+};
+
+// 6 node/way change counters + relocated/short_lived/rapid_edit +
+// relation_created + kTagCount tag counters.
+constexpr size_t kCounterCount = 10 + kTagCount;
+
+constexpr std::array<CounterSpec, kCounterCount> kCounters = {{
+    {"node_created",     &DayRow::node_created},
+    {"node_modified",    &DayRow::node_modified},
+    {"node_deleted",     &DayRow::node_deleted},
+    {"way_created",      &DayRow::way_created},
+    {"way_modified",     &DayRow::way_modified},
+    {"way_deleted",      &DayRow::way_deleted},
+    {"relocated",        &DayRow::relocated},
+    {"short_lived",      &DayRow::short_lived},
+    {"rapid_edit",       &DayRow::rapid_edit},
+    {"relation_created", &DayRow::relation_created},
+    {"tag_amenity",      &DayRow::tag_amenity},
+    {"tag_boundary",     &DayRow::tag_boundary},
+    {"tag_building",     &DayRow::tag_building},
+    {"tag_highway",      &DayRow::tag_highway},
+    {"tag_landuse",      &DayRow::tag_landuse},
+    {"tag_leisure",      &DayRow::tag_leisure},
+    {"tag_name",         &DayRow::tag_name},
+    {"tag_natural",      &DayRow::tag_natural},
+    {"tag_place",        &DayRow::tag_place},
+    {"tag_railway",      &DayRow::tag_railway},
+    {"tag_sport",        &DayRow::tag_sport},
+    {"tag_waterway",     &DayRow::tag_waterway},
+}};
 
 struct UserDayKey {
     int64_t uid;
@@ -238,18 +285,12 @@ public:
 
 private:
     // Spreads a created object's Top12 tag mask into the per-tag counters.
-    // Bit i of the mask corresponds to kTop12TagKeys[i] and the i-th tag_*
-    // DayRow member (declaration order above).
-    static constexpr size_t kTagCount = 12;
+    // Bit i of the mask corresponds to kTop12TagKeys[i] and the i-th
+    // trailing tag entry in kCounters.
     static void apply_created_tags(DayRow& r, uint32_t bits) {
-        static constexpr std::array<uint32_t DayRow::*, kTagCount> kTagMembers = {
-            &DayRow::tag_amenity,   &DayRow::tag_boundary,  &DayRow::tag_building,
-            &DayRow::tag_highway,   &DayRow::tag_landuse,   &DayRow::tag_leisure,
-            &DayRow::tag_name,      &DayRow::tag_natural,   &DayRow::tag_place,
-            &DayRow::tag_railway,   &DayRow::tag_sport,     &DayRow::tag_waterway,
-        };
+        constexpr size_t first_tag = kCounterCount - kTagCount;
         for (uint32_t i = 0; i < kTagCount; ++i) {
-            if (bits & (1u << i)) ++(r.*kTagMembers[i]);
+            if (bits & (1u << i)) ++(r.*kCounters[first_tag + i].member);
         }
     }
 

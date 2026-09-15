@@ -265,22 +265,21 @@ TEST(UserIndicatorRules, TagBitsMapToIndependentCounters) {
     Thresholds t;
     UserEventStats s(t);
     // Bit i of a created object's mask touches exactly the i-th tag counter.
-    const std::uint32_t kTagCount = 12;
-    for (std::uint32_t i = 0; i < kTagCount; ++i) {
+    for (std::uint32_t i = 0; i < user_indicators::kTagCount; ++i) {
         // One object per (uid, day), so each row shows a single isolated bit.
         s.begin_object();
         s.add_version(9, "alice", day(100 + i), true, 1, ObjectKind::Node, std::nullopt,
                       1u << i);
         s.end_object();
     }
-    for (std::uint32_t i = 0; i < kTagCount; ++i) {
+    for (std::uint32_t i = 0; i < user_indicators::kTagCount; ++i) {
         const auto& row = row_of(s, 9, day(100 + i)).row;
-        const std::array<std::uint32_t, kTagCount> tag_total = {
+        const std::array<std::uint32_t, user_indicators::kTagCount> tag_total = {
             row.tag_amenity,  row.tag_boundary,  row.tag_building, row.tag_highway,
             row.tag_landuse,  row.tag_leisure,   row.tag_name,     row.tag_natural,
             row.tag_place,    row.tag_railway,   row.tag_sport,    row.tag_waterway,
         };
-        for (std::uint32_t j = 0; j < kTagCount; ++j) {
+        for (std::uint32_t j = 0; j < user_indicators::kTagCount; ++j) {
             EXPECT_EQ(tag_total[j], (i == j) ? 1u : 0u) << "bit " << i << " vs counter " << j;
         }
     }
