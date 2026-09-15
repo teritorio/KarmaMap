@@ -142,6 +142,7 @@ void run_user_indicator_pass(const Options& opts) {
     std::filesystem::remove_all(stage_dir);
     std::filesystem::remove(profiles_path);
     std::filesystem::remove(indicators_path);
+    std::filesystem::remove(opts.output_dir + "/user_reputation_distribution.parquet");
 
     user_indicators::run_scan(opts.input_path, stage_dir, thresholds);
     user_indicators::run_finalize(stage_dir, profiles_path, indicators_path, thresholds);

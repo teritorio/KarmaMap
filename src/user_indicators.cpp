@@ -30,6 +30,7 @@
 
 #include "arrow_table_io.hpp"
 #include "h3_utils.hpp"
+#include "reputation_distribution.hpp"
 
 namespace user_indicators {
 
@@ -519,10 +520,102 @@ void run_finalize(const std::string& stage_dir, const std::string& profiles_path
     arrow_table_io::write_table(profiles_tmp, profile_table);
     std::filesystem::rename(indicators_tmp, indicators_path);
     std::filesystem::rename(profiles_tmp, profiles_path);
+
+    // Per-uid sums of the reputation counters (created objects + Top12 tags)
+    // feed the compact CDF proxy written next to the indicators file. The
+    // three created-object aspects are bound to their kCounters columns by
+    // name; the tag columns are always the trailing kTagCount entries, in
+    // kTop12TagKeys order, so a schema change cannot silently move an aspect.
+    constexpr size_t kRepAspectCount = 3 + kTagCount;
+    constexpr auto counter_index = [](std::string_view name) -> size_t {
+        for (size_t i = 0; i < kCounterCount; ++i) {
+            if (kCounters[i].name == name) return i;
+        }
+        return kCounterCount;
+    };
+    constexpr size_t kFirstTag = kCounterCount - kTagCount;
+    std::array<size_t, kRepAspectCount> rep_counter_idx = {
+        counter_index("node_created"), counter_index("way_created"),
+        counter_index("relation_created")};
+    std::array<std::string, kRepAspectCount> rep_aspect_names = {
+        "node_created", "way_created", "relation_created"};
+    for (size_t i = 0; i < kTagCount; ++i) {
+        rep_counter_idx[3 + i] = kFirstTag + i;
+        rep_aspect_names[3 + i] = "tag_" + std::string(kTop12TagKeys[i]);
+    }
+    std::array<std::vector<uint64_t>, kRepAspectCount> rep_totals;
+    {
+        std::array<uint64_t, kRepAspectCount> acc{};
+        int64_t cur = 0;
+        bool in = false;
+        const auto* uid_arr = static_cast<const arrow::Int64Array*>(ind_uid.get());
+        const auto flush = [&]() {
+            if (!in) return;
+            for (size_t a = 0; a < kRepAspectCount; ++a) {
+                if (acc[a] > 0) rep_totals[a].push_back(acc[a]);
+            }
+        };
+        for (int64_t i = 0; i < uid_arr->length(); ++i) {
+            const int64_t u = uid_arr->Value(i);
+            if (!in) {
+                in = true;
+                cur = u;
+                acc.fill(0);
+            } else if (u != cur) {
+                flush();
+                cur = u;
+                acc.fill(0);
+            }
+            for (size_t a = 0; a < kRepAspectCount; ++a) {
+                const auto* arr =
+                    static_cast<const arrow::UInt32Array*>(ind_counters[rep_counter_idx[a]].get());
+                acc[a] += arr->Value(i);
+            }
+        }
+        flush();
+    }
+
+    arrow::StringBuilder dist_aspect_builder;
+    arrow::UInt64Builder dist_value_builder;
+    arrow::UInt64Builder dist_less_builder;
+    arrow::UInt64Builder dist_active_builder;
+    for (size_t a = 0; a < kRepAspectCount; ++a) {
+        const auto dist = reputation_distribution::build(
+            rep_totals[a], reputation_distribution::kSamplesPerAspect);
+        for (const auto& p : dist.points) {
+            append_checked(dist_aspect_builder, rep_aspect_names[a]);
+            append_checked(dist_value_builder, p.value);
+            append_checked(dist_less_builder, p.less);
+            append_checked(dist_active_builder, dist.active);
+        }
+    }
+    std::shared_ptr<arrow::Array> dist_aspect, dist_value, dist_less, dist_active;
+    finish_checked(dist_aspect_builder, &dist_aspect);
+    finish_checked(dist_value_builder, &dist_value);
+    finish_checked(dist_less_builder, &dist_less);
+    finish_checked(dist_active_builder, &dist_active);
+    auto dist_table = arrow::Table::Make(
+        arrow::schema({
+            arrow::field("aspect", arrow::utf8(), false),
+            arrow::field("value", arrow::uint64(), false),
+            arrow::field("less", arrow::uint64(), false),
+            arrow::field("active", arrow::uint64(), false),
+        }),
+        {dist_aspect, dist_value, dist_less, dist_active});
+
+    const std::filesystem::path indicators_parent =
+        std::filesystem::path(indicators_path).parent_path();
+    const std::string distribution_path =
+        (indicators_parent / "user_reputation_distribution.parquet").string();
+    const std::string distribution_tmp = distribution_path + ".tmp";
+    arrow_table_io::write_table(distribution_tmp, dist_table);
+    std::filesystem::rename(distribution_tmp, distribution_path);
+
     std::filesystem::remove_all(stage_dir);
 
     std::cerr << "[user indicators] finalized " << indicator_table->num_rows()
-              << " indicator rows, " << profile_table->num_rows() << " profile rows\n";
+              << " indicator rows, " << profile_table->num_rows() << " profile rows, "
+              << dist_table->num_rows() << " distribution rows\n";
 }
 
 }  // namespace user_indicators

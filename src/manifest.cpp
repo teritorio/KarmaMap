@@ -86,6 +86,10 @@ void write_manifest(const std::string& output_dir, int h3_resolution) {
     if (std::filesystem::exists(output_dir + "/user_profiles.parquet")) {
         write_dataset("user_profiles", "user_profiles.parquet", {});
     }
+    if (std::filesystem::exists(output_dir + "/user_reputation_distribution.parquet")) {
+        write_dataset("user_reputation_distribution",
+                       "user_reputation_distribution.parquet", {});
+    }
     out << "\n  }\n";
     out << "}\n";
 }

@@ -70,6 +70,36 @@ TEST(Manifest, IgnoresForeignEntries) {
     EXPECT_NE(json.find("\"partitions\": [\"2024-01\"]"), std::string::npos);
 }
 
+TEST(Manifest, WritesUserDatasetEntries) {
+    TempDir dir;
+    make_partitions(dir.join("changes"), {"2024-01"});
+    {
+        std::ofstream(dir.join("user_indicators.parquet")) << "x\n";
+        std::ofstream(dir.join("user_profiles.parquet")) << "y\n";
+        std::ofstream(dir.join("user_reputation_distribution.parquet")) << "z\n";
+    }
+    manifest::write_manifest(dir.path(), 4);
+
+    const std::string json = read_file(dir.join("manifest.json"));
+    EXPECT_NE(json.find("\"user_indicators\": { \"path\": \"user_indicators.parquet\", \"partitions\": [] }"),
+              std::string::npos);
+    EXPECT_NE(json.find("\"user_profiles\": { \"path\": \"user_profiles.parquet\", \"partitions\": [] }"),
+              std::string::npos);
+    EXPECT_NE(json.find("\"user_reputation_distribution\": { \"path\": \"user_reputation_distribution.parquet\", \"partitions\": [] }"),
+              std::string::npos);
+}
+
+TEST(Manifest, SkipsUserDatasetsWhenAbsent) {
+    TempDir dir;
+    make_partitions(dir.join("changes"), {"2024-01"});
+    manifest::write_manifest(dir.path(), 4);
+
+    const std::string json = read_file(dir.join("manifest.json"));
+    EXPECT_EQ(json.find("\"user_indicators\""), std::string::npos);
+    EXPECT_EQ(json.find("\"user_profiles\""), std::string::npos);
+    EXPECT_EQ(json.find("\"user_reputation_distribution\""), std::string::npos);
+}
+
 TEST(Manifest, MissingOutputDirThrows) {
     TempDir dir;
     EXPECT_THROW(manifest::write_manifest(dir.join("nonexistent"), 9),
