@@ -15,9 +15,10 @@ services:
       - ${DATA_DIR:-./data/}:/data
 
   # Serves output-dir/ (Parquet partitions + manifest.json, port 8080) and
-  # the static frontend under web/ (port 8081), both with range-request
-  # support and permissive CORS - what a browser-side Parquet reader
-  # (hyparquet) needs to query data directly, no application backend.
+  # web/ (port 8081): the landing page at /, the changes viewer at /changes/,
+  # the users viewer at /users/ — all with range-request support and
+  # permissive CORS, what a browser-side Parquet reader (hyparquet) needs to
+  # query data directly, no application backend.
   caddy:
     image: caddy:2
     volumes:
