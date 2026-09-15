@@ -97,7 +97,7 @@ Derivation notes:
 
   | Flag | Default | Role |
   |---|---|---|
-  | `--relocate-meters` | `1000` | Node move distance counting as a relocation |
+  | `--relocate-meters` | `500` | Node move distance counting as a relocation |
   | `--short-life-days` | `7` | Max age (days) of a created+deleted object |
   | `--rapid-edit-versions` | `5` | Versions that trigger the rapid-edit flag |
   | `--rapid-edit-window-days` | `7` | Rolling window for rapid-edit counting |
@@ -320,7 +320,7 @@ User stats (`--user-indicators`):
 | Option | Description |
 |---|---|
 | `--user-indicators` | Also run the user-indicator pass (see above); independent of passes 1-3 |
-| `--relocate-meters` | Relocation threshold in meters (default: `1000`) |
+| `--relocate-meters` | Relocation threshold in meters (default: `500`) |
 | `--short-life-days` | Short-lived delete window in days (default: `7`) |
 | `--rapid-edit-versions` | Rapid-edit version threshold (default: `5`) |
 | `--rapid-edit-window-days` | Rapid-edit rolling window in days (default: `7`) |

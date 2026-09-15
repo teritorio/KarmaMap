@@ -30,7 +30,7 @@ void print_usage(const char* argv0) {
         << "                         files, independent of passes 1-3); nodes, ways,\n"
         << "                         relation creations and Top12 tag usage are counted\n"
         << "    --relocate-meters    Node move distance (meters) that counts as a\n"
-        << "                         relocation (default: 1000)\n"
+        << "                         relocation (default: 500)\n"
         << "    --short-life-days    A delete counts as short-lived if the object was\n"
         << "                         created within this many days (default: 7)\n"
         << "    --rapid-edit-versions  At least this many object versions within the\n"

@@ -30,7 +30,7 @@ TEST(Options, DefaultsPreserved) {
     EXPECT_TRUE(opts.run_way_pass);
     EXPECT_TRUE(opts.run_sort_pass);
     EXPECT_FALSE(opts.run_user_indicators);
-    EXPECT_DOUBLE_EQ(opts.relocate_meters, 1000.0);
+    EXPECT_DOUBLE_EQ(opts.relocate_meters, 500.0);
     EXPECT_EQ(opts.short_life_days, 7);
     EXPECT_EQ(opts.rapid_edit_versions, 5);
     EXPECT_EQ(opts.rapid_edit_window_days, 7);

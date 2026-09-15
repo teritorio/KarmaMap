@@ -55,7 +55,7 @@ constexpr size_t kFlushThreshold = 1'000'000;  // accumulator rows per stage flu
 // Rule thresholds. The values are documented starting points, not calibrated
 // against ground truth (vandalism is only ever "suspicion" from history).
 struct Thresholds {
-    double relocate_meters = 1000.0;        // node move distance that counts
+    double relocate_meters = 500.0;         // node move distance that counts
     int short_life_days = 7;                // created+deleted within N days
     int rapid_edit_versions = 5;            // >= K versions ...
     int rapid_edit_window_days = 7;         // ... within N days
