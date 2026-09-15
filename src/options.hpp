@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <string>
 
+#include "user_indicators.hpp"
+
 inline constexpr size_t kDefaultWayBatchBytes = 512ULL * 1024 * 1024;
 
 struct Options {
@@ -15,12 +17,10 @@ struct Options {
     bool run_way_pass = true;
     bool run_sort_pass = true;
     bool run_user_indicators = false;
-    double relocate_meters = 500.0;       // node move distance that counts
-    int short_life_days = 7;              // created+deleted within N days
-    int rapid_edit_versions = 5;          // >= K versions ...
-    int rapid_edit_window_days = 7;       // ... within N days
-    int new_user_window_days = 30;        // account younger than N days
-    int bulk_edit_min = 10;               // >= N events to flag a new user
+    // User-indicator rules; defaults come from Thresholds (--relocate-meters,
+    // --short-life-days, --rapid-edit-versions, --rapid-edit-window-days,
+    // --new-user-window-days, --bulk-edit-min).
+    user_indicators::Thresholds thresholds;
 };
 
 void print_usage(const char* argv0);

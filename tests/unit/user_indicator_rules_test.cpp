@@ -67,13 +67,13 @@ TEST(UserIndicatorRules, AggregatesSameUserAndDay) {
 }
 
 TEST(UserIndicatorRules, RelocationPastThresholdCounts) {
-    Thresholds t;  // relocate_meters = 500
+    Thresholds t;  // relocate_meters = kDefaultRelocateMeters
     UserEventStats s(t);
     s.begin_object();
     // ~157 km move (0,0) -> (1,1)
     s.add_version(5, "alice", day(100), true, 1, ObjectKind::Node, std::pair{0.0, 0.0});
     s.add_version(5, "alice", day(101), true, 2, ObjectKind::Node, std::pair{1.0, 1.0});
-    // ~111 m move (1,1) -> (1.001,1): below 500 m, no flag
+    // ~111 m move (1,1) -> (1.001,1): below the default, no flag
     s.add_version(5, "alice", day(102), true, 3, ObjectKind::Node, std::pair{1.001, 1.0});
     s.end_object();
 
@@ -81,8 +81,8 @@ TEST(UserIndicatorRules, RelocationPastThresholdCounts) {
     EXPECT_EQ(row_of(s, 5, day(101)).row.relocated, 1);
     EXPECT_EQ(row_of(s, 5, day(102)).row.relocated, 0);
 
-    EXPECT_GT(haversine_meters(0.0, 0.0, 1.0, 1.0), 500.0);
-    EXPECT_LT(haversine_meters(1.0, 1.0, 1.001, 1.0), 500.0);
+    EXPECT_GT(haversine_meters(0.0, 0.0, 1.0, 1.0), user_indicators::kDefaultRelocateMeters);
+    EXPECT_LT(haversine_meters(1.0, 1.0, 1.001, 1.0), user_indicators::kDefaultRelocateMeters);
 }
 
 TEST(UserIndicatorRules, ShortLivedDelete) {

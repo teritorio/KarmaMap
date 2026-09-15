@@ -30,12 +30,12 @@ TEST(Options, DefaultsPreserved) {
     EXPECT_TRUE(opts.run_way_pass);
     EXPECT_TRUE(opts.run_sort_pass);
     EXPECT_FALSE(opts.run_user_indicators);
-    EXPECT_DOUBLE_EQ(opts.relocate_meters, 500.0);
-    EXPECT_EQ(opts.short_life_days, 7);
-    EXPECT_EQ(opts.rapid_edit_versions, 5);
-    EXPECT_EQ(opts.rapid_edit_window_days, 7);
-    EXPECT_EQ(opts.new_user_window_days, 30);
-    EXPECT_EQ(opts.bulk_edit_min, 10);
+    EXPECT_DOUBLE_EQ(opts.thresholds.relocate_meters, user_indicators::kDefaultRelocateMeters);
+    EXPECT_EQ(opts.thresholds.short_life_days, user_indicators::kDefaultShortLifeDays);
+    EXPECT_EQ(opts.thresholds.rapid_edit_versions, user_indicators::kDefaultRapidEditVersions);
+    EXPECT_EQ(opts.thresholds.rapid_edit_window_days, user_indicators::kDefaultRapidEditWindowDays);
+    EXPECT_EQ(opts.thresholds.new_user_window_days, user_indicators::kDefaultNewUserWindowDays);
+    EXPECT_EQ(opts.thresholds.bulk_edit_min, user_indicators::kDefaultBulkEditMin);
 }
 
 TEST(Options, UserIndicatorsFlagEnablesPass) {
@@ -56,12 +56,12 @@ TEST(Options, ThresholdFlagsOverride) {
                      "--new-user-window-days", "60", "--bulk-edit-min", "50"},
                     &opts);
     ASSERT_TRUE(ok);
-    EXPECT_DOUBLE_EQ(opts.relocate_meters, 25.5);
-    EXPECT_EQ(opts.short_life_days, 3);
-    EXPECT_EQ(opts.rapid_edit_versions, 9);
-    EXPECT_EQ(opts.rapid_edit_window_days, 14);
-    EXPECT_EQ(opts.new_user_window_days, 60);
-    EXPECT_EQ(opts.bulk_edit_min, 50);
+    EXPECT_DOUBLE_EQ(opts.thresholds.relocate_meters, 25.5);
+    EXPECT_EQ(opts.thresholds.short_life_days, 3);
+    EXPECT_EQ(opts.thresholds.rapid_edit_versions, 9);
+    EXPECT_EQ(opts.thresholds.rapid_edit_window_days, 14);
+    EXPECT_EQ(opts.thresholds.new_user_window_days, 60);
+    EXPECT_EQ(opts.thresholds.bulk_edit_min, 50);
 }
 
 TEST(Options, PassSelection) {

@@ -131,13 +131,7 @@ void run_sort_pass(const Options& opts) {
 }
 
 void run_user_indicator_pass(const Options& opts) {
-    user_indicators::Thresholds thresholds;
-    thresholds.relocate_meters = opts.relocate_meters;
-    thresholds.short_life_days = opts.short_life_days;
-    thresholds.rapid_edit_versions = opts.rapid_edit_versions;
-    thresholds.rapid_edit_window_days = opts.rapid_edit_window_days;
-    thresholds.new_user_window_days = opts.new_user_window_days;
-    thresholds.bulk_edit_min = opts.bulk_edit_min;
+    const user_indicators::Thresholds& thresholds = opts.thresholds;
 
     const std::string stage_dir = opts.output_dir + "/user_indicator_stage";
     const std::string profiles_path = opts.output_dir + "/user_profiles.parquet";

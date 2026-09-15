@@ -53,15 +53,24 @@ namespace user_indicators {
 
 constexpr size_t kFlushThreshold = 1'000'000;  // accumulator rows per stage flush
 
+// Defaults for the rule thresholds, shared by Thresholds and the CLI
+// Options surface (--relocate-meters, --short-life-days, ...).
+constexpr double kDefaultRelocateMeters = 500.0;
+constexpr int kDefaultShortLifeDays = 7;
+constexpr int kDefaultRapidEditVersions = 5;
+constexpr int kDefaultRapidEditWindowDays = 7;
+constexpr int kDefaultNewUserWindowDays = 30;
+constexpr int kDefaultBulkEditMin = 10;
+
 // Rule thresholds. The values are documented starting points, not calibrated
 // against ground truth (vandalism is only ever "suspicion" from history).
 struct Thresholds {
-    double relocate_meters = 500.0;         // node move distance that counts
-    int short_life_days = 7;                // created+deleted within N days
-    int rapid_edit_versions = 5;            // >= K versions ...
-    int rapid_edit_window_days = 7;         // ... within N days
-    int new_user_window_days = 30;          // account younger than N days
-    int bulk_edit_min = 10;                 // >= N events in a day to flag
+    double relocate_meters = kDefaultRelocateMeters;       // node move distance that counts
+    int short_life_days = kDefaultShortLifeDays;           // created+deleted within N days
+    int rapid_edit_versions = kDefaultRapidEditVersions;   // >= K versions ...
+    int rapid_edit_window_days = kDefaultRapidEditWindowDays;  // ... within N days
+    int new_user_window_days = kDefaultNewUserWindowDays;  // account younger than N days
+    int bulk_edit_min = kDefaultBulkEditMin;               // >= N events in a day to flag
 };
 
 enum class ObjectKind { Node, Way };
