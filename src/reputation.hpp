@@ -2,9 +2,7 @@
 
 // Exact per-aspect percentile reputation over aligned per-uid totals, used by
 // the --user-indicators finalize to write user_reputation.parquet (one row
-// per user). Pure (no Arrow/osmium): the unit tests stay lean and the same
-// builder recomputes reputation from updated totals in a later incremental
-// pass without re-reading history.
+// per user). Pure (no Arrow/osmium): the unit tests stay lean.
 //
 // Each aspect is capped at its paper weight (20/20/12 + 4 per Top12 tag) and
 // scored by the user's percentile rank among the contributors active on that

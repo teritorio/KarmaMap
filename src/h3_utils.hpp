@@ -1,6 +1,6 @@
 #pragma once
 
-// H3 / date helpers shared between the node pass and the way pass.
+// H3 / date helpers shared by the passes and the Parquet writers.
 
 #include <h3api.h>
 

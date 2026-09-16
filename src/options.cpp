@@ -21,7 +21,7 @@ void print_usage(const char* argv0) {
         << "                         or all (default)\n"
         << "  --way-batch-mb         Way-pass lookup batch budget in MiB (default: 512)\n"
         << "  --h3-resolution        Resolution of the data cells, 0-13 (default: 9)\n\n"
-        << "    --user-indicators    Additionally score history per user and per UTC day,\n"
+        << "  --user-indicators      Additionally score history per user and per UTC day,\n"
         << "                         writing user_indicators.parquet and\n"
         << "                         user_reputation.parquet (non-partitioned single\n"
         << "                         files, independent of passes 1-3); nodes, ways,\n"

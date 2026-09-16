@@ -8,11 +8,11 @@
 //   record: [node_id 8B][day 2B][h3 cell 6B]        (16 bytes)
 //   file:   [header 40B][block 0]...[block N-1][directory 12*N]
 //
-// node_id is big-endian with the sign bit flipped so byte order equals
-// numeric order: the first 10 bytes byte-compare as a (node_id, day) tuple,
-// which is what the sweep runs on. day is the uint16
-// UTC epoch-day value shared with change_date; the cell is packed 6-byte LE
-// (h3_utils::pack_cell). Full layout details are in README "Node cache".
+// node_id is big-endian with the sign bit flipped so the encoded bytes sort
+// in numeric order, matching the (node_id, day) sort of the records. day is
+// the uint16 UTC epoch-day value shared with change_date; the cell is packed
+// 6-byte LE (h3_utils::pack_cell). Full layout details are in README "Node
+// cache".
 
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -229,7 +229,7 @@ private:
     }
 
     struct DirectoryEntry {
-        uint64_t first_node;  // encoded (sign-flipped), as byte-compared
+        uint64_t first_node;  // encoded (sign-flipped); decoded for the directory search
         uint32_t comp_size;
     };
 

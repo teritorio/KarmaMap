@@ -402,8 +402,7 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
     // their kCounters columns by name; the tag columns are always the
     // trailing kTagCount entries, in kTop12TagKeys order, so a schema change
     // cannot silently move an aspect. Storing every counter total (not just
-    // the reputation aspects) lets the file double as the running per-user
-    // totals for a later incremental update pass.
+    // the reputation aspects) keeps the per-user totals complete in this file.
     constexpr size_t kRepAspectCount = 3 + kTagCount;
     constexpr auto counter_index = [](std::string_view name) -> size_t {
         for (size_t i = 0; i < kCounterCount; ++i) {

@@ -127,8 +127,8 @@ running pass with O(1) object state, writing day-aggregates to a staged
 `user_indicator_stage/stage_*.parquet` directory that finalize merges,
 sorts by `(uid, change_date)`, derives the reputation rows, and removes.
 `user_reputation.parquet` is a pure derived view of that data: one row per
-user, so it grows with new users, not new edits, and a later update pass can
-rebuild it from the per-user totals without re-reading history.
+user, so it grows with new users, not new edits, and can be rebuilt from the
+per-user totals without re-reading history.
 Non-partitioned single files keep the join cheap and the numerics-only
 indicators file small.
 
@@ -248,9 +248,9 @@ layout; the cost is one decompression per block on first access of each
 pass.
 
 The reader mmaps the file read-only and decompresses one block at a time
-into a 4 MiB cache. The per-block first keys narrow single lookups and
-reposition the way pass's sweep cursor between batches; no RAM sample index
-is kept.
+into a 4 MiB cache. The per-block first keys seed the way pass's sweep cursor
+between batches (a binary search over the directory, then one forward-only
+scan); no RAM sample index is kept.
 
 ## Configuration
 
