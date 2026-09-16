@@ -115,29 +115,6 @@ TEST(NodeCache, SingleBlockRoundTrip) {
     node_cache::Reader r(path, 9);
     EXPECT_EQ(r.size(), 3);
 
-    // (node, day) <= query returns the last matching record.
-    auto [found, cell_val] = r.resolve(10, 8);
-    EXPECT_TRUE(found);
-    EXPECT_EQ(cell_val, cell(0xABCDEF));
-
-    auto [found2, cell2] = r.resolve(10, 5);
-    EXPECT_TRUE(found2);
-    EXPECT_EQ(cell2, cell(0x123456));
-
-    auto [found3, cell3] = r.resolve(20, 3);
-    EXPECT_TRUE(found3);
-    EXPECT_EQ(cell3, cell(0xBEEF));
-
-    // Query past a node -> miss.
-    auto [found4, cell4] = r.resolve(10, 4);
-    EXPECT_FALSE(found4);
-    EXPECT_EQ(cell4, 0);
-
-    // Query before the first record -> miss.
-    auto [found5, cell5] = r.resolve(5, 1);
-    EXPECT_FALSE(found5);
-    EXPECT_EQ(cell5, 0);
-
     // Direct record access.
     EXPECT_EQ(r.node_at(0), 10);
     EXPECT_EQ(r.day_at(1), 7);
@@ -157,9 +134,7 @@ TEST(NodeCache, DayCollapseLastWins) {
 
     node_cache::Reader r(path, 9);
     EXPECT_EQ(r.size(), 1);
-    auto [found, cell_val] = r.resolve(1, 42);
-    EXPECT_TRUE(found);
-    EXPECT_EQ(cell_val, cell(0x222222));
+    EXPECT_EQ(r.cell_at(0), cell(0x222222));
 }
 
 TEST(NodeCache, OrderingViolationsThrow) {
@@ -264,7 +239,7 @@ TEST(NodeCache, CorruptionPathsThrow) {
 }
 
 // Heavy: writes 2^18+1 records so the first block fills (2^18 records) and a
-// second partial block is flushed; verifies cross-block resolve + record
+// second partial block is flushed; verifies the sweep crossing + record
 // access across the decompression-cache boundary.
 TEST(NodeCache, MultiBlockRoundTrip) {
     TempDir dir;
@@ -282,18 +257,8 @@ TEST(NodeCache, MultiBlockRoundTrip) {
     node_cache::Reader r(path, 9);
     EXPECT_EQ(r.size(), kRecords);
 
-    // Last node of block 0 and the single node of block 1.
-    auto [found0, cell0] = r.resolve(static_cast<int64_t>(kRecords - 2), 1);
-    EXPECT_TRUE(found0);
-    EXPECT_EQ(cell0, cell(kRecords - 2));
-
-    auto [found1, cell1] = r.resolve(static_cast<int64_t>(kRecords - 1), 1);
-    EXPECT_TRUE(found1);
-    EXPECT_EQ(cell1, cell(kRecords - 1));
-
-    // For a node starting a new block the sweep may begin at record 0 (every
-    // earlier record is strictly < the node); the sweep still crosses the
-    // block boundary to reach it.
+    // The sweep may begin anywhere before a node reached through a new
+    // block; starting at record 0 crosses the block boundary to reach it.
     EXPECT_EQ(r.sweep_start(static_cast<int64_t>(kRecords - 1)), 0);
     // Forces decompression of block 1 through the caching record accessor.
     EXPECT_EQ(r.node_at(kRecords - 1), static_cast<int64_t>(kRecords - 1));

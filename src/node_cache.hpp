@@ -21,12 +21,9 @@
 
 #include <zstd.h>
 
-#include <algorithm>
 #include <cstdint>
-#include <cstring>
 #include <stdexcept>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include "h3_utils.hpp"
@@ -368,45 +365,11 @@ public:
         return h3_utils::unpack_cell(read_cell6(record(i) + 10), h3_resolution_);
     }
 
-    // Last record with (node_id, day) <= the query, narrowed to the block
-    // holding the node's final run. False if the node has no such record.
-    std::pair<bool, uint64_t> resolve(int64_t node_id, int32_t day) const {
-        const uint16_t day16 = h3_utils::require_u16_day(day);
-        char query[10];
-        put_be64(query, encode_node(node_id));
-        put_be16(query + 8, day16);
-
-        const size_t block = last_block(node_id, /*or_equal=*/true);
-        const size_t lo = block == kNoBlock ? 0 : block * kRecordsPerBlock;
-        const size_t hi = block == kNoBlock
-                              ? static_cast<size_t>(std::min<uint64_t>(count_, kRecordsPerBlock))
-                              : std::min(block * kRecordsPerBlock + kRecordsPerBlock,
-                                         static_cast<size_t>(count_));
-        if (hi <= lo) return {false, 0};
-
-        size_t l = lo, r = hi;
-        while (l < r) {
-            const size_t m = l + (r - l) / 2;
-            if (memcmp(record(m), query, 10) <= 0) {
-                l = m + 1;
-            } else {
-                r = m;
-            }
-        }
-        if (l > lo && l - 1 < hi) {
-            const size_t pred = l - 1;
-            if (node_at(pred) == node_id) {
-                return {true, cell_at(pred)};
-            }
-        }
-        return {false, 0};
-    }
-
     // Record index at which a forward sweep can start for node_id: the first
     // record of the last block whose first record is < node_id. Records
     // before it are strictly < node_id.
     size_t sweep_start(int64_t node_id) const {
-        const size_t block = last_block(node_id, /*or_equal=*/false);
+        const size_t block = last_block(node_id);
         return block == kNoBlock ? 0 : block * kRecordsPerBlock;
     }
 
@@ -440,16 +403,13 @@ private:
         cached_block_ = block;
     }
 
-    // Index of the last block whose first record satisfies the node
-    // comparison (<= node_id when or_equal, else < node_id); kNoBlock if
+    // Index of the last block whose first record is < node_id; kNoBlock if
     // none qualifies.
-    size_t last_block(int64_t node_id, bool or_equal) const {
+    size_t last_block(int64_t node_id) const {
         size_t lo = 0, hi = directory_.size();
         while (lo < hi) {
             const size_t mid = lo + (hi - lo) / 2;
-            const bool le = or_equal ? directory_[mid].first_node <= node_id
-                                     : directory_[mid].first_node < node_id;
-            if (le) {
+            if (directory_[mid].first_node < node_id) {
                 lo = mid + 1;
             } else {
                 hi = mid;

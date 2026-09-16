@@ -12,7 +12,7 @@ function pad2(n) {
   return String(n).padStart(2, '0')
 }
 
-export function monthsInRange(startMonth, endMonth) {
+function monthsInRange(startMonth, endMonth) {
   const [sy, sm] = startMonth.split('-').map(Number)
   const [ey, em] = endMonth.split('-').map(Number)
 

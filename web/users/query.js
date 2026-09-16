@@ -44,7 +44,7 @@ const ASPECT_KEYS = ['node', 'way', 'relation', ...TAG_COUNTERS]
 // deletions carry no reputation value. Each of the 12 tags is worth up to 4
 // points, so the computable maximum is 20+20+12+48 = 100.
 export const REP_CAPS = { node: 20, way: 20, relation: 12 }
-export const REP_TAG_CAP = 4
+const REP_TAG_CAP = 4
 const REP_MAX =
   REP_CAPS.node + REP_CAPS.way + REP_CAPS.relation + TOP12_TAGS.length * REP_TAG_CAP
 const REP_NOTE = `Reputation 0-100: created nodes ${REP_CAPS.node}, ways ${REP_CAPS.way}, relations ${REP_CAPS.relation} and ${TOP12_TAGS.length} top tags x ${REP_TAG_CAP}; each aspect is capped at its weight and scored by the user's percentile rank among the dataset's contributors active on that aspect`
@@ -140,7 +140,7 @@ export async function queryIndicators(baseUrl, path, uids) {
 // from the stored pct and the constant paper caps; the dataset-wide active/max
 // stats come from the file's key_value_metadata. `row` is one wide per-uid
 // row as produced by queryReputationByUsername().
-export function computeReputation(row, stats) {
+function computeReputation(row, stats) {
   const round = (v) => Math.round(Number(v) * 100) / 100
   const detail = (key, label, cap, counter) => {
     const pct = Number(row[`${key}_pct`] ?? 0)

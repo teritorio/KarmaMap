@@ -28,8 +28,7 @@
 // Relations contribute only a created counter (record_relation_created).
 // Following the OSMPatrol model (Neis, Goetz & Zipf 2012), the per-user
 // reputation is built from the objects a contributor created. Relation
-// modifies/deletes are therefore not counted, and total_events()
-// deliberately excludes them too.
+// modifies/deletes are therefore not counted.
 //
 // The reputation's tag aspect counts the "Top12" most-used tags (up to 4
 // points each, paper sec. 4) on created objects, one counter per tag (see
@@ -37,7 +36,7 @@
 // i-th tag_* DayRow member and the i-th trailing entry in kCounters).
 // The paper's "address" key is replaced by "place", since OSM address
 // tagging uses the addr: prefix. Like relation_created, tag usage is
-// reputation-only and never part of total_events().
+// reputation-only and never part of the node/way activity totals.
 
 #include <array>
 #include <cstddef>
@@ -74,13 +73,6 @@ struct DayRow {
     uint32_t tag_railway = 0;
     uint32_t tag_sport = 0;
     uint32_t tag_waterway = 0;
-
-    // Only node/way events count as edits; relations are tracked for the
-    // reputation's created-relations aspect, not for activity volume.
-    uint32_t total_events() const {
-        return node_created + node_modified + node_deleted + way_created +
-               way_modified + way_deleted;
-    }
 };
 
 // Top12 tag keys in reputation-aspect order (bit i of a created object's

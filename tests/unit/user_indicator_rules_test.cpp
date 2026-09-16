@@ -74,14 +74,17 @@ TEST(UserIndicatorRules, ZeroUidIsCounted) {
 
 TEST(UserIndicatorRules, RelationCreatedIsIsolated) {
     UserEventStats s;
-    // Relations count only visible v1 versions and never contribute to the
-    // node/way counters (no total_events contribution).
+    // Relations count only visible v1 versions and never touch the node/way
+    // counters.
     s.record_relation_created(6, "alice", day(100));
     s.record_relation_created(6, "alice", day(100));
     s.record_relation_created(6, "alice", day(101));
 
     EXPECT_EQ(row_of(s, 6, day(100)).row.relation_created, 2);
-    EXPECT_EQ(row_of(s, 6, day(100)).row.total_events(), 0);
+    const auto& r100 = row_of(s, 6, day(100)).row;
+    EXPECT_EQ(r100.node_created + r100.node_modified + r100.node_deleted +
+                  r100.way_created + r100.way_modified + r100.way_deleted,
+              0);
     EXPECT_EQ(row_of(s, 6, day(101)).row.relation_created, 1);
 }
 
