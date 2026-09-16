@@ -423,16 +423,26 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
     finish_checked(ind_day_builder, &ind_day);
     for (size_t c = 0; c < kCounterCount; ++c) finish_checked(ind_counter_builders[c], &ind_counters[c]);
 
+    constexpr size_t kIndicatorCounterCount = kCounterCount - 3;
+    std::array<size_t, kIndicatorCounterCount> indicator_counter_idx;
+    size_t out = 0;
+    for (size_t c = 0; c < kCounterCount; ++c) {
+        const std::string_view name = kCounters[c].name;
+        if (name == "relocated" || name == "short_lived" || name == "rapid_edit") continue;
+        indicator_counter_idx[out++] = c;
+    }
+
     std::vector<std::shared_ptr<arrow::Field>> indicator_fields = {
         arrow::field("uid", arrow::int64(), false),
         arrow::field("change_date", arrow::uint16(), false),
     };
-    for (const auto& c : kCounters) {
-        indicator_fields.push_back(arrow::field(c.name, arrow::uint32(), false));
+    std::vector<std::shared_ptr<arrow::Array>> indicator_columns = {ind_uid, ind_day};
+    for (size_t i = 0; i < kIndicatorCounterCount; ++i) {
+        const size_t c = indicator_counter_idx[i];
+        indicator_fields.push_back(arrow::field(kCounters[c].name, arrow::uint32(), false));
+        indicator_columns.push_back(ind_counters[c]);
     }
     auto indicator_schema = arrow::schema(indicator_fields);
-    std::vector<std::shared_ptr<arrow::Array>> indicator_columns = {ind_uid, ind_day};
-    indicator_columns.insert(indicator_columns.end(), ind_counters.begin(), ind_counters.end());
     // The indicator rows were appended in (uid, change_date) order while
     // walking the sorted combined table, so no re-sort is needed.
     auto indicator_table = arrow::Table::Make(indicator_schema, indicator_columns);

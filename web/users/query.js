@@ -128,8 +128,8 @@ export async function queryIndicators(baseUrl, path, uids) {
   const minUid = Math.min(...uids)
   const maxUid = Math.max(...uids)
   const uidSet = new Set(uids)
-  // The timeline only needs these 8 of the 23 columns; projecting the rest
-  // cuts the per-user download while keeping the uid range filter.
+  // The timeline only needs these 8 of the 21 columns; projecting the rest
+  // cuts the per-user decode while keeping the uid range filter.
   const columns = ['uid', 'change_date', ...CHANGE_COUNTERS]
   const rows = await queryRows(baseUrl, path, { uid: { $gte: minUid, $lte: maxUid } }, columns)
   return rows.filter((row) => uidSet.has(Number(row.uid)))

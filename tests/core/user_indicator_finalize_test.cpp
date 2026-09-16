@@ -141,8 +141,6 @@ struct IndicatorRows {
     std::vector<int64_t> uid;
     std::vector<uint16_t> day;
     std::vector<uint32_t> node_created;
-    std::vector<uint32_t> relocated;
-    std::vector<uint32_t> rapid_edit;
     std::vector<uint32_t> relation_created;
     std::vector<uint32_t> tag_amenity;
     std::vector<uint32_t> tag_building;
@@ -155,31 +153,28 @@ IndicatorRows read_indicators(const std::string& path) {
     EXPECT_TRUE(combined_result.ok()) << combined_result.status();
     if (!combined_result.ok()) return {};
     const auto& t = *combined_result;
+    // uid, change_date and the 19 kept counters: the six node/way change
+    // counters, relation_created and the 12 tag counters.
+    EXPECT_EQ(t->num_columns(), 21);
     IndicatorRows out;
     const auto* uid = static_cast<const arrow::Int64Array*>(t->column(0)->chunk(0).get());
     const auto* day = static_cast<const arrow::UInt16Array*>(t->column(1)->chunk(0).get());
     const auto* node_created =
         static_cast<const arrow::UInt32Array*>(t->column(2)->chunk(0).get());
-    const auto* relocated =
-        static_cast<const arrow::UInt32Array*>(t->column(8)->chunk(0).get());
-    const auto* rapid_edit =
-        static_cast<const arrow::UInt32Array*>(t->column(10)->chunk(0).get());
     const auto* relation_created =
-        static_cast<const arrow::UInt32Array*>(t->column(11)->chunk(0).get());
+        static_cast<const arrow::UInt32Array*>(t->column(8)->chunk(0).get());
     const auto* tag_amenity =
-        static_cast<const arrow::UInt32Array*>(t->column(12)->chunk(0).get());
+        static_cast<const arrow::UInt32Array*>(t->column(9)->chunk(0).get());
     const auto* tag_building =
-        static_cast<const arrow::UInt32Array*>(t->column(14)->chunk(0).get());
+        static_cast<const arrow::UInt32Array*>(t->column(11)->chunk(0).get());
     const auto* tag_highway =
-        static_cast<const arrow::UInt32Array*>(t->column(15)->chunk(0).get());
+        static_cast<const arrow::UInt32Array*>(t->column(12)->chunk(0).get());
     const auto* tag_waterway =
-        static_cast<const arrow::UInt32Array*>(t->column(23)->chunk(0).get());
+        static_cast<const arrow::UInt32Array*>(t->column(20)->chunk(0).get());
     for (int64_t i = 0; i < t->num_rows(); ++i) {
         out.uid.push_back(uid->Value(i));
         out.day.push_back(day->Value(i));
         out.node_created.push_back(node_created->Value(i));
-        out.relocated.push_back(relocated->Value(i));
-        out.rapid_edit.push_back(rapid_edit->Value(i));
         out.relation_created.push_back(relation_created->Value(i));
         out.tag_amenity.push_back(tag_amenity->Value(i));
         out.tag_building.push_back(tag_building->Value(i));
@@ -256,8 +251,6 @@ TEST(UserIndicatorFinalize, ConcatenatesSortsAndDerives) {
     EXPECT_EQ(ind.node_created[0], 5);
     EXPECT_EQ(ind.node_created[1], 6);
     EXPECT_EQ(ind.node_created[4], 1);  // uid 12
-    EXPECT_EQ(ind.rapid_edit[0], 1);    // uid 10 day 1000, padded in the staging row
-    EXPECT_EQ(ind.relocated[0], 0);
     EXPECT_EQ(ind.relation_created[0], 3);       // uid 10 day 1000
     EXPECT_EQ(ind.relation_created[1], 0);       // uid 10 day 1005
     EXPECT_EQ(ind.relation_created[4], 0);       // uid 12

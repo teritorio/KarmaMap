@@ -5,7 +5,7 @@
 //
 //   user_indicators.parquet  per (uid, change_date) activity counters
 //                            (uid, change_date, node/way/relation counters,
-//                             relocated, short_lived, rapid_edit, tag_*)
+//                            tag_*)
 //   user_reputation.parquet  per-uid reputation + full indicator totals
 //                            (uid, username, first_seen_day, bulk_new_user,
 //                             max_day_changes, reputation, 22 counter totals,
