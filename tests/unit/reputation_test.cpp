@@ -24,13 +24,12 @@ TEST(Reputation, TiesShareRank) {
     EXPECT_EQ(res.active[0], 4);
     EXPECT_EQ(res.max[0], 9);
     EXPECT_EQ(res.active[1], 0);  // way aspect untouched
-    EXPECT_DOUBLE_EQ(res.points[0][0], 0.0);  // ties at the bottom share rank 0
-    EXPECT_DOUBLE_EQ(res.points[0][1], 0.0);
+    // Ties at the bottom share rank 0; the pct mirrors the tied points
+    // (points = cap * pct / 100, derived client-side).
     EXPECT_DOUBLE_EQ(res.pct[0][0], 0.0);
-    EXPECT_DOUBLE_EQ(res.points[0][2], 20.0 * 2 / 3);
+    EXPECT_DOUBLE_EQ(res.pct[0][1], 0.0);
     EXPECT_DOUBLE_EQ(res.pct[0][2], 100.0 * 2 / 3);
-    EXPECT_DOUBLE_EQ(res.points[0][3], 20.0);  // unique busiest
-    EXPECT_DOUBLE_EQ(res.pct[0][3], 100.0);
+    EXPECT_DOUBLE_EQ(res.pct[0][3], 100.0);  // unique busiest
 
     EXPECT_EQ(res.reputation[0], 0);
     EXPECT_EQ(res.reputation[1], 0);
@@ -46,9 +45,8 @@ TEST(Reputation, SoleContributorGetsFullCap) {
 
     EXPECT_EQ(res.active[0], 1);
     EXPECT_EQ(res.max[0], 4);
-    EXPECT_DOUBLE_EQ(res.points[0][0], 20.0);
-    EXPECT_DOUBLE_EQ(res.pct[0][0], 100.0);
-    EXPECT_DOUBLE_EQ(res.points[0][1], 0.0);
+    EXPECT_DOUBLE_EQ(res.pct[0][0], 100.0);  // sole contributor: full cap, pct 100
+    EXPECT_DOUBLE_EQ(res.pct[0][1], 0.0);
     EXPECT_EQ(res.reputation[0], 20);
     EXPECT_EQ(res.reputation[1], 0);
 }
@@ -61,7 +59,6 @@ TEST(Reputation, ZeroTotalsAreInactive) {
         EXPECT_EQ(res.active[a], 0);
         EXPECT_EQ(res.max[a], 0);
         for (size_t i = 0; i < 2; ++i) {
-            EXPECT_DOUBLE_EQ(res.points[a][i], 0.0);
             EXPECT_DOUBLE_EQ(res.pct[a][i], 0.0);
         }
     }
@@ -77,10 +74,9 @@ TEST(Reputation, UniqueBusiestAmongChecked) {
 
     EXPECT_EQ(res.active[0], 3);
     EXPECT_EQ(res.max[0], 5);
-    EXPECT_DOUBLE_EQ(res.points[0][3], 20.0);
-    EXPECT_DOUBLE_EQ(res.pct[0][3], 100.0);
-    EXPECT_DOUBLE_EQ(res.points[0][1], 0.0);
-    EXPECT_DOUBLE_EQ(res.points[0][2], 0.0);
+    EXPECT_DOUBLE_EQ(res.pct[0][3], 100.0);  // unique busiest
+    EXPECT_DOUBLE_EQ(res.pct[0][1], 0.0);
+    EXPECT_DOUBLE_EQ(res.pct[0][2], 0.0);
     EXPECT_EQ(res.reputation[3], 20);
 }
 
@@ -95,9 +91,9 @@ TEST(Reputation, RoundsToIntAndCapsAt100) {
     const reputation::Result res = reputation::compute(uids, totals);
 
     // uid 2 (7): each aspect has less = 2 of 3.
-    EXPECT_DOUBLE_EQ(res.points[0][1], 20.0 * 2 / 3);
-    EXPECT_DOUBLE_EQ(res.points[1][1], 20.0 * 2 / 3);
-    EXPECT_DOUBLE_EQ(res.points[2][1], 12.0 * 2 / 3);
+    EXPECT_DOUBLE_EQ(res.pct[0][1], 100.0 * 2 / 3);
+    EXPECT_DOUBLE_EQ(res.pct[1][1], 100.0 * 2 / 3);
+    EXPECT_DOUBLE_EQ(res.pct[2][1], 100.0 * 2 / 3);
     EXPECT_EQ(res.reputation[1], 35);  // round(34.666...)
 
     // uid 1 (8): unique busiest on all three aspects.
@@ -123,7 +119,7 @@ TEST(Reputation, EmptyInput) {
     EXPECT_TRUE(res.reputation.empty());
     for (size_t a = 0; a < reputation::kAspectCount; ++a) {
         EXPECT_EQ(res.active[a], 0);
-        EXPECT_TRUE(res.points[a].empty());
+        EXPECT_TRUE(res.pct[a].empty());
     }
 }
 

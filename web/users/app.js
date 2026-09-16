@@ -1,14 +1,15 @@
-// Users viewer: looks up an OSM username in user_profiles.parquet, fetches
-// that user's exact reputation row from user_reputation.parquet and daily
-// rows from user_indicators.parquet, and renders the OSMPatrol reputation
-// (with edit-suspicion chips), raw indicator totals and an edit-activity
+// Users viewer: looks up an OSM username directly in user_reputation.parquet
+// (the pipeline stamps the current username per uid), fetches that user's
+// exact reputation row and their per-day rows from user_indicators.parquet,
+// and renders the OSMPatrol reputation (with edit-suspicion chips), raw
+// indicator totals, the profile identity fields and an edit-activity
 // timeline. Same architecture as the changes viewer (page + app + query +
 // histogram + permalink modules), but no spatial component.
 
 import { loadManifest } from './manifest.js'
 import { readPermalink, writePermalink } from './permalink.js'
 import {
-  queryProfiles, queryIndicators, queryReputation, computeScores,
+  queryReputationByUsername, queryIndicators, computeScores,
   dayKey, TAG_COUNTERS, REP_CAPS, REP_FORMULA,
 } from './query.js'
 import { initHistogram, setHistogramData, setLogScale } from './histogram.js'
@@ -178,8 +179,11 @@ async function search(manifest) {
   setStatus(`Looking up user ${name}...`)
 
   try {
-    const profiles = await queryProfiles(BASE_URL, manifest.datasets.user_profiles.path, name)
-    if (profiles.length === 0) {
+    const repDataset = manifest.datasets.user_reputation
+    const { rows: reps, stats } = repDataset
+      ? await queryReputationByUsername(BASE_URL, repDataset.path, name)
+      : { rows: [], stats: {} }
+    if (reps.length === 0) {
       profileEl.innerHTML = ''
       scoreEl.innerHTML = ''
       scoresEl.innerHTML = ''
@@ -188,13 +192,9 @@ async function search(manifest) {
       return
     }
 
-    const uids = [...new Set(profiles.map((p) => p.uid))]
-    const repDataset = manifest.datasets.user_reputation
-    const reputationRows = repDataset
-      ? await queryReputation(BASE_URL, repDataset.path, uids)
-      : []
+    const uids = [...new Set(reps.map((p) => p.uid))]
     const indicators = await queryIndicators(BASE_URL, manifest.datasets.user_indicators.path, uids)
-    const scores = computeScores(profiles, indicators, reputationRows)
+    const scores = computeScores(reps, indicators, stats)
 
     renderProfile(name, scores)
     renderScore(scores)
@@ -226,8 +226,8 @@ async function main() {
   if (user) usernameEl.value = user
 
   const datasets = manifest.datasets ?? {}
-  if (!datasets.user_profiles || !datasets.user_indicators) {
-    setStatus('user_profiles/user_indicators not in manifest — rerun the pipeline with --user-indicators.')
+  if (!datasets.user_reputation || !datasets.user_indicators) {
+    setStatus('user_reputation/user_indicators not in manifest — rerun the pipeline with --user-indicators.')
     return
   }
 

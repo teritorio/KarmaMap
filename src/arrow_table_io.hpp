@@ -38,7 +38,8 @@ inline std::shared_ptr<arrow::Table> read_table(const std::string& path) {
     return *table_result;
 }
 
-inline void write_table(const std::string& path, const std::shared_ptr<arrow::Table>& table) {
+inline void write_table(const std::string& path, const std::shared_ptr<arrow::Table>& table,
+                        const std::shared_ptr<arrow::KeyValueMetadata>& file_metadata) {
     auto outfile_result = arrow::io::FileOutputStream::Open(path);
     if (!outfile_result.ok()) {
         throw std::runtime_error("Failed to open " + path + " for writing: " +
@@ -52,16 +53,43 @@ inline void write_table(const std::string& path, const std::shared_ptr<arrow::Ta
     // One row group per file, bounded by a single partition's data.
     const int64_t chunk_size = table->num_rows() > 0 ? table->num_rows() : 1;
 
-    auto write_status = parquet::arrow::WriteTable(*table, arrow::default_memory_pool(),
-                                                     *outfile_result, chunk_size, writer_props);
+    // FileWriter is used instead of the WriteTable convenience so caller
+    // key_value_metadata lands in the Parquet footer, independent of whether
+    // the writer also propagates the Arrow schema metadata.
+    auto writer_result = parquet::arrow::FileWriter::Open(
+        *table->schema(), arrow::default_memory_pool(), *outfile_result, writer_props);
+    if (!writer_result.ok()) {
+        throw std::runtime_error("Failed to open Parquet writer for " + path + ": " +
+                                  writer_result.status().ToString());
+    }
+    std::unique_ptr<parquet::arrow::FileWriter> writer = std::move(*writer_result);
+
+    auto write_status = writer->WriteTable(*table, chunk_size);
     if (!write_status.ok()) {
         throw std::runtime_error("Failed to write " + path + ": " + write_status.ToString());
     }
-
-    auto close_status = (*outfile_result)->Close();
-    if (!close_status.ok()) {
-        throw std::runtime_error("Failed to finalize " + path + ": " + close_status.ToString());
+    if (file_metadata) {
+        auto meta_status = writer->AddKeyValueMetadata(file_metadata);
+        if (!meta_status.ok()) {
+            throw std::runtime_error("Failed to add metadata to " + path + ": " +
+                                      meta_status.ToString());
+        }
     }
+    auto close_status = writer->Close();
+    if (!close_status.ok()) {
+        throw std::runtime_error("Failed to finalize " + path + ": " +
+                                  close_status.ToString());
+    }
+
+    auto close_sink_status = (*outfile_result)->Close();
+    if (!close_sink_status.ok()) {
+        throw std::runtime_error("Failed to close " + path + ": " +
+                                  close_sink_status.ToString());
+    }
+}
+
+inline void write_table(const std::string& path, const std::shared_ptr<arrow::Table>& table) {
+    write_table(path, table, nullptr);
 }
 
 }  // namespace arrow_table_io

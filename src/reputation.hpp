@@ -31,16 +31,17 @@ struct Result {
     std::vector<uint8_t> reputation;                // aligned with uid (0..100)
     std::array<uint64_t, kAspectCount> active{};    // contributors with total > 0
     std::array<uint64_t, kAspectCount> max{};       // largest total, 0 when inactive
-    std::array<std::vector<double>, kAspectCount> points;  // aligned with uid
-    std::array<std::vector<double>, kAspectCount> pct;
+    std::array<std::vector<double>, kAspectCount> pct;  // aligned with uid (0..100)
 };
 
 inline Result compute(const std::vector<int64_t>& uid,
                       const std::array<std::vector<uint64_t>, kAspectCount>& totals) {
     Result res;
     const size_t n = uid.size();
+    // Per-aspect points are cap * P, so the reputation sum accumulates inline
+    // from the same rank math.
+    std::vector<double> rep_sum(n, 0.0);
     for (size_t a = 0; a < kAspectCount; ++a) {
-        res.points[a].assign(n, 0.0);
         res.pct[a].assign(n, 0.0);
     }
     res.reputation.assign(n, 0);
@@ -66,8 +67,9 @@ inline Result compute(const std::vector<int64_t>& uid,
                   [&](size_t x, size_t y) { return totals[a][x] < totals[a][y]; });
 
         if (order.size() == 1) {
-            res.points[a][order[0]] = kCaps[a];
-            res.pct[a][order[0]] = 100.0;
+            const size_t i = order[0];
+            rep_sum[i] += kCaps[a];
+            res.pct[a][i] = 100.0;
             continue;
         }
 
@@ -80,7 +82,7 @@ inline Result compute(const std::vector<int64_t>& uid,
             const double less = static_cast<double>(start);  // ties share this rank
             for (size_t k = start; k < end; ++k) {
                 const size_t i = order[k];
-                res.points[a][i] = kCaps[a] * less * scale;
+                rep_sum[i] += kCaps[a] * less * scale;
                 res.pct[a][i] = 100.0 * less * scale;
             }
             start = end;
@@ -88,10 +90,8 @@ inline Result compute(const std::vector<int64_t>& uid,
     }
 
     for (size_t i = 0; i < n; ++i) {
-        double sum = 0.0;
-        for (size_t a = 0; a < kAspectCount; ++a) sum += res.points[a][i];
         res.reputation[i] =
-            static_cast<uint8_t>(std::clamp(std::round(sum), 0.0, 100.0));
+            static_cast<uint8_t>(std::clamp(std::round(rep_sum[i]), 0.0, 100.0));
     }
     return res;
 }

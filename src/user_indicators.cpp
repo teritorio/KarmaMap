@@ -257,7 +257,7 @@ std::shared_ptr<arrow::Table> order_table(
     arrow::compute::SortOptions options(keys);
     auto indices_result = arrow::compute::SortIndices(arrow::Datum(table), options);
     if (!indices_result.ok()) {
-        throw std::runtime_error("Failed to sort user-indicator rows: " +
+        throw std::runtime_error("Failed to sort rows: " +
                                  indices_result.status().ToString());
     }
     const std::shared_ptr<arrow::Array> index_array = indices_result.ValueOrDie();
@@ -270,7 +270,7 @@ std::shared_ptr<arrow::Table> order_table(
         auto taken_result = arrow::compute::Take(*column->chunk(0), *index_array,
                                                  arrow::compute::TakeOptions::Defaults());
         if (!taken_result.ok()) {
-            throw std::runtime_error("Failed to order user-indicator rows: " +
+            throw std::runtime_error("Failed to order rows: " +
                                      taken_result.status().ToString());
         }
         sorted_columns.push_back(taken_result.ValueOrDie());
@@ -542,35 +542,68 @@ void run_finalize(const std::string& stage_dir, const std::string& profiles_path
     for (size_t i = 0; i < kTagCount; ++i) rep_counter_idx[3 + i] = kFirstTag + i;
 
     std::vector<int64_t> rep_uids;
+    std::vector<std::string> rep_usernames;
+    std::vector<uint16_t> rep_first_seen;
+    std::vector<bool> rep_bulk;
+    std::vector<uint32_t> rep_max_day_changes;
     std::array<std::vector<uint64_t>, kCounterCount> counter_sums;
     {
         std::array<uint64_t, kCounterCount> acc{};
         int64_t cur = 0;
         bool in = false;
+        uint16_t group_first_seen = 0;
+        uint32_t window_total = 0;
+        uint32_t max_day_changes = 0;
+        std::string group_username;
         const auto* uid_arr = static_cast<const arrow::Int64Array*>(ind_uid.get());
         const auto flush = [&]() {
             if (!in) return;
             rep_uids.push_back(cur);
+            if (group_username.empty()) group_username = "<" + std::to_string(cur) + ">";
+            rep_usernames.push_back(group_username);
+            rep_first_seen.push_back(group_first_seen);
+            rep_bulk.push_back(window_total >= static_cast<uint32_t>(thresholds.bulk_edit_min));
+            rep_max_day_changes.push_back(max_day_changes);
             for (size_t c = 0; c < kCounterCount; ++c) {
                 counter_sums[c].push_back(acc[c]);
             }
         };
         for (int64_t i = 0; i < uid_arr->length(); ++i) {
             const int64_t u = uid_arr->Value(i);
-            if (!in) {
+            const uint16_t day = day_array->Value(i);
+            if (!in || u != cur) {
+                if (in) flush();
                 in = true;
                 cur = u;
                 acc.fill(0);
-            } else if (u != cur) {
-                flush();
-                cur = u;
-                acc.fill(0);
+                group_first_seen = day;
+                window_total = 0;
+                max_day_changes = 0;
+                group_username.clear();
             }
+            // Combined rows are index-aligned with the indicator rows, so the
+            // row's username is the last (current) username seen for the uid.
+            group_username = user_array->GetView(i);
+            uint64_t total_events = 0;
             for (size_t c = 0; c < kCounterCount; ++c) {
                 const auto* arr =
                     static_cast<const arrow::UInt32Array*>(ind_counters[c].get());
-                acc[c] += arr->Value(i);
+                const uint32_t v = arr->Value(i);
+                acc[c] += v;
+                if (c < 6) total_events += v;  // node/way change counters
             }
+            if (static_cast<int32_t>(day) - static_cast<int32_t>(group_first_seen) <
+                thresholds.new_user_window_days) {
+                window_total += static_cast<uint32_t>(total_events);
+            }
+            // Same per-day cutoff the edits viewer applies to flag mass edit
+            // or delete bursts (node/way modified+deleted).
+            const uint32_t day_changes =
+                static_cast<const arrow::UInt32Array*>(ind_counters[1].get())->Value(i) +
+                static_cast<const arrow::UInt32Array*>(ind_counters[2].get())->Value(i) +
+                static_cast<const arrow::UInt32Array*>(ind_counters[4].get())->Value(i) +
+                static_cast<const arrow::UInt32Array*>(ind_counters[5].get())->Value(i);
+            max_day_changes = std::max(max_day_changes, day_changes);
         }
         flush();
     }
@@ -593,31 +626,44 @@ void run_finalize(const std::string& stage_dir, const std::string& profiles_path
         rep_aspect_names[3 + i] = "tag_" + std::string(kTop12TagKeys[i]);
     }
 
-    // Wide one-row-per-uid table: uid, reputation, the 22 indicator totals,
-    // and per-aspect detail columns (points/pct/active/max), uid-sorted.
+    // Wide one-row-per-uid table: uid, current username (identity, so the
+    // viewers can filter by exact username), the user's first-seen day, the
+    // bulk-new-user flag, the busiest single-day node/way modified+deleted
+    // count, reputation, the 22 indicator totals, and the per-aspect
+    // percentile column, sorted by username (uid tie-break) so an exact
+    // username filter prunes to the matching pages. The dataset-wide
+    // active/max stats are written once as file key_value_metadata (_active
+    // and _max keys) instead of repeated per-row columns, and the per-aspect
+    // points derive client-side from pct and the constant paper caps.
     arrow::Int64Builder rep_uid_builder;
+    arrow::StringBuilder rep_username_builder;
+    arrow::UInt16Builder rep_first_seen_builder;
+    arrow::BooleanBuilder rep_bulk_builder;
+    arrow::UInt32Builder rep_max_day_changes_builder;
     arrow::UInt8Builder rep_score_builder;
     std::array<arrow::UInt32Builder, kCounterCount> rep_counter_builders;
-    std::array<arrow::DoubleBuilder, kRepAspectCount> rep_points_builders;
     std::array<arrow::DoubleBuilder, kRepAspectCount> rep_pct_builders;
-    std::array<arrow::UInt64Builder, kRepAspectCount> rep_active_builders;
-    std::array<arrow::UInt64Builder, kRepAspectCount> rep_max_builders;
     for (size_t i = 0; i < rep_uids.size(); ++i) {
         append_checked(rep_uid_builder, rep_uids[i]);
+        append_checked(rep_username_builder, rep_usernames[i]);
+        append_checked(rep_first_seen_builder, rep_first_seen[i]);
+        append_checked(rep_bulk_builder, rep_bulk[i]);
+        append_checked(rep_max_day_changes_builder, rep_max_day_changes[i]);
         append_checked(rep_score_builder, rep.reputation[i]);
         for (size_t c = 0; c < kCounterCount; ++c) {
             append_checked(rep_counter_builders[c], counter_sums[c][i]);
         }
         for (size_t a = 0; a < kRepAspectCount; ++a) {
-            append_checked(rep_points_builders[a], rep.points[a][i]);
             append_checked(rep_pct_builders[a], rep.pct[a][i]);
-            append_checked(rep_active_builders[a], rep.active[a]);
-            append_checked(rep_max_builders[a], rep.max[a]);
         }
     }
 
     std::vector<std::shared_ptr<arrow::Field>> rep_fields = {
         arrow::field("uid", arrow::int64(), false),
+        arrow::field("username", arrow::utf8(), false),
+        arrow::field("first_seen_day", arrow::uint16(), false),
+        arrow::field("bulk_new_user", arrow::boolean(), false),
+        arrow::field("max_day_changes", arrow::uint32(), false),
         arrow::field("reputation", arrow::uint8(), false),
     };
     for (const auto& c : kCounters) {
@@ -625,21 +671,24 @@ void run_finalize(const std::string& stage_dir, const std::string& profiles_path
     }
     for (size_t a = 0; a < kRepAspectCount; ++a) {
         rep_fields.push_back(
-            arrow::field(rep_aspect_names[a] + "_points", arrow::float64(), false));
-        rep_fields.push_back(
             arrow::field(rep_aspect_names[a] + "_pct", arrow::float64(), false));
-        rep_fields.push_back(
-            arrow::field(rep_aspect_names[a] + "_active", arrow::uint64(), false));
-        rep_fields.push_back(
-            arrow::field(rep_aspect_names[a] + "_max", arrow::uint64(), false));
     }
 
     std::vector<std::shared_ptr<arrow::Array>> rep_columns;
-    rep_columns.reserve(2 + kCounterCount + 4 * kRepAspectCount);
-    std::shared_ptr<arrow::Array> rep_uid, rep_score;
+    rep_columns.reserve(6 + kCounterCount + kRepAspectCount);
+    std::shared_ptr<arrow::Array> rep_uid, rep_username_arr, rep_first_seen_arr, rep_bulk_arr;
+    std::shared_ptr<arrow::Array> rep_max_day_changes_arr, rep_score;
     finish_checked(rep_uid_builder, &rep_uid);
+    finish_checked(rep_username_builder, &rep_username_arr);
+    finish_checked(rep_first_seen_builder, &rep_first_seen_arr);
+    finish_checked(rep_bulk_builder, &rep_bulk_arr);
+    finish_checked(rep_max_day_changes_builder, &rep_max_day_changes_arr);
     finish_checked(rep_score_builder, &rep_score);
     rep_columns.push_back(rep_uid);
+    rep_columns.push_back(rep_username_arr);
+    rep_columns.push_back(rep_first_seen_arr);
+    rep_columns.push_back(rep_bulk_arr);
+    rep_columns.push_back(rep_max_day_changes_arr);
     rep_columns.push_back(rep_score);
     for (size_t c = 0; c < kCounterCount; ++c) {
         std::shared_ptr<arrow::Array> arr;
@@ -648,23 +697,35 @@ void run_finalize(const std::string& stage_dir, const std::string& profiles_path
     }
     for (size_t a = 0; a < kRepAspectCount; ++a) {
         std::shared_ptr<arrow::Array> arr;
-        finish_checked(rep_points_builders[a], &arr);
-        rep_columns.push_back(arr);
         finish_checked(rep_pct_builders[a], &arr);
         rep_columns.push_back(arr);
-        finish_checked(rep_active_builders[a], &arr);
-        rep_columns.push_back(arr);
-        finish_checked(rep_max_builders[a], &arr);
-        rep_columns.push_back(arr);
     }
+    // The dataset-wide active/max aspect stats are the same value for every
+    // row, so they are attached once as file-level key_value_metadata rather
+    // than written as 30 repeated columns. write_table puts the metadata into
+    // the Parquet footer, which is what the viewer reads.
+    std::vector<std::string> rep_meta_keys;
+    std::vector<std::string> rep_meta_values;
+    rep_meta_keys.reserve(2 * kRepAspectCount);
+    rep_meta_values.reserve(2 * kRepAspectCount);
+    for (size_t a = 0; a < kRepAspectCount; ++a) {
+        rep_meta_keys.push_back(rep_aspect_names[a] + "_active");
+        rep_meta_values.push_back(std::to_string(rep.active[a]));
+        rep_meta_keys.push_back(rep_aspect_names[a] + "_max");
+        rep_meta_values.push_back(std::to_string(rep.max[a]));
+    }
+    auto rep_meta = arrow::KeyValueMetadata::Make(rep_meta_keys, rep_meta_values);
     auto rep_table = arrow::Table::Make(arrow::schema(rep_fields), rep_columns);
+    rep_table = order_table(rep_table,
+                            {arrow::compute::SortKey("username"),
+                             arrow::compute::SortKey("uid")});
 
     const std::filesystem::path indicators_parent =
         std::filesystem::path(indicators_path).parent_path();
     const std::string reputation_path =
         (indicators_parent / "user_reputation.parquet").string();
     const std::string reputation_tmp = reputation_path + ".tmp";
-    arrow_table_io::write_table(reputation_tmp, rep_table);
+    arrow_table_io::write_table(reputation_tmp, rep_table, rep_meta);
     std::filesystem::rename(reputation_tmp, reputation_path);
 
     std::filesystem::remove_all(stage_dir);

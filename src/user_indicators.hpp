@@ -10,12 +10,15 @@
 //                            (uid, change_date, node/way/relation counters,
 //                             relocated, short_lived, rapid_edit, tag_*)
 //   user_reputation.parquet  per-uid reputation + full indicator totals
-//                            (uid, reputation, 22 counter totals,
-//                             per-aspect points/pct/active/max)
+//                            (uid, username, first_seen_day, bulk_new_user,
+//                             max_day_changes, reputation, 22 counter totals,
+//                             per-aspect pct; active/max in file metadata)
 //
 // All three are non-partitioned, with user_profiles sorted by (uid,
 // first_edit_day), user_indicators by (uid, change_date) and
-// user_reputation.parquet by uid, for cheap joins on uid.
+// user_reputation.parquet by username (uid tie-break), so an exact username
+// filter in the users viewer prunes to the matching pages; the per-day
+// indicator table still joins on uid for the timeline.
 //
 // The scan is a single streaming pass over the history (entity bits
 // node|way|relation). OSM full-history files are sorted by (object id,
