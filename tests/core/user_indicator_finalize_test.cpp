@@ -1,8 +1,6 @@
 #include <gtest/gtest.h>
 
 #include <arrow/api.h>
-#include <arrow/io/api.h>
-#include <parquet/arrow/writer.h>
 
 #include <cstdint>
 #include <filesystem>
@@ -54,9 +52,6 @@ struct StageRow {
 
 // Writes one stage file with the exact schema the scan produces.
 void write_stage(const std::string& path, const std::vector<StageRow>& rows) {
-    auto outfile_result = arrow::io::FileOutputStream::Open(path);
-    ASSERT_TRUE(outfile_result.ok()) << outfile_result.status();
-
     arrow::Int64Builder uid;
     arrow::StringBuilder username;
     arrow::UInt16Builder day;
@@ -124,13 +119,7 @@ void write_stage(const std::string& path, const std::vector<StageRow>& rows) {
     columns.insert(columns.end(), a_counters.begin(), a_counters.end());
     auto table = arrow::Table::Make(schema, columns);
 
-    parquet::WriterProperties::Builder props_builder;
-    props_builder.compression(parquet::Compression::ZSTD);
-    auto write_status =
-        parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), *outfile_result,
-                                   /*chunk_size=*/table->num_rows(), props_builder.build());
-    ASSERT_TRUE(write_status.ok()) << write_status.ToString();
-    ASSERT_TRUE((*outfile_result)->Close().ok());
+    test_helpers::write_table(path, table);
 }
 
 // Reads back an output file into typed helper vectors.

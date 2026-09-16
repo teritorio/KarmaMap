@@ -10,7 +10,7 @@
 //
 // node_id is big-endian with the sign bit flipped so byte order equals
 // numeric order: the first 10 bytes byte-compare as a (node_id, day) tuple,
-// which is what the binary search and the sweep run on. day is the uint16
+// which is what the sweep runs on. day is the uint16
 // UTC epoch-day value shared with change_date; the cell is packed 6-byte LE
 // (h3_utils::pack_cell). Full layout details are in README "Node cache".
 
@@ -97,7 +97,7 @@ inline uint64_t read_cell6(const uint8_t* p) {
 // Buffers records into 2^18-record blocks, ZSTD-compressed and written out
 // as they fill. One pending record collapses consecutive same-(node_id, day)
 // input (last version of a day wins) and enforces the ascending (node_id,
-// day) order the binary search relies on; OSM full-history order makes days
+// day) order the sweep relies on; OSM full-history order makes days
 // per node non-decreasing, so any violation aborts loudly.
 class Writer {
 public:

@@ -101,17 +101,36 @@ inline int64_t sum_column(const std::shared_ptr<arrow::Table>& table, const std:
     return total;
 }
 
-// Writes a staging (h3_cell, change_date, count) Parquet file, the format
-// produced by passes 1 and 2, used to seed sort/manifest tests.
-inline void write_staging(
-    const std::string& path,
-    const std::vector<std::tuple<uint64_t, int32_t, uint32_t>>& rows) {
+// Writes a whole table to Parquet (ZSTD-compressed) and closes the file.
+// Shared by the core tests that seed stage files for the sort, manifest and
+// indicator passes.
+inline void write_table(const std::string& path,
+                        const std::shared_ptr<arrow::Table>& table) {
     auto outfile_result = arrow::io::FileOutputStream::Open(path);
     if (!outfile_result.ok()) {
         throw std::runtime_error("Failed to open " + path + " for writing: " +
                                  outfile_result.status().ToString());
     }
 
+    parquet::WriterProperties::Builder props_builder;
+    props_builder.compression(parquet::Compression::ZSTD);
+    auto write_status =
+        parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), *outfile_result,
+                                   /*chunk_size=*/table->num_rows(), props_builder.build());
+    if (!write_status.ok()) {
+        throw std::runtime_error("Failed to write file " + path + ": " +
+                                 write_status.ToString());
+    }
+    if (!(*outfile_result)->Close().ok()) {
+        throw std::runtime_error("Failed to finalize file " + path);
+    }
+}
+
+// Writes a staging (h3_cell, change_date, count) Parquet file, the format
+// produced by passes 1 and 2, used to seed sort/manifest tests.
+inline void write_staging(
+    const std::string& path,
+    const std::vector<std::tuple<uint64_t, int32_t, uint32_t>>& rows) {
     arrow::UInt64Builder cell_builder;
     arrow::UInt16Builder date_builder;
     arrow::UInt32Builder count_builder;
@@ -135,18 +154,7 @@ inline void write_staging(
     });
     auto table = arrow::Table::Make(schema, {cells, dates, counts});
 
-    parquet::WriterProperties::Builder props_builder;
-    props_builder.compression(parquet::Compression::ZSTD);
-    auto write_status =
-        parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), *outfile_result,
-                                   /*chunk_size=*/table->num_rows(), props_builder.build());
-    if (!write_status.ok()) {
-        throw std::runtime_error("Failed to write staging file " + path + ": " +
-                                 write_status.ToString());
-    }
-    if (!(*outfile_result)->Close().ok()) {
-        throw std::runtime_error("Failed to finalize staging file " + path);
-    }
+    write_table(path, table);
 }
 
 }  // namespace test_helpers

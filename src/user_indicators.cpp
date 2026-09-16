@@ -236,33 +236,6 @@ private:
 // so they are aggregated internally but never written to the indicator file.
 constexpr size_t kLiveCounterCount = 7;
 
-std::shared_ptr<arrow::Table> order_table(
-    const std::shared_ptr<arrow::Table>& table,
-    const std::vector<arrow::compute::SortKey>& keys) {
-    arrow::compute::SortOptions options(keys);
-    auto indices_result = arrow::compute::SortIndices(arrow::Datum(table), options);
-    if (!indices_result.ok()) {
-        throw std::runtime_error("Failed to sort rows: " +
-                                 indices_result.status().ToString());
-    }
-    const std::shared_ptr<arrow::Array> index_array = indices_result.ValueOrDie();
-
-    std::vector<std::shared_ptr<arrow::Array>> sorted_columns;
-    for (const auto& column : table->columns()) {
-        if (column->num_chunks() != 1) {
-            throw std::runtime_error("Unexpected multi-chunk column while sorting");
-        }
-        auto taken_result = arrow::compute::Take(*column->chunk(0), *index_array,
-                                                 arrow::compute::TakeOptions::Defaults());
-        if (!taken_result.ok()) {
-            throw std::runtime_error("Failed to order rows: " +
-                                     taken_result.status().ToString());
-        }
-        sorted_columns.push_back(taken_result.ValueOrDie());
-    }
-    return arrow::Table::Make(table->schema(), sorted_columns);
-}
-
 // Concatenates the (single-chunk) columns of one stage table into `columns`.
 void append_stage_columns(const std::shared_ptr<arrow::Table>& table,
                           std::vector<std::vector<std::shared_ptr<arrow::Array>>>& columns) {
@@ -363,9 +336,9 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
             columns[f] = *concat_result;
         }
     }
-    auto combined = order_table(arrow::Table::Make(schema, columns),
-                                {arrow::compute::SortKey("uid"),
-                                 arrow::compute::SortKey("change_date")});
+    auto combined = arrow_table_io::sort_by_keys(
+        arrow::Table::Make(schema, columns),
+        {arrow::compute::SortKey("uid"), arrow::compute::SortKey("change_date")});
 
     const auto* uid_array = static_cast<const arrow::Int64Array*>(combined->column(0)->chunk(0).get());
     const auto* user_array = static_cast<const arrow::StringArray*>(combined->column(1)->chunk(0).get());
@@ -584,9 +557,8 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
     }
     auto rep_meta = arrow::KeyValueMetadata::Make(rep_meta_keys, rep_meta_values);
     auto rep_table = arrow::Table::Make(arrow::schema(rep_fields), rep_columns);
-    rep_table = order_table(rep_table,
-                            {arrow::compute::SortKey("username"),
-                             arrow::compute::SortKey("uid")});
+    rep_table = arrow_table_io::sort_by_keys(
+        rep_table, {arrow::compute::SortKey("username"), arrow::compute::SortKey("uid")});
 
     const std::filesystem::path indicators_parent =
         std::filesystem::path(indicators_path).parent_path();

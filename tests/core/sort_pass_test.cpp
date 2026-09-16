@@ -1,8 +1,6 @@
 #include <gtest/gtest.h>
 
 #include <arrow/api.h>
-#include <arrow/io/api.h>
-#include <parquet/arrow/writer.h>
 
 #include <cstdint>
 #include <filesystem>
@@ -78,12 +76,6 @@ MergedTable read_merged(const std::string& path) {
 void write_staging_int32_date(
     const std::string& path,
     const std::vector<std::tuple<uint64_t, int32_t, uint32_t>>& rows) {
-    auto outfile_result = arrow::io::FileOutputStream::Open(path);
-    if (!outfile_result.ok()) {
-        throw std::runtime_error("Failed to open " + path + " for writing: " +
-                                 outfile_result.status().ToString());
-    }
-
     arrow::UInt64Builder cell_builder;
     arrow::Int32Builder date_builder;
     arrow::UInt32Builder count_builder;
@@ -107,18 +99,7 @@ void write_staging_int32_date(
     });
     auto table = arrow::Table::Make(schema, {cells, dates, counts});
 
-    parquet::WriterProperties::Builder props_builder;
-    props_builder.compression(parquet::Compression::ZSTD);
-    auto write_status =
-        parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), *outfile_result,
-                                   /*chunk_size=*/table->num_rows(), props_builder.build());
-    if (!write_status.ok()) {
-        throw std::runtime_error("Failed to write staging file " + path + ": " +
-                                 write_status.ToString());
-    }
-    if (!(*outfile_result)->Close().ok()) {
-        throw std::runtime_error("Failed to finalize staging file " + path);
-    }
+    test_helpers::write_table(path, table);
 }
 
 TEST(SortPass, MergesNodesAndWays) {

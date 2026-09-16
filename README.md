@@ -231,8 +231,8 @@ the node's H3 index at `--h3-resolution` (0-13) packed into 6 little-endian
 bytes (`h3_utils::pack_cell`), with the resolution re-applied from the
 header on read. The writer
 enforces the ascending order while building (a decreasing node id or day
-aborts loudly), so the binary search and the way pass's sweep are safe. A
-node edited several times in one day is stored once (last position wins).
+aborts loudly), so the way pass's sweep is safe. A node edited several times
+in one day is stored once (last position wins).
 Node deletions are not stored: resolving a deleted node returns its last
 known position — an accepted approximation.
 

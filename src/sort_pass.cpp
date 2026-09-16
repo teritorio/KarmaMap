@@ -21,35 +21,6 @@ namespace sort_pass {
 
 namespace {
 
-// Orders a table by (h3_cell, change_date) with Arrow's compute kernels
-// (SortIndices + Take), so row-group min/max ranges stay compact for bbox
-// (h3_cell) and date (change_date) pruning.
-std::shared_ptr<arrow::Table> sort_by_h3_day(const std::shared_ptr<arrow::Table>& table) {
-    arrow::compute::SortOptions options({arrow::compute::SortKey("h3_cell"),
-                                         arrow::compute::SortKey("change_date")});
-    auto indices_result = arrow::compute::SortIndices(arrow::Datum(table), options);
-    if (!indices_result.ok()) {
-        throw std::runtime_error("Failed to sort merged rows: " +
-                                 indices_result.status().ToString());
-    }
-    const std::shared_ptr<arrow::Array> index_array = indices_result.ValueOrDie();
-
-    std::vector<std::shared_ptr<arrow::Array>> sorted_columns;
-    for (const auto& column : table->columns()) {
-        if (column->num_chunks() != 1) {
-            throw std::runtime_error("Unexpected multi-chunk column while sorting merged rows");
-        }
-        auto taken_result = arrow::compute::Take(*column->chunk(0), *index_array,
-                                                 arrow::compute::TakeOptions::Defaults());
-        if (!taken_result.ok()) {
-            throw std::runtime_error("Failed to order merged rows: " +
-                                     taken_result.status().ToString());
-        }
-        sorted_columns.push_back(taken_result.ValueOrDie());
-    }
-    return arrow::Table::Make(table->schema(), sorted_columns);
-}
-
 struct MergedPair {
     uint32_t node = 0;
     uint32_t way = 0;
@@ -135,7 +106,7 @@ void merge_one_month(const std::string& month_dir) {
         merge_source(arrow_table_io::read_table(output_path), "way_count", /*is_node=*/false, merged);
     }
 
-    // Columns are built in map order; sort_by_h3_day reorders them by
+    // Columns are built in map order; sort_by_keys reorders them by
     // (h3_cell, change_date) for compact row-group min/max ranges.
     const int64_t n = static_cast<int64_t>(merged.size());
     arrow::UInt64Builder cell_builder;
@@ -172,7 +143,9 @@ void merge_one_month(const std::string& month_dir) {
         arrow::field("node_count", arrow::uint32(), false),
         arrow::field("way_count", arrow::uint32(), false),
     });
-    auto merged_table = sort_by_h3_day(arrow::Table::Make(schema, {cells, dates, nodes, ways}));
+    auto merged_table = arrow_table_io::sort_by_keys(
+        arrow::Table::Make(schema, {cells, dates, nodes, ways}),
+        {arrow::compute::SortKey("h3_cell"), arrow::compute::SortKey("change_date")});
 
     // Write under a temp name, rename into place, and only then remove the
     // staging files. A re-run reads whatever staging files survived and, for

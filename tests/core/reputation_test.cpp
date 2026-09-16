@@ -36,9 +36,6 @@ void finish_ok(B& builder, std::shared_ptr<arrow::Array>* out) {
 void write_stage_named(const std::string& path,
                        const std::vector<std::tuple<int64_t, std::string, uint16_t,
                                                       std::vector<uint32_t>>>& rows) {
-    auto outfile_result = arrow::io::FileOutputStream::Open(path);
-    ASSERT_TRUE(outfile_result.ok()) << outfile_result.status();
-
     arrow::Int64Builder uid;
     arrow::StringBuilder username;
     arrow::UInt16Builder day;
@@ -93,13 +90,7 @@ void write_stage_named(const std::string& path,
     columns.insert(columns.end(), a_counters.begin(), a_counters.end());
     auto table = arrow::Table::Make(schema, columns);
 
-    parquet::WriterProperties::Builder props_builder;
-    props_builder.compression(parquet::Compression::ZSTD);
-    auto write_status =
-        parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), *outfile_result,
-                                   /*chunk_size=*/table->num_rows(), props_builder.build());
-    ASSERT_TRUE(write_status.ok()) << write_status.ToString();
-    ASSERT_TRUE((*outfile_result)->Close().ok());
+    test_helpers::write_table(path, table);
 }
 
 void write_stage(const std::string& path,
