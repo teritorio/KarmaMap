@@ -115,7 +115,6 @@ void write_stage(const std::string& path,
 TEST(ReputationFile, WritesExactWidePerUidTable) {
     TempDir dir;
     const std::string stage = dir.join("stage");
-    const std::string profiles = dir.join("user_profiles.parquet");
     const std::string indicators = dir.join("user_indicators.parquet");
     std::filesystem::create_directories(stage);
 
@@ -147,7 +146,7 @@ TEST(ReputationFile, WritesExactWidePerUidTable) {
                 });
 
     user_indicators::Thresholds thresholds;
-    user_indicators::run_finalize(stage, profiles, indicators, thresholds);
+    user_indicators::run_finalize(stage, indicators, thresholds);
 
     const std::string rep = dir.join("user_reputation.parquet");
     EXPECT_TRUE(std::filesystem::exists(rep));
@@ -263,7 +262,6 @@ TEST(ReputationFile, WritesExactWidePerUidTable) {
 TEST(ReputationFile, SortsByUsernameThenUid) {
     TempDir dir;
     const std::string stage = dir.join("stage");
-    const std::string profiles = dir.join("user_profiles.parquet");
     const std::string indicators = dir.join("user_indicators.parquet");
     std::filesystem::create_directories(stage);
 
@@ -284,7 +282,7 @@ TEST(ReputationFile, SortsByUsernameThenUid) {
                       });
 
     user_indicators::Thresholds thresholds;
-    user_indicators::run_finalize(stage, profiles, indicators, thresholds);
+    user_indicators::run_finalize(stage, indicators, thresholds);
 
     const std::string rep = dir.join("user_reputation.parquet");
     EXPECT_TRUE(std::filesystem::exists(rep));

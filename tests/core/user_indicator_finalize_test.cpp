@@ -189,31 +189,27 @@ IndicatorRows read_indicators(const std::string& path) {
     return out;
 }
 
-struct ProfileRows {
+struct ReputationRows {
     std::vector<int64_t> uid;
     std::vector<std::string> username;
-    std::vector<uint16_t> first_edit_day;
     std::vector<uint16_t> first_seen_day;
     std::vector<bool> bulk_new_user;
 };
 
-ProfileRows read_profiles(const std::string& path) {
+ReputationRows read_reputation(const std::string& path) {
     auto combined_result = read_parquet(path)->CombineChunks();
     EXPECT_TRUE(combined_result.ok()) << combined_result.status();
     if (!combined_result.ok()) return {};
     const auto& t = *combined_result;
-    ProfileRows out;
+    ReputationRows out;
     const auto* uid = static_cast<const arrow::Int64Array*>(t->column(0)->chunk(0).get());
     const auto* user = static_cast<const arrow::StringArray*>(t->column(1)->chunk(0).get());
-    const auto* first_edit =
-        static_cast<const arrow::UInt16Array*>(t->column(2)->chunk(0).get());
     const auto* first_seen =
-        static_cast<const arrow::UInt16Array*>(t->column(3)->chunk(0).get());
-    const auto* bulk = static_cast<const arrow::BooleanArray*>(t->column(4)->chunk(0).get());
+        static_cast<const arrow::UInt16Array*>(t->column(2)->chunk(0).get());
+    const auto* bulk = static_cast<const arrow::BooleanArray*>(t->column(3)->chunk(0).get());
     for (int64_t i = 0; i < t->num_rows(); ++i) {
         out.uid.push_back(uid->Value(i));
         out.username.push_back(user->GetString(i));
-        out.first_edit_day.push_back(first_edit->Value(i));
         out.first_seen_day.push_back(first_seen->Value(i));
         out.bulk_new_user.push_back(bulk->Value(i));
     }
@@ -223,7 +219,6 @@ ProfileRows read_profiles(const std::string& path) {
 TEST(UserIndicatorFinalize, ConcatenatesSortsAndDerives) {
     TempDir dir;
     const std::string stage = dir.join("stage");
-    const std::string profiles = dir.join("user_profiles.parquet");
     const std::string indicators = dir.join("user_indicators.parquet");
 
     std::filesystem::create_directories(stage);
@@ -243,10 +238,9 @@ TEST(UserIndicatorFinalize, ConcatenatesSortsAndDerives) {
                 });
 
     user_indicators::Thresholds thresholds;  // defaults: window 30, bulk 10
-    user_indicators::run_finalize(stage, profiles, indicators, thresholds);
+    user_indicators::run_finalize(stage, indicators, thresholds);
 
     EXPECT_FALSE(std::filesystem::exists(stage));
-    EXPECT_TRUE(std::filesystem::exists(profiles));
     EXPECT_TRUE(std::filesystem::exists(indicators));
 
     const auto ind = read_indicators(indicators);
@@ -274,57 +268,46 @@ TEST(UserIndicatorFinalize, ConcatenatesSortsAndDerives) {
     EXPECT_EQ(ind.tag_highway[4], 1);        // uid 12
     EXPECT_EQ(ind.tag_waterway[4], 0);
 
-    const auto prof = read_profiles(profiles);
-    // alice (bulk: 5+6 = 11 events within window >= 10), then alice_alias,
-    // bob, and the anonymous uid facing "<12>".
-    ASSERT_EQ(prof.uid.size(), 4);
-    EXPECT_EQ(prof.uid[0], 10);
-    EXPECT_EQ(prof.username[0], "alice");
-    EXPECT_EQ(prof.first_edit_day[0], 1000);
-    EXPECT_EQ(prof.first_seen_day[0], 1000);
-    EXPECT_TRUE(prof.bulk_new_user[0]);
+    const auto rep = read_reputation(dir.join("user_reputation.parquet"));
+    // One row per uid, its current username (uid 10's "alice".."alice_alias"
+    // span flattened to the last seen), sorted by username.
+    ASSERT_EQ(rep.uid.size(), 3);
+    EXPECT_EQ(rep.uid[0], 12);              // "<12>" sorts first
+    EXPECT_EQ(rep.username[0], "<12>");
+    EXPECT_EQ(rep.first_seen_day[0], 3000);
+    EXPECT_FALSE(rep.bulk_new_user[0]);
 
-    EXPECT_EQ(prof.uid[1], 10);
-    EXPECT_EQ(prof.username[1], "alice_alias");
-    EXPECT_EQ(prof.first_edit_day[1], 1050);
-    EXPECT_EQ(prof.first_seen_day[1], 1000);
-    EXPECT_TRUE(prof.bulk_new_user[1]);  // uid-level flag, shared across segments
+    EXPECT_EQ(rep.uid[1], 10);
+    EXPECT_EQ(rep.username[1], "alice_alias");
+    EXPECT_EQ(rep.first_seen_day[1], 1000);
+    EXPECT_TRUE(rep.bulk_new_user[1]);  // 5+6 events within the 30-day window
 
-    EXPECT_EQ(prof.uid[2], 11);
-    EXPECT_EQ(prof.username[2], "bob");
-    EXPECT_EQ(prof.first_seen_day[2], 2000);
-    EXPECT_FALSE(prof.bulk_new_user[2]);  // only 4 events in window
-
-    EXPECT_EQ(prof.uid[3], 12);
-    EXPECT_EQ(prof.username[3], "<12>");
-    EXPECT_EQ(prof.first_seen_day[3], 3000);
-    EXPECT_FALSE(prof.bulk_new_user[3]);
+    EXPECT_EQ(rep.uid[2], 11);
+    EXPECT_EQ(rep.username[2], "bob");
+    EXPECT_EQ(rep.first_seen_day[2], 2000);
+    EXPECT_FALSE(rep.bulk_new_user[2]);  // only 4 events in window
 }
 
 TEST(UserIndicatorFinalize, NoStageIsNoOp) {
     TempDir dir;
-    const std::string profiles = dir.join("user_profiles.parquet");
     const std::string indicators = dir.join("user_indicators.parquet");
 
     user_indicators::Thresholds thresholds;
     EXPECT_NO_THROW(
-        user_indicators::run_finalize(dir.join("nope"), profiles, indicators, thresholds));
-    EXPECT_FALSE(std::filesystem::exists(profiles));
+        user_indicators::run_finalize(dir.join("nope"), indicators, thresholds));
     EXPECT_FALSE(std::filesystem::exists(indicators));
 
     // An empty stage directory is equally a no-op.
     const std::string empty_stage = dir.join("empty_stage");
     std::filesystem::create_directories(empty_stage);
     EXPECT_NO_THROW(
-        user_indicators::run_finalize(empty_stage, profiles, indicators, thresholds));
-    EXPECT_FALSE(std::filesystem::exists(profiles));
+        user_indicators::run_finalize(empty_stage, indicators, thresholds));
     EXPECT_FALSE(std::filesystem::exists(indicators));
 }
 
 TEST(UserIndicatorFinalize, WindowAndBulkThresholdsApply) {
     TempDir dir;
     const std::string stage = dir.join("stage");
-    const std::string profiles = dir.join("user_profiles.parquet");
     const std::string indicators = dir.join("user_indicators.parquet");
     std::filesystem::create_directories(stage);
 
@@ -340,14 +323,17 @@ TEST(UserIndicatorFinalize, WindowAndBulkThresholdsApply) {
     user_indicators::Thresholds thresholds;
     thresholds.new_user_window_days = 7;
     thresholds.bulk_edit_min = 10;
-    user_indicators::run_finalize(stage, profiles, indicators, thresholds);
+    user_indicators::run_finalize(stage, indicators, thresholds);
 
-    const auto prof = read_profiles(profiles);
-    ASSERT_EQ(prof.uid.size(), 2);
-    EXPECT_EQ(prof.uid[0], 20);
-    EXPECT_FALSE(prof.bulk_new_user[0]);
-    EXPECT_EQ(prof.uid[1], 21);
-    EXPECT_TRUE(prof.bulk_new_user[1]);  // 6 + 6 within [1000, 1006]
+    const auto rep = read_reputation(dir.join("user_reputation.parquet"));
+    ASSERT_EQ(rep.uid.size(), 2);
+    // Sorted by username: eve before mallory.
+    EXPECT_EQ(rep.uid[0], 20);
+    EXPECT_EQ(rep.username[0], "eve");
+    EXPECT_FALSE(rep.bulk_new_user[0]);
+    EXPECT_EQ(rep.uid[1], 21);
+    EXPECT_EQ(rep.username[1], "mallory");
+    EXPECT_TRUE(rep.bulk_new_user[1]);  // 6 + 6 within [1000, 1006]
 }
 
 }  // namespace

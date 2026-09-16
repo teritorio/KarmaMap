@@ -134,18 +134,16 @@ void run_user_indicator_pass(const Options& opts) {
     const user_indicators::Thresholds& thresholds = opts.thresholds;
 
     const std::string stage_dir = opts.output_dir + "/user_indicator_stage";
-    const std::string profiles_path = opts.output_dir + "/user_profiles.parquet";
     const std::string indicators_path = opts.output_dir + "/user_indicators.parquet";
 
     // A re-run never reuses stale outputs: wipe stage + final files before
     // scanning, so an empty scan cannot leave last run's rows behind.
     std::filesystem::remove_all(stage_dir);
-    std::filesystem::remove(profiles_path);
     std::filesystem::remove(indicators_path);
     std::filesystem::remove(opts.output_dir + "/user_reputation.parquet");
 
     user_indicators::run_scan(opts.input_path, stage_dir, thresholds);
-    user_indicators::run_finalize(stage_dir, profiles_path, indicators_path, thresholds);
+    user_indicators::run_finalize(stage_dir, indicators_path, thresholds);
 }
 
 }  // namespace

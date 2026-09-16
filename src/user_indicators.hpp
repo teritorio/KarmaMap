@@ -1,11 +1,8 @@
 #pragma once
 
 // User-indicator computation: an optional, H3-independent mode that scores
-// the OSM full history per contributing user and per UTC day. Three outputs:
+// the OSM full history per contributing user and per UTC day. Two outputs:
 //
-//   user_profiles.parquet    per (uid, username) validity segment
-//                            (uid, username, first_edit_day, first_seen_day,
-//                             bulk_new_user)
 //   user_indicators.parquet  per (uid, change_date) activity counters
 //                            (uid, change_date, node/way/relation counters,
 //                             relocated, short_lived, rapid_edit, tag_*)
@@ -14,11 +11,10 @@
 //                             max_day_changes, reputation, 22 counter totals,
 //                             per-aspect pct; active/max in file metadata)
 //
-// All three are non-partitioned, with user_profiles sorted by (uid,
-// first_edit_day), user_indicators by (uid, change_date) and
-// user_reputation.parquet by username (uid tie-break), so an exact username
-// filter in the users viewer prunes to the matching pages; the per-day
-// indicator table still joins on uid for the timeline.
+// Both are non-partitioned, with user_indicators sorted by (uid,
+// change_date) and user_reputation.parquet by username (uid tie-break), so
+// an exact username filter in the users viewer prunes to the matching pages;
+// the per-day indicator table still joins on uid for the timeline.
 //
 // The scan is a single streaming pass over the history (entity bits
 // node|way|relation). OSM full-history files are sorted by (object id,
@@ -327,7 +323,7 @@ private:
 void run_scan(const std::string& input_path, const std::string& stage_dir,
               const Thresholds& thresholds);
 
-void run_finalize(const std::string& stage_dir, const std::string& profiles_path,
-                  const std::string& indicators_path, const Thresholds& thresholds);
+void run_finalize(const std::string& stage_dir, const std::string& indicators_path,
+                  const Thresholds& thresholds);
 
 }  // namespace user_indicators

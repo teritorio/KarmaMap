@@ -328,8 +328,8 @@ void run_scan(const std::string& input_path, const std::string& stage_dir,
               << " stage_files=" << handler.stage_files() << "\n";
 }
 
-void run_finalize(const std::string& stage_dir, const std::string& profiles_path,
-                  const std::string& indicators_path, const Thresholds& thresholds) {
+void run_finalize(const std::string& stage_dir, const std::string& indicators_path,
+                  const Thresholds& thresholds) {
     // Registers Arrow's compute kernels (sort_indices, take), required even
     // when --user-indicators runs without any of passes 1-3.
     auto init_status = arrow::compute::Initialize();
@@ -394,54 +394,14 @@ void run_finalize(const std::string& stage_dir, const std::string& profiles_path
     }
 
     // One derived pass over the (uid, change_date)-sorted rows computes the
-    // indicator rows, the per-uid first-seen day, the per-username first-edit
-    // day, and the events within the new-user window.
+    // indicator rows.
     arrow::Int64Builder ind_uid_builder;
     arrow::UInt16Builder ind_day_builder;
     std::array<arrow::UInt32Builder, kCounterCount> ind_counter_builders;
 
-    arrow::Int64Builder prof_uid_builder;
-    arrow::StringBuilder prof_user_builder;
-    arrow::UInt16Builder prof_first_edit_builder;
-    arrow::UInt16Builder prof_first_seen_builder;
-    arrow::BooleanBuilder prof_bulk_builder;
-
-    std::unordered_map<std::string, uint16_t> username_first_day;
-    int64_t current_uid = 0;
-    bool in_group = false;
-    uint16_t first_seen = 0;
-    uint32_t window_total = 0;
-
     const int64_t n = combined->num_rows();
-    auto flush_profiles_group = [&]() {
-        const bool bulk_new_user = window_total >= static_cast<uint32_t>(thresholds.bulk_edit_min);
-        for (const auto& [username, first_edit_day] : username_first_day) {
-            append_checked(prof_uid_builder, current_uid);
-            const std::string label = username.empty()
-                                          ? "<" + std::to_string(current_uid) + ">"
-                                          : username;
-            append_checked(prof_user_builder, label);
-            append_checked(prof_first_edit_builder, first_edit_day);
-            append_checked(prof_first_seen_builder, first_seen);
-            append_checked(prof_bulk_builder, bulk_new_user);
-        }
-        username_first_day.clear();
-        window_total = 0;
-        in_group = false;
-    };
-
     for (int64_t i = 0; i < n; ++i) {
         const int64_t uid = uid_array->Value(i);
-        if (!in_group) {
-            current_uid = uid;
-            in_group = true;
-            first_seen = day_array->Value(i);
-        } else if (uid != current_uid) {
-            flush_profiles_group();
-            current_uid = uid;
-            in_group = true;
-            first_seen = day_array->Value(i);
-        }
 
         const uint16_t day = day_array->Value(i);
         DayRow day_row;
@@ -450,27 +410,12 @@ void run_finalize(const std::string& stage_dir, const std::string& profiles_path
             day_row.*kCounters[c].member = arr->Value(i);
         }
 
-        const std::string username(user_array->GetView(i));
-        const uint16_t day_int = day;
-        auto it = username_first_day.find(username);
-        if (it == username_first_day.end()) {
-            username_first_day.emplace(username, day_int);
-        } else if (day_int < it->second) {
-            it->second = day_int;
-        }
-
-        if (static_cast<int32_t>(day_int) - static_cast<int32_t>(first_seen) <
-            thresholds.new_user_window_days) {
-            window_total += day_row.total_events();
-        }
-
         append_checked(ind_uid_builder, uid);
         append_checked(ind_day_builder, day);
         for (size_t c = 0; c < kCounterCount; ++c) {
             append_checked(ind_counter_builders[c], day_row.*kCounters[c].member);
         }
     }
-    if (in_group) flush_profiles_group();
 
     std::shared_ptr<arrow::Array> ind_uid, ind_day;
     std::array<std::shared_ptr<arrow::Array>, kCounterCount> ind_counters;
@@ -492,34 +437,9 @@ void run_finalize(const std::string& stage_dir, const std::string& profiles_path
     // walking the sorted combined table, so no re-sort is needed.
     auto indicator_table = arrow::Table::Make(indicator_schema, indicator_columns);
 
-    std::shared_ptr<arrow::Array> prof_uid, prof_user, prof_first_edit, prof_first_seen, prof_bulk;
-    if (!prof_uid_builder.Finish(&prof_uid).ok() || !prof_user_builder.Finish(&prof_user).ok() ||
-        !prof_first_edit_builder.Finish(&prof_first_edit).ok() ||
-        !prof_first_seen_builder.Finish(&prof_first_seen).ok() ||
-        !prof_bulk_builder.Finish(&prof_bulk).ok()) {
-        throw std::runtime_error("Failed to finalize profile columns");
-    }
-    auto profile_table = arrow::Table::Make(
-        arrow::schema({
-            arrow::field("uid", arrow::int64(), false),
-            arrow::field("username", arrow::utf8(), false),
-            arrow::field("first_edit_day", arrow::uint16(), false),
-            arrow::field("first_seen_day", arrow::uint16(), false),
-            arrow::field("bulk_new_user", arrow::boolean(), false),
-        }),
-        {prof_uid, prof_user, prof_first_edit, prof_first_seen, prof_bulk});
-    // First-edit day of each segment is what makes profile rows unique per
-    // (uid, username) interval; ordering by it keeps the catalog stable.
-    profile_table = order_table(profile_table,
-                                {arrow::compute::SortKey("uid"),
-                                 arrow::compute::SortKey("first_edit_day")});
-
     const std::string indicators_tmp = indicators_path + ".tmp";
-    const std::string profiles_tmp = profiles_path + ".tmp";
     arrow_table_io::write_table(indicators_tmp, indicator_table);
-    arrow_table_io::write_table(profiles_tmp, profile_table);
     std::filesystem::rename(indicators_tmp, indicators_path);
-    std::filesystem::rename(profiles_tmp, profiles_path);
 
     // Per-uid sums of all 22 indicator counters, in the (uid) order of the
     // sorted indicator table. The three created-object aspects are bound to
@@ -731,8 +651,7 @@ void run_finalize(const std::string& stage_dir, const std::string& profiles_path
     std::filesystem::remove_all(stage_dir);
 
     std::cerr << "[user indicators] finalized " << indicator_table->num_rows()
-              << " indicator rows, " << profile_table->num_rows() << " profile rows, "
-              << rep_uids.size() << " reputation rows\n";
+              << " indicator rows, " << rep_uids.size() << " reputation rows\n";
 }
 
 }  // namespace user_indicators

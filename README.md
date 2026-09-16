@@ -33,28 +33,14 @@ An optional, H3-independent pass that scores history **per user and per UTC
 day** with cheap OSMPatrol-style heuristics, targeting vandalism/bulk
 editors. It is a single streaming scan over the node and way history plus
 relation creations (no changeset metadata is needed) and one in-memory
-finalize, and is independent of passes 1-3. It writes three non-partitioned
+finalize, and is independent of passes 1-3. It writes two non-partitioned
 Parquet files:
 
 ```
 output-dir/
-├── user_profiles.parquet    # identity catalog, one row per (uid, username)
 ├── user_indicators.parquet  # daily counters + flags, one row per (uid, change_date)
 └── user_reputation.parquet  # exact per-uid reputation + all indicator totals
 ```
-
-- `user_profiles.parquet` — one row per username segment of a user:
-
-  | Column | Type | Meaning |
-  |---|---|---|
-  | `uid` | `int64` | OSM user id (0 = anonymous) |
-  | `username` | `string` | Username; `"<uid>"` when the source has none |
-  | `first_edit_day` | `uint16` | First UTC day this uid used this username |
-  | `first_seen_day` | `uint16` | First UTC day this uid ever edited |
-  | `bulk_new_user` | `bool` | ≥ `--bulk-edit-min` edits within `--new-user-window-days` of `first_seen_day` |
-
-  Sorted by `(uid, first_edit_day)`. A username change creates a new row
-  (a new segment) for the same `uid`.
 
 - `user_indicators.parquet` — one row per `(uid, change_date)`:
 
@@ -106,8 +92,7 @@ output-dir/
   (`<aspect>_active`, `<aspect>_max` keys) instead of 30 repeated columns.
   The viewer fetches a user by exact username from this file (the pipeline
   stamps the current username per uid, so the identity columns land on the
-  same row) and reads the per-day timeline from `user_indicators.parquet`,
-  so no `user_profiles` join is needed.
+  same row) and reads the per-day timeline from `user_indicators.parquet`.
 
 Derivation notes:
 
@@ -129,8 +114,7 @@ Derivation notes:
   excluded from day totals.
 - `bulk_new_user` is derived in finalize from the daily rows themselves
   (the events within `new_user_window_days` of the user's first seen day),
-  so it needs no extra history scan; it is uid-level and shared across a
-  user's username segments.
+  so it needs no extra history scan.
 - Rule thresholds (defaults in parentheses) come from `--` flags:
 
   | Flag | Default | Role |
@@ -147,15 +131,15 @@ suspicion only. Join the files on `uid` to prioritize users, e.g. with
 DuckDB:
 
 ```sql
-SELECT p.username,
+SELECT r.username,
        DATE '1970-01-01' + i.change_date AS change_date,
        i.node_created + i.node_modified + i.node_deleted +
        i.way_created + i.way_modified + i.way_deleted AS edits,
        i.relocated, i.short_lived, i.rapid_edit, i.relation_created,
        i.tag_highway, i.tag_building
-FROM read_parquet('output-dir/user_profiles.parquet') p
+FROM read_parquet('output-dir/user_reputation.parquet') r
 JOIN read_parquet('output-dir/user_indicators.parquet') i USING (uid)
-WHERE p.bulk_new_user
+WHERE r.bulk_new_user
 ORDER BY edits DESC
 LIMIT 20;
 ```
@@ -163,7 +147,7 @@ LIMIT 20;
 Scaling: OSM full history is `(id, version)`-sorted, so the scan is a
 running pass with O(1) object state, writing day-aggregates to a staged
 `user_indicator_stage/stage_*.parquet` directory that finalize merges,
-sorts by `(uid, change_date)`, derives the profile rows, and removes.
+sorts by `(uid, change_date)`, derives the reputation rows, and removes.
 `user_reputation.parquet` is a pure derived view of that data: one row per
 user, so it grows with new users, not new edits, and a later update pass can
 rebuild it from the per-user totals without re-reading history.
@@ -204,7 +188,6 @@ resolution.
 ```
 output-dir/
 ├── manifest.json
-├── user_profiles.parquet      # only with --user-indicators
 ├── user_indicators.parquet    # only with --user-indicators
 ├── user_reputation.parquet    # only with --user-indicators
 └── changes/
@@ -241,7 +224,6 @@ partitions exist, and the overall date range:
       "partitions": ["2005-01", "2005-02", "..."]
     },
     "user_indicators": { "path": "user_indicators.parquet", "partitions": [] },
-    "user_profiles": { "path": "user_profiles.parquet", "partitions": [] },
     "user_reputation": { "path": "user_reputation.parquet", "partitions": [] }
   }
 }
@@ -428,7 +410,7 @@ Then open `http://localhost:8080/`.
   uid, so the reputation, identity fields and indicator totals all come from
   the same uid-row; only the per-day timeline is then read from
   `user_indicators.parquet` (uid-range filter), so a planet-scale index loads
-  in the browser without a full download of the indicator or profile tables.
+  in the browser without a full download of the indicator table.
 
 ## Testing on a small region before the full planet
 

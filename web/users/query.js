@@ -1,6 +1,6 @@
 // User queries across the non-partitioned Parquet files written by
-// --user-indicators, served under /data/ by the :8080 server. user_profiles
-// matching is replaced by a direct exact-username lookup on
+// --user-indicators, served under /data/ by the :8080 server. Username
+// matching uses a direct exact-username lookup on
 // user_reputation.parquet (the pipeline stamps the current username per uid,
 // and that file is username-sorted with a uid tie-break, so the exact filter
 // prunes straight to the matching pages); the reputation, per-uid counter
@@ -92,10 +92,10 @@ async function readAspectStats(file) {
 }
 
 // Exact username match on user_reputation.parquet (the current username is
-// stamped per uid, so no user_profiles join is needed), returning the whole
-// wide per-uid row -- identity columns, reputation, indicator totals and the
-// per-aspect pct -- plus the dataset-wide active/max stats read from the file
-// footer. uid and the day columns are small integers (int64/uint16), so
+// stamped per uid), returning the whole wide per-uid row -- identity columns,
+// reputation, indicator totals and the per-aspect pct -- plus the dataset-wide
+// active/max stats read from the file footer. uid and the day columns are small
+// integers (int64/uint16), so
 // Number() conversion is lossless.
 export async function queryReputationByUsername(baseUrl, path, username) {
   const file = await fetchParquet(baseUrl, path)
