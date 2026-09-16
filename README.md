@@ -11,7 +11,8 @@ per month so a client reads one dataset per month. The optional
 
 The output is queried directly in the browser by two static viewers shipped
 in `web/`: a changes map + histogram, and a per-user OSMPatrol reputation
-viewer.
+viewer. The reputation scoring follows [Neis, Goetz & Zipf, *ISPRS Int. J.
+Geo-Inf.* 2012, 1(3), 315-332](https://www.mdpi.com/2220-9964/1/3/315).
 
 ## What it produces
 

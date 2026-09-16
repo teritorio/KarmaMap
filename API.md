@@ -141,8 +141,7 @@ are two non-partitioned single files.
 - `relation_created` is counted for visible version-1 relations only.
   Relation creations feed the OSMPatrol reputation (built from *created*
   objects only); modifies/deletes are not counted, and relations are
-  excluded from the node/way day-total. The heuristic follows
-  Neis, Goetz & Zipf, *ISPRS Int. J. Geo-Inf.* 2012, 1(3), 315-332.
+  excluded from the node/way day-total.
 - The `tag_*` counters mirror the paper's "Top12" most-used tags, one counter
   per tag (12 × 4 = 48 reputation points), counted only at object creation.
   The paper's `address` key is replaced by `place`, as OSM address tagging
