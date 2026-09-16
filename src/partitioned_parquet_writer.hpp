@@ -19,14 +19,12 @@
 
 namespace parquet_out {
 
-constexpr size_t kDefaultFlushThreshold = 500'000;
+constexpr size_t kFlushThreshold = 500'000;
 
 class PartitionedParquetWriter {
 public:
-    explicit PartitionedParquetWriter(std::string root_dir, std::string output_file_name,
-                                      size_t flush_threshold = kDefaultFlushThreshold)
-        : root_dir_(std::move(root_dir)), output_file_name_(std::move(output_file_name)),
-          flush_threshold_(flush_threshold) {
+    explicit PartitionedParquetWriter(std::string root_dir, std::string output_file_name)
+        : root_dir_(std::move(root_dir)), output_file_name_(std::move(output_file_name)) {
         std::filesystem::create_directories(root_dir_);
     }
 
@@ -37,7 +35,7 @@ public:
 
         Partition& p = get_partition(year, month);
         p.pending[{h3_cell, day}]++;
-        if (p.pending.size() >= flush_threshold_) {
+        if (p.pending.size() >= kFlushThreshold) {
             p.writer->flush(p.pending);
             flushes_++;  // INSTR
         }
@@ -87,7 +85,6 @@ private:
 
     std::string root_dir_;
     std::string output_file_name_;
-    size_t flush_threshold_;
     std::map<std::pair<int, int>, Partition> partitions_;
 
     // INSTR: diagnostic counters.

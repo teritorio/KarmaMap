@@ -297,7 +297,7 @@ Build without tests by configuring with `-DOSH_ENABLE_TESTS=OFF`.
 ## Usage
 
 ```
-osh_change_index --input <planet.osh.pbf> --node-cache <file> --output-dir <dir> [core options] [fine-tuning options]
+osh_change_index --input <planet.osh.pbf> --node-cache <file> --output-dir <dir> [core options]
 ```
 
 ### Core options
@@ -309,19 +309,7 @@ osh_change_index --input <planet.osh.pbf> --node-cache <file> --output-dir <dir>
 | `--output-dir` | Output directory for the Parquet datasets, required (created if missing) |
 | `--pass` | `1` (nodes only), `2` (ways only, requires an already populated node cache), `3` (merge + sort only, requires passes 1 and 2 to have already run), or `all` (default) |
 | `--way-batch-mb` | Way-pass lookup batch budget in MiB (default: `512`) |
-
-### Fine-tuning options
-
-H3 cell:
-
-| Option | Description |
-|---|---|
 | `--h3-resolution` | Resolution of the data cells, 0-13 (default: `9`) |
-
-User stats (`--user-indicators`):
-
-| Option | Description |
-|---|---|
 | `--user-indicators` | Also run the user-indicator pass (see above); independent of passes 1-3 |
 
 ## Running

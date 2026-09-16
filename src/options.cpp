@@ -10,7 +10,7 @@ void print_usage(const char* argv0) {
     std::cerr
         << "Usage: " << argv0
         << " --input <planet.osh.pbf> --node-cache <file> --output-dir <dir> "
-           "[core options] [fine-tuning options]\n\n"
+           "[core options]\n\n"
         << "Core options:\n"
         << "  --input                OSM full-history file (.osh.pbf)\n"
         << "  --node-cache           Node position cache file (wiped and rebuilt by pass 1, read by pass 2)\n"
@@ -19,11 +19,8 @@ void print_usage(const char* argv0) {
         << "                         populated node cache), 3 (merge + sort only,\n"
         << "                         requires passes 1 and 2 to have already run),\n"
         << "                         or all (default)\n"
-        << "  --way-batch-mb         Way-pass lookup batch budget in MiB (default: 512)\n\n"
-        << "Fine-tuning options:\n"
-        << "  h3 cell:\n"
-        << "    --h3-resolution      Resolution of the data cells, 0-13 (default: 9)\n"
-        << "  user stats (--user-indicators):\n"
+        << "  --way-batch-mb         Way-pass lookup batch budget in MiB (default: 512)\n"
+        << "  --h3-resolution        Resolution of the data cells, 0-13 (default: 9)\n\n"
         << "    --user-indicators    Additionally score history per user and per UTC day,\n"
         << "                         writing user_indicators.parquet and\n"
         << "                         user_reputation.parquet (non-partitioned single\n"
