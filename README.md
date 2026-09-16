@@ -21,6 +21,10 @@ Geo-Inf.* 2012, 1(3), 315-332](https://www.mdpi.com/2220-9964/1/3/315).
 - `user_indicators.parquet` and `user_reputation.parquet` — per-user, per-day
   activity and reputation, only with `--user-indicators`.
 
+![Changes H3](changes-h3.webp)
+
+![Users](users.webp)
+
 ## Documentation
 
 - [HOW_IT_WORKS.md](HOW_IT_WORKS.md) — the internal pipeline: passes,
