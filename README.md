@@ -53,7 +53,7 @@ DATA_DIR=./data/
 ```
 
 Without a `.env`, the compose defaults `DATA_DIR=./data/` (mounted at `/data`)
-and `OUTPUT_DIR=./data/output` apply, so the examples below work as written.
+and `OUTPUT_DIR=./data/` apply, so the examples below work as written.
 
 ### Build
 
@@ -97,11 +97,10 @@ osh_change_index --input <planet.osh.pbf> --node-cache <file> --output-dir <dir>
 
 ### Running
 
-Place the input file under `DATA_DIR/input` (default `data/input/`), then:
+Place the input file under `DATA_DIR/input` (default `data/`), then:
 
 ```bash
-docker compose --profile=build run --rm osh_change_index \
-  osh_change_index --input /data/input/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/output
+docker compose --profile=build run --rm osh_change_index osh_change_index --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/
 ```
 
 To resume after an earlier stage, run the passes one at a time (a way-only
@@ -110,14 +109,11 @@ back next to the already-removed `nodes.parquet` — then `--pass 3`,
 sourcing node counts from the existing `data.parquet`):
 
 ```bash
-docker compose --profile=build run --rm osh_change_index \
-  osh_change_index --input /data/input/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/output --pass 1
+docker compose --profile=build run --rm osh_change_index osh_change_index --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/ --pass 1
 
-docker compose --profile=build run --rm osh_change_index \
-  osh_change_index --input /data/input/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/output --pass 2
+docker compose --profile=build run --rm osh_change_index osh_change_index --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/ --pass 2
 
-docker compose --profile=build run --rm osh_change_index \
-  osh_change_index --input /data/input/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/output --pass 3
+docker compose --profile=build run --rm osh_change_index osh_change_index --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/ --pass 3
 ```
 
 ### Serving the web frontend
@@ -127,7 +123,7 @@ frontend at the root and `OUTPUT_DIR` (Parquet partitions + `manifest.json`)
 under `/data/`, with range requests and permissive CORS on the data path.
 
 ```bash
-docker compose up caddy
+docker compose up
 ```
 
 Then open `http://localhost:8080/`.
@@ -167,24 +163,17 @@ Never run directly on `planet-latest.osh.pbf` (~150 GB) without first
 validating the pipeline on a small extract.
 
 ```bash
-wget -O data/input/region.osh.pbf \
-  https://download.geofabrik.de/europe/malta-updates.osh.pbf
+wget -O data/canary-islands-internal.osh.pbf https://osm-internal.download.geofabrik.de/africa/canary-islands-latest-internal.osm.pbf
 ```
-
-Check the exact URL on https://download.geofabrik.de/ — look for files
-suffixed `-internal.osh.pbf` or `-updates.osh.pbf` (not every export
-includes full history). Then run the full pipeline:
 
 ```bash
 docker compose run --rm osh_change_index \
-  osh_change_index --input /data/input/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/output
+  osh_change_index --input /data/canary-islands-internal.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/
 ```
 
+Input and Output files size
+```bash
+124M data/canary-islands-internal.osh.pbf
+ 23M data/node_positions.cache
+  4M data/output
 ```
-du -h data/node_positions.cache
-```
-
-Use the cache size to extrapolate disk needs for a full planet run, then
-scale up gradually (a whole country before the planet) to validate
-processing time and stability. See [API.md](API.md) for DuckDB queries to
-sanity-check the output.
