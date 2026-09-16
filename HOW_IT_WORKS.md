@@ -1,9 +1,8 @@
 # How it works
 
-The internal processing pipeline of the `osh_change_index` binary. The
-external data contract — output layout, schemas, and how clients access the
-data — lives in [API.md](API.md); this file documents how the binary produces
-it.
+The internal processing pipeline of the `osh_change_index` binary, plus how
+the output it produces is queried by the bundled web frontend. The Parquet
+data contract — layout, schemas, encodings — lives in [API.md](API.md).
 
 ## The passes
 
@@ -113,4 +112,36 @@ by `(uid, change_date)`, derives the reputation rows, and removes.
 user, so it grows with new users, not new edits, and can be rebuilt from the
 per-user totals without re-reading history. The non-partitioned single files
 keep the `uid` join cheap and the numerics-only indicators file small.
-The output schemas and access patterns are documented in [API.md](API.md).
+
+## Web viewer queries
+
+### Changes viewer
+
+`web/changes/query.js` queries bbox + date range. The date range selects the
+month partitions (intersected with the manifest's partition list); each
+distinct file is queried once via `parquetQuery`, which prunes row groups on
+`h3_cell` and `change_date`, then aggregates `node_count + way_count`
+client-side per cell and per day. The non-contiguous H3 cell set of the
+viewport bbox is applied as a coarse `[min, max]` range filter first, then
+exact membership is checked client-side. `web/changes/app.js` triggers a new
+query on pan/zoom (debounced) and takes its `BASE_URL` from the `BASE_URL`
+constant (see README, "Serving the web frontend").
+
+### Users viewer
+
+`web/users/query.js` looks a user up by exact username on
+`user_reputation.parquet` (the pipeline stamps the current username per uid,
+and the file is username-sorted with a uid tie-break, so the exact filter
+prunes straight to the matching pages). The reputation, identity fields and
+per-indicator totals all come from that same user row; the dataset-wide
+`active`/`max` aspect stats are read once from the file's
+`key_value_metadata` footer instead of repeated per-row columns, and the
+per-aspect points are recomputed from the stored `pct` and the constant paper
+caps — no ranking or percentile math runs in the browser.
+
+Only the per-day activity timeline is then read from
+`user_indicators.parquet`: a `uid` `[min, max]` range filter prunes the
+uid-sorted file to the pages holding that user, with exact membership kept
+client-side. The day counts add `relation_created` to the six node/way change
+counters; the per-uid edit total stays node/way-only (relations are
+reputation-only).

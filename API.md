@@ -1,9 +1,10 @@
 # Data API
 
-The pipeline writes a self-describing `output-dir/` that any HTTP range-capable
-client reads directly: the files are plain Parquet over plain HTTP, so they
-work with DuckDB, a browser-side reader such as hyparquet, or the bundled web
-viewers — no application backend, no custom protocol. The two access parts:
+This document is the data contract of the Parquet files written by the
+pipeline: their layout, schemas and encodings, for any tool that wants to
+read them — DuckDB, a Parquet library, or a browser-side reader. The files
+are plain Parquet (ZSTD-compressed); nothing else is needed to consume them.
+The two access parts:
 
 - **Changes** — `changes/`: monthly partitioned `(h3_cell, change_date,
   node_count, way_count)` change counts.
@@ -49,8 +50,7 @@ resolution, which month partitions exist, and the overall date range:
 
 `date_range` is `null` when the dataset is empty. The user-indicator entries
 appear only when their files exist; an empty partition list signals a
-non-partitioned single file, which month-based query clients (the web
-frontend) skip.
+non-partitioned single file, which month-based query clients skip.
 
 ## Changes part
 
@@ -82,18 +82,6 @@ ORDER BY change_date
 LIMIT 20;
 ```
 
-### Web access
-
-`web/changes/query.js` queries bbox + date range. The date range selects the
-month partitions (intersected with the manifest's partition list); each
-distinct file is queried once via `parquetQuery`, which prunes row groups on
-`h3_cell` and `change_date`, then aggregates `node_count + way_count`
-client-side per cell and per day. The non-contiguous H3 cell set of the
-viewport bbox is applied as a coarse `[min, max]` range filter first, then
-exact membership is checked client-side. `web/changes/app.js` triggers a new
-query on pan/zoom (debounced) and takes its `BASE_URL` from the
-`BASE_URL` constant (see HTTP transport below).
-
 ## Users part
 
 Both files exist only when the pipeline ran with `--user-indicators`. They
@@ -108,7 +96,7 @@ are two non-partitioned single files.
   | `change_date` | `uint16` | UTC day (same encoding as `changes/`) |
   | `node_created`, `node_modified`, `node_deleted` | `uint32` | Node change counters |
   | `way_created`, `way_modified`, `way_deleted` | `uint32` | Way change counters |
-  | `relation_created` | `uint32` | Relation creations (reputation only, but counted in the viewer's day timeline) |
+  | `relation_created` | `uint32` | Relation creations (reputation only; part of a day's activity total) |
 
   The per-day `tag_*` counters are aggregated during finalize and only their
   per-user sums are written (in `user_reputation.parquet`), so they never
@@ -140,16 +128,16 @@ are two non-partitioned single files.
   sampled and the percentages match the full-table rank exactly. The points a
   user earns on an aspect (`cap · P`) derive from that `pct` and the constant
   paper caps, so only the percentile is stored per row. The dataset-wide
-  stats behind the tooltips — the contributors active on each aspect and its
-  largest per-user total — have the same value for every user, so the
-  pipeline writes them once as file-level Parquet `key_value_metadata`
-  (`<aspect>_active`, `<aspect>_max` keys) instead of 30 repeated columns.
+  stats — the contributors active on each aspect and its largest per-user
+  total — have the same value for every user, so the pipeline writes them
+  once as file-level Parquet `key_value_metadata` (`<aspect>_active`,
+  `<aspect>_max` keys) instead of 30 repeated columns.
 
 ### Derivation notes
 
 - Every version event is attributed to the editing `(uid, day)`; day totals
-  are sums of the six node/way change counters (the viewer's activity
-  timeline adds `relation_created` to each day's count).
+  are sums of the six node/way change counters; a day's activity totals add
+  `relation_created` to that sum.
 - `relation_created` is counted for visible version-1 relations only.
   Relation creations feed the OSMPatrol reputation (built from *created*
   objects only); modifies/deletes are not counted, and relations are
@@ -178,43 +166,3 @@ JOIN read_parquet('output-dir/user_indicators.parquet') i USING (uid)
 ORDER BY edits DESC
 LIMIT 20;
 ```
-
-### Web access
-
-`web/users/query.js` looks a user up by exact username on
-`user_reputation.parquet` (the pipeline stamps the current username per uid,
-and the file is username-sorted with a uid tie-break, so the exact filter
-prunes straight to the matching pages). The reputation, identity fields and
-per-indicator totals all come from that same user row; the dataset-wide
-`active`/`max` aspect stats are read once from the file's
-`key_value_metadata` footer instead of repeated per-row columns, and the
-per-aspect points are recomputed from the stored `pct` and the constant paper
-caps — no ranking or percentile math runs in the browser.
-
-Only the per-day activity timeline is then read from
-`user_indicators.parquet`: a `uid` `[min, max]` range filter prunes the
-uid-sorted file to the pages holding that user, with exact membership kept
-client-side. The day counts add `relation_created` to the six node/way change
-counters; the per-uid edit total stays node/way-only (relations are
-reputation-only).
-
-## HTTP transport
-
-Clients read the files with byte-range requests: hyparquet's
-`asyncBufferFromUrl` opens each file and fetches the footer, row-group
-metadata and pages it needs, so a large file is never downloaded in full. The
-server must therefore support `Range` (`206 Partial Content`,
-`Accept-Ranges: bytes`). When the frontend and the data are served from
-different origins, the data host must also set permissive CORS headers —
-the `Caddyfile` used by the bundled `caddy` service sets both:
-
-```
-header Access-Control-Allow-Origin "*"
-header Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
-header Access-Control-Allow-Headers "Range"
-header Access-Control-Expose-Headers "Content-Range, Content-Length, Accept-Ranges"
-```
-
-The web viewers take their data root from the `BASE_URL` constant in
-`web/changes/app.js` and `web/users/app.js` (default `http://localhost:8080/data`,
-serving `output-dir/` at the `/data/` path and the frontend at the root).
