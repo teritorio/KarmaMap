@@ -4,8 +4,10 @@
 // the OSM full history per contributing user and per UTC day. Two outputs:
 //
 //   user_indicators.parquet  per (uid, change_date) activity counters
-//                            (uid, change_date, node/way/relation counters,
-//                            tag_*)
+//                            (uid, change_date, the six node/way change
+//                            counters and relation_created; the per-day
+//                            tag_* counters are aggregated in finalize and
+//                            surface only as reputation totals below)
 //   user_reputation.parquet  per-uid reputation + full indicator totals
 //                            (uid, username, first_seen_day, reputation,
 //                             19 counter totals, per-aspect pct;
@@ -142,21 +144,17 @@ struct UserDayEntry {
     DayRow row;
 };
 
-// Pure, osmium-free aggregation. The scan handler groups an object's
-// contiguous versions with begin_object()/add_version()/end_object();
-// every version is scored immediately and attributed to the editing
-// (uid, day). Unit-testable without a history file.
+// Pure, osmium-free aggregation. The scan handler feeds every version to
+// add_version(), which scores it immediately and attributes it to the editing
+// (uid, day). Object boundaries are irrelevant to the counters, so the class
+// keeps no object run state. Unit-testable without a history file.
 class UserEventStats {
 public:
     UserEventStats() = default;
 
-    void begin_object() { run_.active = true; }
-
     void add_version(int64_t uid, const std::string& username, uint16_t day, bool visible,
                      uint32_t version, ObjectKind kind,
                      uint32_t created_tag_bits = 0) {
-        if (!run_.active) begin_object();
-
         UserDayEntry& e = days_[UserDayKey{uid, day}];
         if (e.username.empty()) e.username = username;
         DayRow& r = e.row;
@@ -185,11 +183,8 @@ public:
         }
     }
 
-    void end_object() { run_.active = false; }
-
     // Isolated relation-created accounting: relations arrive as their own
-    // contiguous runs; only visible v1 versions count, and they must not
-    // influence the node/way run state.
+    // contiguous runs; only visible v1 versions count.
     void record_relation_created(int64_t uid, const std::string& username, uint16_t day,
                                  uint32_t created_tag_bits = 0) {
         UserDayEntry& e = days_[UserDayKey{uid, day}];
@@ -218,11 +213,6 @@ private:
         }
     }
 
-    struct RunState {
-        bool active = false;
-    };
-
-    RunState run_;
     std::unordered_map<UserDayKey, UserDayEntry, UserDayKeyHash> days_;
 };
 

@@ -108,9 +108,10 @@ void write_stage_file(const std::string& path,
 }
 
 // ---------------------------------------------------------------------------
-// Streaming scan handler over the history file. Objects arrive sorted by
-// (type, id, version), so a run of contiguous versions of one object is
-// aggregated in UserEventStats and dropped as the stream moves on.
+// Streaming scan handler over the history file. Every version is forwarded
+// to the (uid, day) aggregation in UserEventStats, which needs no object
+// run state (the counters are per (uid, day), not per object). The handler
+// only tracks the current object to count distinct objects for INSTR.
 // ---------------------------------------------------------------------------
 
 class ScanHandler : public osmium::handler::Handler {
@@ -134,8 +135,8 @@ public:
     }
 
     // Relations feed only the created counter: the OSMPatrol reputation is
-    // built from created objects, and relation runs must not touch the
-    // node/way run state.
+    // built from created objects, so visible v1 relations go through
+    // record_relation_created() instead of the node/way counters.
     void relation(const osmium::Relation& relation) {
         if (relation.visible() && relation.version() == 1) {
             stats_.record_relation_created(static_cast<int64_t>(relation.uid()),
@@ -146,10 +147,7 @@ public:
         }
     }
 
-    void finish() {
-        if (has_current_) stats_.end_object();
-        flush_stage();
-    }
+    void finish() { flush_stage(); }
 
     // INSTR
     uint64_t objects() const { return objects_; }
@@ -158,13 +156,11 @@ public:
     size_t stage_rows() const { return stage_rows_flushed_; }
 
 private:
-    // Ends the previous object's run and starts a new one whenever the kind
-    // or id changed (versions arrive contiguous per object). May be called
-    // on every version; it is a no-op within a run.
+    // Tracks the current object so the distinct-object INSTR count is
+    // incremented once per (kind, id) run (versions arrive contiguous per
+    // object). May be called on every version; it is a no-op within a run.
     void begin_object(ObjectKind kind, int64_t id) {
         if (has_current_ && kind == kind_ && id == current_id_) return;
-        if (has_current_) stats_.end_object();
-        stats_.begin_object();
         has_current_ = true;
         kind_ = kind;
         current_id_ = id;
@@ -233,6 +229,12 @@ private:
 // ---------------------------------------------------------------------------
 // Finalize helpers
 // ---------------------------------------------------------------------------
+
+// Live per-day output counters: the six node/way change counters plus
+// relation_created. The per-day tag_* counters are not consumed by the users
+// viewer (the reputation's tag aspects come from the per-user totals below),
+// so they are aggregated internally but never written to the indicator file.
+constexpr size_t kLiveCounterCount = 7;
 
 std::shared_ptr<arrow::Table> order_table(
     const std::shared_ptr<arrow::Table>& table,
@@ -409,7 +411,7 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
         arrow::field("change_date", arrow::uint16(), false),
     };
     std::vector<std::shared_ptr<arrow::Array>> indicator_columns = {ind_uid, ind_day};
-    for (size_t c = 0; c < kCounterCount; ++c) {
+    for (size_t c = 0; c < kLiveCounterCount; ++c) {
         indicator_fields.push_back(arrow::field(kCounters[c].name, arrow::uint32(), false));
         indicator_columns.push_back(ind_counters[c]);
     }

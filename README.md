@@ -37,7 +37,7 @@ writes two non-partitioned Parquet files:
 
 ```
 output-dir/
-├── user_indicators.parquet  # daily counters + flags, one row per (uid, change_date)
+├── user_indicators.parquet  # node/way/relation day counters, one row per (uid, change_date)
 └── user_reputation.parquet  # exact per-uid reputation + all indicator totals
 ```
 
@@ -49,10 +49,11 @@ output-dir/
   | `change_date` | `uint16` | UTC day (same encoding as `changes/`) |
   | `node_created`, `node_modified`, `node_deleted` | `uint32` | Node change counters |
   | `way_created`, `way_modified`, `way_deleted` | `uint32` | Way change counters |
-  | `relation_created` | `uint32` | Relation creations (reputation only, see below) |
-  | `tag_amenity` … `tag_waterway` | `uint32` | Top12 tag usage on created objects (reputation, see below) |
+  | `relation_created` | `uint32` | Relation creations (reputation only, but counted in the viewer's day timeline) |
 
-  Sorted by `(uid, change_date)`.
+  Sorted by `(uid, change_date)`. The per-day `tag_*` counters are aggregated
+  during finalize and only their per-user sums are written (in
+  `user_reputation.parquet`), so they never appear per day.
 
 - `user_reputation.parquet` — one row per user, sorted by `username`
   (ties broken by `uid`, so an exact username lookup prunes straight to the
@@ -91,17 +92,20 @@ output-dir/
 Derivation notes:
 
 - Every version event is attributed to the editing `(uid, day)`; day totals
-  are sums of the six node/way change counters.
+  are sums of the six node/way change counters (the viewer's activity
+  timeline adds `relation_created` to each day's count).
 - `relation_created` is counted for visible version-1 relations only.
   Relation creations feed the OSMPatrol reputation (built from *created*
   objects only); modifies/deletes are not counted, and relations are
-  excluded from day totals. The heuristic follows
+  excluded from the node/way day-total. The heuristic follows
   Neis, Goetz & Zipf, *ISPRS Int. J. Geo-Inf.* 2012, 1(3), 315-332.
-- The `tag_*` columns mirror the paper's "Top12" most-used tags, one counter
+- The `tag_*` counters mirror the paper's "Top12" most-used tags, one counter
   per tag (12 × 4 = 48 reputation points), counted only at object creation.
   The paper's `address` key is replaced by `place`, as OSM address tagging
   uses the `addr:` prefix. Like relations, tag usage is reputation-only and
-  excluded from day totals.
+  excluded from the day totals, so only the per-user sums are stored (in
+  `user_reputation.parquet`); the per-day file keeps just the change counters
+  and `relation_created`.
 
 Join the files on `uid` to examine users, e.g. with
 DuckDB:
@@ -111,7 +115,7 @@ SELECT r.username,
        DATE '1970-01-01' + i.change_date AS change_date,
        i.node_created + i.node_modified + i.node_deleted +
        i.way_created + i.way_modified + i.way_deleted AS edits,
-       i.relation_created, i.tag_highway, i.tag_building
+       i.relation_created
 FROM read_parquet('output-dir/user_reputation.parquet') r
 JOIN read_parquet('output-dir/user_indicators.parquet') i USING (uid)
 ORDER BY edits DESC

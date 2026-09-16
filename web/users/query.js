@@ -4,13 +4,14 @@
 // user_reputation.parquet (the pipeline stamps the current username per uid,
 // and that file is username-sorted with a uid tie-break, so the exact filter
 // prunes straight to the matching pages); the reputation and per-uid counter
-// totals come from the same row. Only the per-day edit timeline still comes
-// from user_indicators.parquet (uid-sorted, so a range filter prunes pages,
-// with exact membership kept client-side). The per-aspect `points` are
-// recomputed from the stored `pct` and the paper's constant caps, and the
-// dataset-wide `active`/`max` stats are read once from the file's
-// key_value_metadata footer instead of repeated per-row columns. No ranking
-// or percentile math runs in the browser.
+// totals come from the same row. Only the per-day activity timeline still
+// comes from user_indicators.parquet (uid-sorted, so a range filter prunes
+// pages, with exact membership kept client-side); its day counts add
+// relation creations to the six node/way change counters. The per-aspect
+// `points` are recomputed from the stored `pct` and the paper's constant
+// caps, and the dataset-wide `active`/`max` stats are read once from the
+// file's key_value_metadata footer instead of repeated per-row columns. No
+// ranking or percentile math runs in the browser.
 
 import { parquetQuery, asyncBufferFromUrl, parquetMetadataAsync } from 'hyparquet'
 import { compressors } from 'hyparquet-compressors'
@@ -19,6 +20,11 @@ const CHANGE_COUNTERS = [
   'node_created', 'node_modified', 'node_deleted',
   'way_created', 'way_modified', 'way_deleted',
 ]
+
+// Day counters of the activity timeline: the six node/way change counters
+// plus relation creations. The per-uid edit *total* stays node/way-only
+// (relations are reputation-only, see dayCount vs totalEdits below).
+const DAY_COUNTERS = [...CHANGE_COUNTERS, 'relation_created']
 
 // Top12 tag aspect of the reputation (paper sec. 4, with "address" replaced
 // by "place": OSM address tagging uses the addr: prefix).
@@ -119,10 +125,9 @@ export async function queryIndicators(baseUrl, path, uids) {
   const minUid = Math.min(...uids)
   const maxUid = Math.max(...uids)
   const uidSet = new Set(uids)
-  // The timeline only needs these 8 of the 21 columns; projecting the rest
-  // cuts the per-user decode while keeping the uid range filter.
-  const columns = ['uid', 'change_date', ...CHANGE_COUNTERS]
-  const rows = await queryRows(baseUrl, path, { uid: { $gte: minUid, $lte: maxUid } }, columns)
+  // The indicator file holds exactly the timeline's 9 columns (uid,
+  // change_date and the seven day counters), so no projection is needed.
+  const rows = await queryRows(baseUrl, path, { uid: { $gte: minUid, $lte: maxUid } })
   return rows.filter((row) => uidSet.has(Number(row.uid)))
 }
 
@@ -134,25 +139,8 @@ export async function queryIndicators(baseUrl, path, uids) {
 // the same rank). The per-aspect points are cap * pct / 100, recomputed here
 // from the stored pct and the constant paper caps; the dataset-wide active/max
 // stats come from the file's key_value_metadata. `row` is one wide per-uid
-// row; when it is absent (dataset missing from the manifest), every aspect
-// degrades to 0.
-export function computeReputation(row, stats = {}) {
-  if (!row) {
-    const detail = (key, label, cap) => ({
-      key, label, cap, raw: 0, max: 0, active: 0, points: 0, pct: 0,
-    })
-    return {
-      value: 0,
-      max: REP_MAX,
-      note: REP_NOTE,
-      details: [
-        detail('node', 'Created nodes', REP_CAPS.node),
-        detail('way', 'Created ways', REP_CAPS.way),
-        detail('relation', 'Created relations', REP_CAPS.relation),
-        ...TOP12_TAGS.map((key) => detail(`tag_${key}`, `Tag ${key}`, REP_TAG_CAP)),
-      ],
-    }
-  }
+// row as produced by queryReputationByUsername().
+export function computeReputation(row, stats) {
   const round = (v) => Math.round(Number(v) * 100) / 100
   const detail = (key, label, cap, counter) => {
     const pct = Number(row[`${key}_pct`] ?? 0)
@@ -162,8 +150,8 @@ export function computeReputation(row, stats = {}) {
       label,
       cap,
       raw: Number(row[counter] ?? 0),
-      max: stat ? stat.max : 0,
-      active: stat ? stat.active : 0,
+      max: stat.max,
+      active: stat.active,
       points: round(pct * cap / 100),
       pct,
     }
@@ -185,24 +173,22 @@ export function computeReputation(row, stats = {}) {
 // and the identity columns are stored per uid by the pipeline), plus the
 // per-day timeline from user_indicators.parquet and the activity-by-day edit
 // counts that feed the history graph.
-export function computeScores(reputationRows, indicatorRows, stats = {}) {
-  const repRow = reputationRows.length ? reputationRows[0] : null
-  const counters = repRow
-    ? { ...repRow.counters }
-    : Object.fromEntries(ALL_COUNTERS.map((key) => [key, 0]))
+export function computeScores(reputationRows, indicatorRows, stats) {
+  const repRow = reputationRows[0]
+  const counters = { ...repRow.counters }
 
   const byDay = new Map()
   for (const row of indicatorRows) {
-    const dayCount = CHANGE_COUNTERS.reduce((sum, k) => sum + Number(row[k] ?? 0), 0)
+    const dayCount = DAY_COUNTERS.reduce((sum, k) => sum + Number(row[k] ?? 0), 0)
     const day = dayKey(row.change_date)
     byDay.set(day, (byDay.get(day) ?? 0) + dayCount)
   }
 
   const totalEdits = CHANGE_COUNTERS.reduce((sum, k) => sum + counters[k], 0)
-  const reputation = computeReputation(repRow ? repRow.reputation : null, stats)
+  const reputation = computeReputation(repRow.reputation, stats)
   return {
-    uid: repRow ? repRow.uid : null,
-    firstSeenDay: repRow ? repRow.first_seen_day : null,
+    uid: repRow.uid,
+    firstSeenDay: repRow.first_seen_day,
     counters,
     totalEdits,
     byDay,

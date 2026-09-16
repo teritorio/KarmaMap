@@ -1,8 +1,9 @@
-// Day-by-day edit-volume histogram (Apache ECharts; series "Edits"). Unlike
-// the changes viewer's full-coverage timeline, this shows only the days the
-// user actually edited (sparse data), so the x-axis has no fixed bounds and
-// zero-count days simply do not appear. The y-axis is logarithmic by
-// default.
+// Day-by-day activity histogram (Apache ECharts; series "Edits (+ relations)").
+// Unlike the changes viewer's full-coverage timeline, this shows only the
+// days the user actually edited (sparse data), so the x-axis has no fixed
+// bounds and zero-count days simply do not appear. Each day counts the seven
+// indicator counters: the six node/way changes plus relation creations. The
+// y-axis is logarithmic by default.
 
 import * as echarts from 'echarts'
 
@@ -19,7 +20,7 @@ export function initHistogram(containerEl) {
     xAxis: { type: 'time' },
     yAxis: yAxisOption(),
     tooltip: { trigger: 'axis' },
-    series: [{ type: 'bar', name: 'Edits', data: [] }],
+    series: [{ type: 'bar', name: 'Edits (+ relations)', data: [] }],
   })
 
   resizeObserver = new ResizeObserver(() => chart?.resize())

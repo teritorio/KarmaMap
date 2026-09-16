@@ -51,8 +51,8 @@ const SCORE_GROUPS = [
   },
   {
     title: `Created objects — relations (${REP_CAPS.relation} pts)`,
-    desc: 'Visible version-1 relations. Reputation-only (\u00a74): excluded from edit day totals.',
-    cards: [['relation_created', 'Relation created', 'Relations at their creation (visible, version 1); reputation-only.', `${REP_CAPS.relation} pts`]],
+    desc: 'Visible version-1 relations. Reputation-only for the score (\u00a74); counted in the activity timeline.',
+    cards: [['relation_created', 'Relation created', 'Relations at their creation (visible, version 1). Reputation-only for the score, counted in the day timeline.', `${REP_CAPS.relation} pts`]],
   },
   {
     title: 'Top12 tags \u2014 4 pts each',
@@ -124,7 +124,7 @@ function renderScores(scores) {
   const parts = [
     `<section class="score-group">` +
       `<h3>Activity</h3>` +
-      `<p class="desc">Sum of the six node/way change counters (day totals); relations and tag usage are reputation-only and excluded.</p>` +
+      `<p class="desc">Sum of the six node/way change counters; the activity graph counts relation creations too, but relations score nothing in the reputation.</p>` +
       `<table class="counter-table">` +
       `<thead><tr><th>Counter</th><th class="value">Value</th><th class="role">Reputation</th></tr></thead>` +
       `<tbody><tr>` +

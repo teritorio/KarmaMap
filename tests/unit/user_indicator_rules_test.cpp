@@ -22,7 +22,6 @@ auto row_of(UserEventStats& s, int64_t uid, uint16_t d) {
 
 TEST(UserIndicatorRules, CountsCreateModifyDeletePerUserAndDay) {
     UserEventStats s;
-    s.begin_object();
     s.add_version(7, "alice", day(100), true, 1, ObjectKind::Node);
     s.add_version(7, "alice", day(100), true, 2, ObjectKind::Node);
     s.add_version(8, "bob", day(101), true, 3, ObjectKind::Node);
@@ -49,12 +48,8 @@ TEST(UserIndicatorRules, CountsCreateModifyDeletePerUserAndDay) {
 
 TEST(UserIndicatorRules, AggregatesSameUserAndDay) {
     UserEventStats s;
-    s.begin_object();
     s.add_version(7, "alice", day(100), true, 1, ObjectKind::Node);
-    s.end_object();
-    s.begin_object();
     s.add_version(7, "alice", day(100), true, 1, ObjectKind::Node);
-    s.end_object();
 
     EXPECT_EQ(s.days().size(), 1);
     EXPECT_EQ(row_of(s, 7, day(100)).row.node_created, 2);
@@ -62,15 +57,9 @@ TEST(UserIndicatorRules, AggregatesSameUserAndDay) {
 
 TEST(UserIndicatorRules, DayRowKeepsFirstUsernameOfTheDay) {
     UserEventStats s;
-    s.begin_object();
     s.add_version(5, "bob", day(100), true, 1, ObjectKind::Node);
-    s.end_object();
-    s.begin_object();
     s.add_version(5, "carol", day(100), true, 1, ObjectKind::Node);
-    s.end_object();
-    s.begin_object();
     s.add_version(5, "carol", day(101), true, 1, ObjectKind::Node);
-    s.end_object();
 
     EXPECT_EQ(row_of(s, 5, day(100)).username, "bob");
     EXPECT_EQ(row_of(s, 5, day(101)).username, "carol");
@@ -78,17 +67,15 @@ TEST(UserIndicatorRules, DayRowKeepsFirstUsernameOfTheDay) {
 
 TEST(UserIndicatorRules, ZeroUidIsCounted) {
     UserEventStats s;
-    s.begin_object();
     s.add_version(0, "", day(100), true, 1, ObjectKind::Node);
-    s.end_object();
     EXPECT_EQ(row_of(s, 0, day(100)).row.node_created, 1);
     EXPECT_EQ(row_of(s, 0, day(100)).username, "");
 }
 
 TEST(UserIndicatorRules, RelationCreatedIsIsolated) {
     UserEventStats s;
-    // Relations count only visible v1 versions and never touch the node/way
-    // run state (no total_events contribution).
+    // Relations count only visible v1 versions and never contribute to the
+    // node/way counters (no total_events contribution).
     s.record_relation_created(6, "alice", day(100));
     s.record_relation_created(6, "alice", day(100));
     s.record_relation_created(6, "alice", day(101));
@@ -98,11 +85,9 @@ TEST(UserIndicatorRules, RelationCreatedIsIsolated) {
     EXPECT_EQ(row_of(s, 6, day(101)).row.relation_created, 1);
 }
 
-TEST(UserIndicatorRules, RelationCreatedKeepsNodeRunState) {
+TEST(UserIndicatorRules, RelationCreatedSharesUidDayWithNode) {
     UserEventStats s;
-    s.begin_object();
     s.add_version(6, "alice", day(100), true, 1, ObjectKind::Node);
-    s.end_object();
     // A relation creation does not disturb the node/way counters already
     // recorded, and shares the (uid, day) entry.
     s.record_relation_created(6, "alice", day(100));
@@ -116,12 +101,8 @@ TEST(UserIndicatorRules, RelationCreatedKeepsNodeRunState) {
 TEST(UserIndicatorRules, CreatedTagsAccumulatePerDayAndObject) {
     UserEventStats s;
     // amenity + building on one node, building on a way, same (uid, day).
-    s.begin_object();
     s.add_version(7, "alice", day(100), true, 1, ObjectKind::Node, 0b101);
-    s.end_object();
-    s.begin_object();
     s.add_version(7, "alice", day(100), true, 1, ObjectKind::Way, 0b100);
-    s.end_object();
 
     auto r = row_of(s, 7, day(100));
     EXPECT_EQ(r.row.tag_amenity, 1);    // bit 0
@@ -133,12 +114,10 @@ TEST(UserIndicatorRules, CreatedTagsAccumulatePerDayAndObject) {
 
 TEST(UserIndicatorRules, TagsIgnoredOnModifyAndDelete) {
     UserEventStats s;
-    s.begin_object();
     s.add_version(7, "alice", day(100), true, 1, ObjectKind::Node, 0b001);
     s.add_version(7, "alice", day(101), true, 2, ObjectKind::Node, 0b001);
     s.add_version(7, "alice", day(102), false, 3, ObjectKind::Node, 0b001);
     s.add_version(7, "alice", day(103), true, 1, ObjectKind::Way, 0b001);
-    s.end_object();
 
     // Tags count on the creation only; later versions of the same object add
     // nothing even if the caller passes a mask.
@@ -165,9 +144,7 @@ TEST(UserIndicatorRules, TagBitsMapToIndependentCounters) {
     // Bit i of a created object's mask touches exactly the i-th tag counter.
     for (std::uint32_t i = 0; i < user_indicators::kTagCount; ++i) {
         // One object per (uid, day), so each row shows a single isolated bit.
-        s.begin_object();
         s.add_version(9, "alice", day(100 + i), true, 1, ObjectKind::Node, 1u << i);
-        s.end_object();
     }
     for (std::uint32_t i = 0; i < user_indicators::kTagCount; ++i) {
         const auto& row = row_of(s, 9, day(100 + i)).row;
