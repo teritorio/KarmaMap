@@ -37,9 +37,6 @@ struct StageRow {
     uint32_t way_created;
     uint32_t way_modified;
     uint32_t way_deleted;
-    uint32_t relocated;
-    uint32_t short_lived;
-    uint32_t rapid_edit;
     uint32_t relation_created;
     uint32_t tag_amenity;
     uint32_t tag_boundary;
@@ -65,16 +62,15 @@ void write_stage(const std::string& path, const std::vector<StageRow>& rows) {
     arrow::UInt16Builder day;
     std::vector<arrow::UInt32Builder*> counters;
     std::vector<std::unique_ptr<arrow::UInt32Builder>> owned_counters;
-    for (size_t i = 0; i < 22; ++i) {
+    for (size_t i = 0; i < user_indicators::kCounterCount; ++i) {
         owned_counters.push_back(std::make_unique<arrow::UInt32Builder>());
         counters.push_back(owned_counters.back().get());
     }
 
     // Non-const accessors for the counter fields in declaration order.
-    uint32_t (StageRow::*members[22]) = {
+    uint32_t (StageRow::*members[user_indicators::kCounterCount]) = {
         &StageRow::node_created, &StageRow::node_modified, &StageRow::node_deleted,
         &StageRow::way_created,  &StageRow::way_modified,  &StageRow::way_deleted,
-        &StageRow::relocated,    &StageRow::short_lived,   &StageRow::rapid_edit,
         &StageRow::relation_created,
         &StageRow::tag_amenity,   &StageRow::tag_boundary,  &StageRow::tag_building,
         &StageRow::tag_highway,   &StageRow::tag_landuse,   &StageRow::tag_leisure,
@@ -86,15 +82,19 @@ void write_stage(const std::string& path, const std::vector<StageRow>& rows) {
         append_ok(uid, r.uid);
         append_ok(username, r.username);
         append_ok(day, r.day);
-        for (size_t i = 0; i < 22; ++i) append_ok(*counters[i], r.*members[i]);
+        for (size_t i = 0; i < user_indicators::kCounterCount; ++i) {
+            append_ok(*counters[i], r.*members[i]);
+        }
     }
 
     std::shared_ptr<arrow::Array> a_uid, a_user, a_day;
-    std::vector<std::shared_ptr<arrow::Array>> a_counters(22);
+    std::vector<std::shared_ptr<arrow::Array>> a_counters(user_indicators::kCounterCount);
     finish_ok(uid, &a_uid);
     finish_ok(username, &a_user);
     finish_ok(day, &a_day);
-    for (size_t i = 0; i < 22; ++i) finish_ok(*counters[i], &a_counters[i]);
+    for (size_t i = 0; i < user_indicators::kCounterCount; ++i) {
+        finish_ok(*counters[i], &a_counters[i]);
+    }
 
     auto schema = arrow::schema({
         arrow::field("uid", arrow::int64(), false),
@@ -106,9 +106,6 @@ void write_stage(const std::string& path, const std::vector<StageRow>& rows) {
         arrow::field("way_created", arrow::uint32(), false),
         arrow::field("way_modified", arrow::uint32(), false),
         arrow::field("way_deleted", arrow::uint32(), false),
-        arrow::field("relocated", arrow::uint32(), false),
-        arrow::field("short_lived", arrow::uint32(), false),
-        arrow::field("rapid_edit", arrow::uint32(), false),
         arrow::field("relation_created", arrow::uint32(), false),
         arrow::field("tag_amenity", arrow::uint32(), false),
         arrow::field("tag_boundary", arrow::uint32(), false),
@@ -188,7 +185,6 @@ struct ReputationRows {
     std::vector<int64_t> uid;
     std::vector<std::string> username;
     std::vector<uint16_t> first_seen_day;
-    std::vector<bool> bulk_new_user;
 };
 
 ReputationRows read_reputation(const std::string& path) {
@@ -201,12 +197,10 @@ ReputationRows read_reputation(const std::string& path) {
     const auto* user = static_cast<const arrow::StringArray*>(t->column(1)->chunk(0).get());
     const auto* first_seen =
         static_cast<const arrow::UInt16Array*>(t->column(2)->chunk(0).get());
-    const auto* bulk = static_cast<const arrow::BooleanArray*>(t->column(3)->chunk(0).get());
     for (int64_t i = 0; i < t->num_rows(); ++i) {
         out.uid.push_back(uid->Value(i));
         out.username.push_back(user->GetString(i));
         out.first_seen_day.push_back(first_seen->Value(i));
-        out.bulk_new_user.push_back(bulk->Value(i));
     }
     return out;
 }
@@ -221,19 +215,18 @@ TEST(UserIndicatorFinalize, ConcatenatesSortsAndDerives) {
     // Unsorted on purpose: uid 11's rows precede uid 10's in this file.
     write_stage(stage + "/stage_00000.parquet",
                 {
-                    {11, "bob", 2000, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-                    {10, "alice", 1005, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-                    {10, "alice", 1000, 5, 0, 0, 0, 0, 0, 0, 0, 1, 3, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                    {11, "bob", 2000, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                    {10, "alice", 1005, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                    {10, "alice", 1000, 5, 0, 0, 0, 0, 0, 3, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0},
                 });
     // Second file: exercises multi-file concatenation.
     write_stage(stage + "/stage_00001.parquet",
                 {
-                    {10, "alice_alias", 1050, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
-                    {12, "", 3000, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+                    {10, "alice_alias", 1050, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+                    {12, "", 3000, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0},
                 });
 
-    user_indicators::Thresholds thresholds;  // defaults: window 30, bulk 10
-    user_indicators::run_finalize(stage, indicators, thresholds);
+    user_indicators::run_finalize(stage, indicators);
 
     EXPECT_FALSE(std::filesystem::exists(stage));
     EXPECT_TRUE(std::filesystem::exists(indicators));
@@ -268,65 +261,28 @@ TEST(UserIndicatorFinalize, ConcatenatesSortsAndDerives) {
     EXPECT_EQ(rep.uid[0], 12);              // "<12>" sorts first
     EXPECT_EQ(rep.username[0], "<12>");
     EXPECT_EQ(rep.first_seen_day[0], 3000);
-    EXPECT_FALSE(rep.bulk_new_user[0]);
 
     EXPECT_EQ(rep.uid[1], 10);
     EXPECT_EQ(rep.username[1], "alice_alias");
     EXPECT_EQ(rep.first_seen_day[1], 1000);
-    EXPECT_TRUE(rep.bulk_new_user[1]);  // 5+6 events within the 30-day window
 
     EXPECT_EQ(rep.uid[2], 11);
     EXPECT_EQ(rep.username[2], "bob");
     EXPECT_EQ(rep.first_seen_day[2], 2000);
-    EXPECT_FALSE(rep.bulk_new_user[2]);  // only 4 events in window
 }
 
 TEST(UserIndicatorFinalize, NoStageIsNoOp) {
     TempDir dir;
     const std::string indicators = dir.join("user_indicators.parquet");
 
-    user_indicators::Thresholds thresholds;
-    EXPECT_NO_THROW(
-        user_indicators::run_finalize(dir.join("nope"), indicators, thresholds));
+    EXPECT_NO_THROW(user_indicators::run_finalize(dir.join("nope"), indicators));
     EXPECT_FALSE(std::filesystem::exists(indicators));
 
     // An empty stage directory is equally a no-op.
     const std::string empty_stage = dir.join("empty_stage");
     std::filesystem::create_directories(empty_stage);
-    EXPECT_NO_THROW(
-        user_indicators::run_finalize(empty_stage, indicators, thresholds));
+    EXPECT_NO_THROW(user_indicators::run_finalize(empty_stage, indicators));
     EXPECT_FALSE(std::filesystem::exists(indicators));
-}
-
-TEST(UserIndicatorFinalize, WindowAndBulkThresholdsApply) {
-    TempDir dir;
-    const std::string stage = dir.join("stage");
-    const std::string indicators = dir.join("user_indicators.parquet");
-    std::filesystem::create_directories(stage);
-
-    // uid 20: 3 events within 7 days are below bulk_edit_min even though its
-    // timeline is early; uid 21: 12 events across 8 days exceed the window.
-    write_stage(stage + "/stage_00000.parquet",
-                {
-                    {21, "mallory", 1000, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-                    {20, "eve", 5000, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-                    {21, "mallory", 1006, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-                });
-
-    user_indicators::Thresholds thresholds;
-    thresholds.new_user_window_days = 7;
-    thresholds.bulk_edit_min = 10;
-    user_indicators::run_finalize(stage, indicators, thresholds);
-
-    const auto rep = read_reputation(dir.join("user_reputation.parquet"));
-    ASSERT_EQ(rep.uid.size(), 2);
-    // Sorted by username: eve before mallory.
-    EXPECT_EQ(rep.uid[0], 20);
-    EXPECT_EQ(rep.username[0], "eve");
-    EXPECT_FALSE(rep.bulk_new_user[0]);
-    EXPECT_EQ(rep.uid[1], 21);
-    EXPECT_EQ(rep.username[1], "mallory");
-    EXPECT_TRUE(rep.bulk_new_user[1]);  // 6 + 6 within [1000, 1006]
 }
 
 }  // namespace

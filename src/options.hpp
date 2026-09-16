@@ -3,8 +3,6 @@
 #include <cstddef>
 #include <string>
 
-#include "user_indicators.hpp"
-
 inline constexpr size_t kDefaultWayBatchBytes = 512ULL * 1024 * 1024;
 
 struct Options {
@@ -17,10 +15,6 @@ struct Options {
     bool run_way_pass = true;
     bool run_sort_pass = true;
     bool run_user_indicators = false;
-    // User-indicator rules; defaults come from Thresholds (--relocate-meters,
-    // --short-life-days, --rapid-edit-versions, --rapid-edit-window-days,
-    // --new-user-window-days, --bulk-edit-min).
-    user_indicators::Thresholds thresholds;
 };
 
 void print_usage(const char* argv0);

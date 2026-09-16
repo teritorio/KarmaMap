@@ -32,10 +32,10 @@ void finish_ok(B& builder, std::shared_ptr<arrow::Array>* out) {
 }
 
 // Writes one stage file with the exact schema the scan produces: uid,
-// username, change_date and the 22 uint32 counters.
+// username, change_date and the 19 uint32 counters.
 void write_stage_named(const std::string& path,
                        const std::vector<std::tuple<int64_t, std::string, uint16_t,
-                                                     std::vector<uint32_t>>>& rows) {
+                                                      std::vector<uint32_t>>>& rows) {
     auto outfile_result = arrow::io::FileOutputStream::Open(path);
     ASSERT_TRUE(outfile_result.ok()) << outfile_result.status();
 
@@ -43,23 +43,27 @@ void write_stage_named(const std::string& path,
     arrow::StringBuilder username;
     arrow::UInt16Builder day;
     std::vector<std::unique_ptr<arrow::UInt32Builder>> counters;
-    for (size_t i = 0; i < 22; ++i) {
+    for (size_t i = 0; i < user_indicators::kCounterCount; ++i) {
         counters.push_back(std::make_unique<arrow::UInt32Builder>());
     }
     for (const auto& [u, name, d, cts] : rows) {
         append_ok(uid, u);
         append_ok(username, name);
         append_ok(day, d);
-        ASSERT_EQ(cts.size(), 22);
-        for (size_t c = 0; c < 22; ++c) append_ok(*counters[c], cts[c]);
+        ASSERT_EQ(cts.size(), user_indicators::kCounterCount);
+        for (size_t c = 0; c < user_indicators::kCounterCount; ++c) {
+            append_ok(*counters[c], cts[c]);
+        }
     }
 
     std::shared_ptr<arrow::Array> a_uid, a_user, a_day;
-    std::vector<std::shared_ptr<arrow::Array>> a_counters(22);
+    std::vector<std::shared_ptr<arrow::Array>> a_counters(user_indicators::kCounterCount);
     finish_ok(uid, &a_uid);
     finish_ok(username, &a_user);
     finish_ok(day, &a_day);
-    for (size_t i = 0; i < 22; ++i) finish_ok(*counters[i], &a_counters[i]);
+    for (size_t i = 0; i < user_indicators::kCounterCount; ++i) {
+        finish_ok(*counters[i], &a_counters[i]);
+    }
 
     auto schema = arrow::schema({
         arrow::field("uid", arrow::int64(), false),
@@ -71,9 +75,6 @@ void write_stage_named(const std::string& path,
         arrow::field("way_created", arrow::uint32(), false),
         arrow::field("way_modified", arrow::uint32(), false),
         arrow::field("way_deleted", arrow::uint32(), false),
-        arrow::field("relocated", arrow::uint32(), false),
-        arrow::field("short_lived", arrow::uint32(), false),
-        arrow::field("rapid_edit", arrow::uint32(), false),
         arrow::field("relation_created", arrow::uint32(), false),
         arrow::field("tag_amenity", arrow::uint32(), false),
         arrow::field("tag_boundary", arrow::uint32(), false),
@@ -119,13 +120,13 @@ TEST(ReputationFile, WritesExactWidePerUidTable) {
     std::filesystem::create_directories(stage);
 
     // Counter indices follow the stage schema: 0 node_created, 3 way_created,
-    // 9 relation_created, 12 tag_building, 13 tag_highway.
+    // 6 relation_created, 9 tag_building, 10 tag_highway.
     const uint32_t node_created = 0;
     const uint32_t way_created = 3;
-    const uint32_t relation_created = 9;
-    const uint32_t tag_building = 12;
-    const uint32_t tag_highway = 13;
-    std::vector<uint32_t> c(22, 0);
+    const uint32_t relation_created = 6;
+    const uint32_t tag_building = 9;
+    const uint32_t tag_highway = 10;
+    std::vector<uint32_t> c(user_indicators::kCounterCount, 0);
     auto row = [&](std::initializer_list<std::pair<uint32_t, uint32_t>> set) {
         auto r = c;
         for (const auto& [idx, v] : set) r[idx] = v;
@@ -145,8 +146,7 @@ TEST(ReputationFile, WritesExactWidePerUidTable) {
                     {4, row({{relation_created, 7}})},
                 });
 
-    user_indicators::Thresholds thresholds;
-    user_indicators::run_finalize(stage, indicators, thresholds);
+    user_indicators::run_finalize(stage, indicators);
 
     const std::string rep = dir.join("user_reputation.parquet");
     EXPECT_TRUE(std::filesystem::exists(rep));
@@ -155,7 +155,7 @@ TEST(ReputationFile, WritesExactWidePerUidTable) {
     auto combined_result = read_parquet(rep)->CombineChunks();
     ASSERT_TRUE(combined_result.ok());
     const auto& t = *combined_result;
-    ASSERT_EQ(t->num_columns(), 43);
+    ASSERT_EQ(t->num_columns(), 38);
     ASSERT_EQ(t->num_rows(), 4);
 
     const auto col = [&](const std::string& name) -> std::shared_ptr<arrow::Array> {
@@ -177,24 +177,14 @@ TEST(ReputationFile, WritesExactWidePerUidTable) {
     // username-sorted (uid tie-break).
 
     // Identity columns: username matches the stage's std::to_string(uid);
-    // first_seen_day is the group's first change_date (100 + first row index);
-    // uid 1 is the only bulk new user (10 node creates within the 30-day
-    // window, >= default bulk_edit_min 10); no modified/deleted events, so
-    // max_day_changes is 0 everywhere.
+    // first_seen_day is the group's first change_date (100 + first row index).
     const auto username_arr = std::static_pointer_cast<arrow::StringArray>(col("username"));
     const auto first_seen_arr = std::static_pointer_cast<arrow::UInt16Array>(col("first_seen_day"));
-    const auto bulk_arr = std::static_pointer_cast<arrow::BooleanArray>(col("bulk_new_user"));
-    const auto max_day_changes_arr = std::static_pointer_cast<arrow::UInt32Array>(col("max_day_changes"));
     for (int64_t i = 0; i < 4; ++i) {
         EXPECT_EQ(username_arr->GetString(i), std::to_string(i + 1));
-        EXPECT_EQ(max_day_changes_arr->Value(i), 0);
     }
     const std::vector<uint16_t> exp_first_seen = {100, 102, 103, 104};
     for (int64_t i = 0; i < 4; ++i) EXPECT_EQ(first_seen_arr->Value(i), exp_first_seen[i]);
-    EXPECT_EQ(bulk_arr->Value(0), true);
-    EXPECT_EQ(bulk_arr->Value(1), false);
-    EXPECT_EQ(bulk_arr->Value(2), false);
-    EXPECT_EQ(bulk_arr->Value(3), false);
 
     // Reputations: uid1 = node 20 + tag_building 4; uid3 takes the way cap;
     // uid4 takes the relation cap; uid2 only tag_highway 4.
@@ -266,7 +256,7 @@ TEST(ReputationFile, SortsByUsernameThenUid) {
     std::filesystem::create_directories(stage);
 
     const uint32_t node_created = 0;
-    std::vector<uint32_t> c(22, 0);
+    std::vector<uint32_t> c(user_indicators::kCounterCount, 0);
     auto row = [&](uint32_t v) { auto r = c; r[node_created] = v; return r; };
 
     // Uid groups arrive in uid order; the usernames are scrambled on purpose
@@ -281,8 +271,7 @@ TEST(ReputationFile, SortsByUsernameThenUid) {
                           {8, "dave", 104, row(1)},
                       });
 
-    user_indicators::Thresholds thresholds;
-    user_indicators::run_finalize(stage, indicators, thresholds);
+    user_indicators::run_finalize(stage, indicators);
 
     const std::string rep = dir.join("user_reputation.parquet");
     EXPECT_TRUE(std::filesystem::exists(rep));

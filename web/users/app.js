@@ -1,10 +1,10 @@
 // Users viewer: looks up an OSM username directly in user_reputation.parquet
 // (the pipeline stamps the current username per uid), fetches that user's
 // exact reputation row and their per-day rows from user_indicators.parquet,
-// and renders the OSMPatrol reputation (with edit-suspicion chips), raw
-// indicator totals, the profile identity fields and an edit-activity
-// timeline. Same architecture as the changes viewer (page + app + query +
-// histogram + permalink modules), but no spatial component.
+// and renders the OSMPatrol reputation, raw indicator totals, the profile
+// identity fields and an edit-activity timeline. Same architecture as the
+// changes viewer (page + app + query + histogram + permalink modules), but
+// no spatial component.
 
 import { loadManifest } from './manifest.js'
 import { readPermalink, writePermalink } from './permalink.js'
@@ -36,7 +36,8 @@ function escapeHtml(text) {
 }
 
 // Score tables grouped by reputation-formula aspect (paper §4), plus the
-// counters that feed the edit-suspicion chips. Each item: [key, label, desc, role].
+// change counters that fall outside the reputation (mods/deletes). Each
+// item: [key, label, desc, role].
 const SCORE_GROUPS = [
   {
     title: `Created objects — nodes (${REP_CAPS.node} pts)`,
@@ -50,7 +51,7 @@ const SCORE_GROUPS = [
   },
   {
     title: `Created objects — relations (${REP_CAPS.relation} pts)`,
-    desc: 'Visible version-1 relations. Reputation-only (\u00a74): excluded from edit day totals and bulk-new-user checks.',
+    desc: 'Visible version-1 relations. Reputation-only (\u00a74): excluded from edit day totals.',
     cards: [['relation_created', 'Relation created', 'Relations at their creation (visible, version 1); reputation-only.', `${REP_CAPS.relation} pts`]],
   },
   {
@@ -60,25 +61,14 @@ const SCORE_GROUPS = [
   },
   {
     title: 'Other counters',
-    desc: 'Modifications, deletions and vandalism signals. Not part of the reputation; they feed the edit-suspicion chips above.',
+    desc: 'Modifications and deletions of nodes and ways. Not part of the reputation.',
     cards: [
       ['node_modified', 'Node modified', 'Visible node versions edited after creation (version > 1).', 'excluded'],
       ['node_deleted', 'Node deleted', 'Node versions deleted or hidden (invisible versions).', 'excluded'],
       ['way_modified', 'Way modified', 'Visible way versions edited after creation (version > 1).', 'excluded'],
       ['way_deleted', 'Way deleted', 'Way versions deleted or hidden (invisible versions).', 'excluded'],
-      ['relocated', 'Relocated', 'Node versions moved more than --relocate-meters from that node\u2019s previous located version.', 'suspicion'],
-      ['short_lived', 'Short-lived', 'Objects deleted within --short-life-days of their creation.', 'suspicion'],
-      ['rapid_edit', 'Rapid edits', 'Versions bringing the object to \u2265 --rapid-edit-versions versions within --rapid-edit-window-days.', 'suspicion'],
     ],
   },
-]
-
-const SUSPICION_LABELS = [
-  ['newUser', 'new user'],
-  ['delWild', 'mass edit/delete'],
-  ['lowReputation', 'low reputation (< 5%)'],
-  ['moved', 'relocations'],
-  ['nearRepeats', 'short-lived/rapid edits'],
 ]
 
 // Relative reputation-detail keys map to their full counter keys.
@@ -93,17 +83,11 @@ function renderProfile(name, scores) {
     .map(([label, value]) =>
       `<div class="field"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(value)}</span></div>`)
     .join('')
-  const badge = scores.bulkNewUser ? 'yes' : 'no'
-  profileEl.innerHTML =
-    `${fields}<span class="badge ${scores.bulkNewUser ? 'badge-yes' : 'badge-no'}">new user ${badge}</span>`
+  profileEl.innerHTML = `${fields}`
 }
 
 function renderScore(scores) {
   const { value, max, note } = scores.reputation
-  const chips = SUSPICION_LABELS.map(([key, label]) => {
-    const on = scores.suspicion[key]
-    return `<span class="chip${on ? ' on' : ''}">${label}</span>`
-  }).join('')
   scoreEl.innerHTML = `
     <div class="headline">
       <span class="value">${value}</span>
@@ -111,8 +95,7 @@ function renderScore(scores) {
     </div>
     <div class="note">${escapeHtml(note)}</div>
     <div class="formula">${escapeHtml(REP_FORMULA)}</div>
-    <div class="formula-note">P(x) = percentile rank among contributors active on that aspect; each aspect is capped at its paper weight</div>
-    <div class="chips">${chips}</div>`
+    <div class="formula-note">P(x) = percentile rank among contributors active on that aspect; each aspect is capped at its paper weight</div>`
 }
 
 function renderScores(scores) {

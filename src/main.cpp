@@ -131,8 +131,6 @@ void run_sort_pass(const Options& opts) {
 }
 
 void run_user_indicator_pass(const Options& opts) {
-    const user_indicators::Thresholds& thresholds = opts.thresholds;
-
     const std::string stage_dir = opts.output_dir + "/user_indicator_stage";
     const std::string indicators_path = opts.output_dir + "/user_indicators.parquet";
 
@@ -142,8 +140,8 @@ void run_user_indicator_pass(const Options& opts) {
     std::filesystem::remove(indicators_path);
     std::filesystem::remove(opts.output_dir + "/user_reputation.parquet");
 
-    user_indicators::run_scan(opts.input_path, stage_dir, thresholds);
-    user_indicators::run_finalize(stage_dir, indicators_path, thresholds);
+    user_indicators::run_scan(opts.input_path, stage_dir);
+    user_indicators::run_finalize(stage_dir, indicators_path);
 }
 
 }  // namespace

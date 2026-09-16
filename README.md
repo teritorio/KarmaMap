@@ -30,11 +30,10 @@ below.
 ## User indicators (`--user-indicators`)
 
 An optional, H3-independent pass that scores history **per user and per UTC
-day** with cheap OSMPatrol-style heuristics, targeting vandalism/bulk
-editors. It is a single streaming scan over the node and way history plus
-relation creations (no changeset metadata is needed) and one in-memory
-finalize, and is independent of passes 1-3. It writes two non-partitioned
-Parquet files:
+day** with cheap OSMPatrol-style heuristics. It is a single streaming scan
+over the node and way history plus relation creations (no changeset metadata
+is needed) and one in-memory finalize, and is independent of passes 1-3. It
+writes two non-partitioned Parquet files:
 
 ```
 output-dir/
@@ -64,10 +63,8 @@ output-dir/
   | `uid` | `int64` | OSM user id |
   | `username` | `utf8` | The user's current username (identity, for direct lookup) |
   | `first_seen_day` | `uint16` | Day the user's first watched change appears |
-  | `bulk_new_user` | `bool` | New-user-window bulk upload flag (see below) |
-  | `max_day_changes` | `uint32` | Most node/way modified+deleted events in a single day |
   | `reputation` | `uint8` | Exact current score 0-100 (sum of the per-aspect points) |
-  | `node_created` … `tag_waterway` | `uint32` | Per-user sums of the 22 indicator counters |
+  | `node_created` … `tag_waterway` | `uint32` | Per-user sums of the 19 indicator counters |
 
   Then, for each aspect `node`, `way`, `relation` and `tag_<key>` (each
   Top12 tag):
@@ -76,7 +73,7 @@ output-dir/
   |---|---|---|
   | `<aspect>_pct` | `float64` | Percentile rank `100 · P` |
 
-  (43 columns total.) Every aspect is computed exactly in C++: `P` is the
+  (38 columns total.) Every aspect is computed exactly in C++: `P` is the
   user's rank among the contributors active on that aspect (raw count > 0),
   with equal totals sharing the same rank, a sole contributor at the full
   cap `cap` (=20/20/12 and 4 per tag) and a zero total at 0; nothing is
@@ -94,37 +91,19 @@ output-dir/
 Derivation notes:
 
 - Every version event is attributed to the editing `(uid, day)`; day totals
-  are sums of the six node/way change counters. `relocated` compares
-  consecutive versions of the same node (version-to-version move),
-  `short_lived` counts an object's delete relative to its own first version,
-  and `rapid_edit` counts each version that brings its object's rolling
-  window up to threshold.
+  are sums of the six node/way change counters.
 - `relation_created` is counted for visible version-1 relations only.
   Relation creations feed the OSMPatrol reputation (built from *created*
   objects only); modifies/deletes are not counted, and relations are
-  excluded from day totals and `bulk_new_user`. The heuristic follows
+  excluded from day totals. The heuristic follows
   Neis, Goetz & Zipf, *ISPRS Int. J. Geo-Inf.* 2012, 1(3), 315-332.
 - The `tag_*` columns mirror the paper's "Top12" most-used tags, one counter
   per tag (12 × 4 = 48 reputation points), counted only at object creation.
   The paper's `address` key is replaced by `place`, as OSM address tagging
   uses the `addr:` prefix. Like relations, tag usage is reputation-only and
   excluded from day totals.
-- `bulk_new_user` is derived in finalize from the daily rows themselves
-  (the events within `new_user_window_days` of the user's first seen day),
-  so it needs no extra history scan.
-- Rule thresholds (defaults in parentheses) come from `--` flags:
 
-  | Flag | Default | Role |
-  |---|---|---|
-  | `--relocate-meters` | `500` | Node move distance counting as a relocation |
-  | `--short-life-days` | `7` | Max age (days) of a created+deleted object |
-  | `--rapid-edit-versions` | `5` | Versions that trigger the rapid-edit flag |
-  | `--rapid-edit-window-days` | `7` | Rolling window for rapid-edit counting |
-  | `--new-user-window-days` | `30` | Days after first seen edit a user counts as new |
-  | `--bulk-edit-min` | `10` | Edits within the window that flag `bulk_new_user` |
-
-These are documented starting points, not calibrated against ground truth:
-suspicion only. Join the files on `uid` to prioritize users, e.g. with
+Join the files on `uid` to examine users, e.g. with
 DuckDB:
 
 ```sql
@@ -135,7 +114,6 @@ SELECT r.username,
        i.relation_created, i.tag_highway, i.tag_building
 FROM read_parquet('output-dir/user_reputation.parquet') r
 JOIN read_parquet('output-dir/user_indicators.parquet') i USING (uid)
-WHERE r.bulk_new_user
 ORDER BY edits DESC
 LIMIT 20;
 ```
@@ -341,12 +319,6 @@ User stats (`--user-indicators`):
 | Option | Description |
 |---|---|
 | `--user-indicators` | Also run the user-indicator pass (see above); independent of passes 1-3 |
-| `--relocate-meters` | Relocation threshold in meters (default: `500`) |
-| `--short-life-days` | Short-lived delete window in days (default: `7`) |
-| `--rapid-edit-versions` | Rapid-edit version threshold (default: `5`) |
-| `--rapid-edit-window-days` | Rapid-edit rolling window in days (default: `7`) |
-| `--new-user-window-days` | New-user window after first edit in days (default: `30`) |
-| `--bulk-edit-min` | Edits within the window that flag `bulk_new_user` (default: `10`) |
 
 ## Running
 
@@ -398,9 +370,8 @@ Then open `http://localhost:8080/`.
   in `app.js`).
 - **`/users/`** — the users viewer: look up an OSM username to see their
   OSMPatrol reputation (0-100, built from created nodes/ways/relations and
-  capped at the paper's per-aspect weights, with edit-suspicion chips), raw
-  per-user indicator totals (relocated, short-lived, rapid-edits, etc.) and an
-  edit-activity timeline over the user-indicator files generated by
+  capped at the paper's per-aspect weights), per-user indicator totals
+  and an edit-activity timeline over the user-indicator files generated by
   `--user-indicators`. The username is matched exactly on
   `user_reputation.parquet` — the pipeline stamps the current username per
   uid, so the reputation, identity fields and indicator totals all come from

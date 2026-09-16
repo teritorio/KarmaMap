@@ -30,12 +30,6 @@ TEST(Options, DefaultsPreserved) {
     EXPECT_TRUE(opts.run_way_pass);
     EXPECT_TRUE(opts.run_sort_pass);
     EXPECT_FALSE(opts.run_user_indicators);
-    EXPECT_DOUBLE_EQ(opts.thresholds.relocate_meters, user_indicators::kDefaultRelocateMeters);
-    EXPECT_EQ(opts.thresholds.short_life_days, user_indicators::kDefaultShortLifeDays);
-    EXPECT_EQ(opts.thresholds.rapid_edit_versions, user_indicators::kDefaultRapidEditVersions);
-    EXPECT_EQ(opts.thresholds.rapid_edit_window_days, user_indicators::kDefaultRapidEditWindowDays);
-    EXPECT_EQ(opts.thresholds.new_user_window_days, user_indicators::kDefaultNewUserWindowDays);
-    EXPECT_EQ(opts.thresholds.bulk_edit_min, user_indicators::kDefaultBulkEditMin);
 }
 
 TEST(Options, UserIndicatorsFlagEnablesPass) {
@@ -45,23 +39,6 @@ TEST(Options, UserIndicatorsFlagEnablesPass) {
                     &opts);
     ASSERT_TRUE(ok);
     EXPECT_TRUE(opts.run_user_indicators);
-}
-
-TEST(Options, ThresholdFlagsOverride) {
-    Options opts;
-    bool ok = parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
-                     "--output-dir", "out", "--user-indicators",
-                     "--relocate-meters", "25.5", "--short-life-days", "3",
-                     "--rapid-edit-versions", "9", "--rapid-edit-window-days", "14",
-                     "--new-user-window-days", "60", "--bulk-edit-min", "50"},
-                    &opts);
-    ASSERT_TRUE(ok);
-    EXPECT_DOUBLE_EQ(opts.thresholds.relocate_meters, 25.5);
-    EXPECT_EQ(opts.thresholds.short_life_days, 3);
-    EXPECT_EQ(opts.thresholds.rapid_edit_versions, 9);
-    EXPECT_EQ(opts.thresholds.rapid_edit_window_days, 14);
-    EXPECT_EQ(opts.thresholds.new_user_window_days, 60);
-    EXPECT_EQ(opts.thresholds.bulk_edit_min, 50);
 }
 
 TEST(Options, PassSelection) {
@@ -77,7 +54,7 @@ TEST(Options, PassSelection) {
 TEST(Options, MissingValueThrows) {
     Options opts;
     EXPECT_THROW(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
-                        "--output-dir", "out", "--relocate-meters"},
+                        "--output-dir", "out", "--way-batch-mb"},
                        &opts),
                  std::runtime_error);
 }
@@ -98,14 +75,6 @@ TEST(Options, HelpReturnsFalse) {
 TEST(Options, RequiredArgumentsMissingThrows) {
     Options opts;
     EXPECT_THROW(parse({"prog", "--input", "in.pbf"}, &opts), std::runtime_error);
-}
-
-TEST(Options, InvalidRapidEditVersionsThrows) {
-    Options opts;
-    EXPECT_THROW(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
-                        "--output-dir", "out", "--rapid-edit-versions", "1"},
-                       &opts),
-                 std::runtime_error);
 }
 
 }  // namespace

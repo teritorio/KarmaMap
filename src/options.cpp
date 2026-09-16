@@ -28,20 +28,7 @@ void print_usage(const char* argv0) {
         << "                         writing user_indicators.parquet and\n"
         << "                         user_reputation.parquet (non-partitioned single\n"
         << "                         files, independent of passes 1-3); nodes, ways,\n"
-        << "                         relation creations and Top12 tag usage are counted\n"
-        << "    --relocate-meters    Node move distance (meters) that counts as a\n"
-        << "                         relocation (default: " << user_indicators::kDefaultRelocateMeters << ")\n"
-        << "    --short-life-days    A delete counts as short-lived if the object was\n"
-        << "                         created within this many days (default: " << user_indicators::kDefaultShortLifeDays << ")\n"
-        << "    --rapid-edit-versions  At least this many object versions within the\n"
-        << "                         rapid-edit window flag rapid editing (default: " << user_indicators::kDefaultRapidEditVersions << ")\n"
-        << "    --rapid-edit-window-days  Rolling window for rapid-edit counting\n"
-        << "                         (default: " << user_indicators::kDefaultRapidEditWindowDays << ")\n"
-        << "    --new-user-window-days  A user is a new user within this many days of\n"
-        << "                         their first edit (default: " << user_indicators::kDefaultNewUserWindowDays << ")\n"
-        << "    --bulk-edit-min       A new user is bulk-editing when making at least\n"
-        << "                         this many edits within the new-user window\n"
-        << "                         (default: " << user_indicators::kDefaultBulkEditMin << ")\n";
+        << "                         relation creations and Top12 tag usage are counted\n";
 }
 
 bool parse_args(int argc, char** argv, Options* opts) {
@@ -78,18 +65,6 @@ bool parse_args(int argc, char** argv, Options* opts) {
             }
         } else if (arg == "--user-indicators") {
             opts->run_user_indicators = true;
-        } else if (arg == "--relocate-meters") {
-            opts->thresholds.relocate_meters = std::stod(next_value("--relocate-meters"));
-        } else if (arg == "--short-life-days") {
-            opts->thresholds.short_life_days = std::stoi(next_value("--short-life-days"));
-        } else if (arg == "--rapid-edit-versions") {
-            opts->thresholds.rapid_edit_versions = std::stoi(next_value("--rapid-edit-versions"));
-        } else if (arg == "--rapid-edit-window-days") {
-            opts->thresholds.rapid_edit_window_days = std::stoi(next_value("--rapid-edit-window-days"));
-        } else if (arg == "--new-user-window-days") {
-            opts->thresholds.new_user_window_days = std::stoi(next_value("--new-user-window-days"));
-        } else if (arg == "--bulk-edit-min") {
-            opts->thresholds.bulk_edit_min = std::stoi(next_value("--bulk-edit-min"));
         } else if (arg == "--help" || arg == "-h") {
             return false;
         } else {
@@ -105,13 +80,6 @@ bool parse_args(int argc, char** argv, Options* opts) {
         throw std::runtime_error(
             "H3 resolution must be in range 0-13 (the 6-byte cache cell "
             "encoding holds at most 13 digits)");
-    }
-    if (opts->thresholds.relocate_meters < 0.0 || opts->thresholds.short_life_days < 1 ||
-        opts->thresholds.rapid_edit_versions < 2 || opts->thresholds.rapid_edit_window_days < 1 ||
-        opts->thresholds.new_user_window_days < 1 || opts->thresholds.bulk_edit_min < 1) {
-        throw std::runtime_error(
-            "User-indicator thresholds must be positive "
-            "(rapid_edit_versions >= 2)");
     }
     // For a way-pass-only run the cache must already exist; not checked
     // here - opening read-only fails cleanly if it is absent.

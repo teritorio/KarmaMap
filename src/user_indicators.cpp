@@ -21,7 +21,6 @@
 #include <filesystem>
 #include <iostream>
 #include <memory>
-#include <optional>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -116,24 +115,13 @@ void write_stage_file(const std::string& path,
 
 class ScanHandler : public osmium::handler::Handler {
 public:
-    explicit ScanHandler(const std::string& stage_dir, const Thresholds& thresholds)
-        : stage_dir_(stage_dir), stats_(thresholds) {}
+    explicit ScanHandler(const std::string& stage_dir) : stage_dir_(stage_dir) {}
 
     void node(const osmium::Node& node) {
         begin_object(ObjectKind::Node, node.id());
-        const osmium::Location& loc = node.location();
-        // lat()/lon() throw osmium::invalid_location on a location-less node
-        // (deleted history versions carry no coordinates); only evaluate them
-        // behind the validity guard, as the node pass does. Location-less
-        // versions pass an empty optional that never contributes a baseline.
-        const bool has_coords = loc.valid();
         add_version(static_cast<int64_t>(node.uid()), object_user(node),
                     version_day(node.timestamp()), node.visible(),
                     static_cast<uint32_t>(node.version()), ObjectKind::Node,
-                    has_coords
-                        ? std::optional<std::pair<double, double>>(
-                              std::make_pair(loc.lat(), loc.lon()))
-                        : std::nullopt,
                     created_tag_bits(node));
     }
 
@@ -141,21 +129,19 @@ public:
         begin_object(ObjectKind::Way, way.id());
         add_version(static_cast<int64_t>(way.uid()), object_user(way),
                     version_day(way.timestamp()), way.visible(),
-                    static_cast<uint32_t>(way.version()), ObjectKind::Way, std::nullopt,
+                    static_cast<uint32_t>(way.version()), ObjectKind::Way,
                     created_tag_bits(way));
     }
 
     // Relations feed only the created counter: the OSMPatrol reputation is
     // built from created objects, and relation runs must not touch the
-    // node/way run state. Location-less by nature, so no coords handling.
+    // node/way run state.
     void relation(const osmium::Relation& relation) {
         if (relation.visible() && relation.version() == 1) {
             stats_.record_relation_created(static_cast<int64_t>(relation.uid()),
                                            object_user(relation),
                                            version_day(relation.timestamp()),
                                            created_tag_bits(relation));
-            // Relation-only stretches never reach add_version()'s threshold
-            // check, so keep the accumulator bounded here too.
             if (stats_.size() >= kFlushThreshold) flush_stage();
         }
     }
@@ -215,12 +201,9 @@ private:
     }
 
     void add_version(int64_t uid, const std::string& username, uint16_t day, bool visible,
-                     uint32_t version, ObjectKind kind,
-                     std::optional<std::pair<double, double>> coords,
-                     uint32_t created_tag_bits = 0) {
+                     uint32_t version, ObjectKind kind, uint32_t created_tag_bits = 0) {
         versions_++;
-        stats_.add_version(uid, username, day, visible, version, kind, std::move(coords),
-                           created_tag_bits);
+        stats_.add_version(uid, username, day, visible, version, kind, created_tag_bits);
         if (stats_.size() >= kFlushThreshold) flush_stage();
     }
 
@@ -298,8 +281,7 @@ void append_stage_columns(const std::shared_ptr<arrow::Table>& table,
 // Scan + finalize entry points
 // ---------------------------------------------------------------------------
 
-void run_scan(const std::string& input_path, const std::string& stage_dir,
-              const Thresholds& thresholds) {
+void run_scan(const std::string& input_path, const std::string& stage_dir) {
     std::filesystem::remove_all(stage_dir);
     std::filesystem::create_directories(stage_dir);
 
@@ -308,7 +290,7 @@ void run_scan(const std::string& input_path, const std::string& stage_dir,
                               osmium::osm_entity_bits::node | osmium::osm_entity_bits::way |
                                   osmium::osm_entity_bits::relation);
 
-    ScanHandler handler(stage_dir, thresholds);
+    ScanHandler handler(stage_dir);
 
     auto start = std::chrono::steady_clock::now();
     while (osmium::memory::Buffer buf = reader.read()) {
@@ -328,8 +310,7 @@ void run_scan(const std::string& input_path, const std::string& stage_dir,
               << " stage_files=" << handler.stage_files() << "\n";
 }
 
-void run_finalize(const std::string& stage_dir, const std::string& indicators_path,
-                  const Thresholds& thresholds) {
+void run_finalize(const std::string& stage_dir, const std::string& indicators_path) {
     // Registers Arrow's compute kernels (sort_indices, take), required even
     // when --user-indicators runs without any of passes 1-3.
     auto init_status = arrow::compute::Initialize();
@@ -423,22 +404,12 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
     finish_checked(ind_day_builder, &ind_day);
     for (size_t c = 0; c < kCounterCount; ++c) finish_checked(ind_counter_builders[c], &ind_counters[c]);
 
-    constexpr size_t kIndicatorCounterCount = kCounterCount - 3;
-    std::array<size_t, kIndicatorCounterCount> indicator_counter_idx;
-    size_t out = 0;
-    for (size_t c = 0; c < kCounterCount; ++c) {
-        const std::string_view name = kCounters[c].name;
-        if (name == "relocated" || name == "short_lived" || name == "rapid_edit") continue;
-        indicator_counter_idx[out++] = c;
-    }
-
     std::vector<std::shared_ptr<arrow::Field>> indicator_fields = {
         arrow::field("uid", arrow::int64(), false),
         arrow::field("change_date", arrow::uint16(), false),
     };
     std::vector<std::shared_ptr<arrow::Array>> indicator_columns = {ind_uid, ind_day};
-    for (size_t i = 0; i < kIndicatorCounterCount; ++i) {
-        const size_t c = indicator_counter_idx[i];
+    for (size_t c = 0; c < kCounterCount; ++c) {
         indicator_fields.push_back(arrow::field(kCounters[c].name, arrow::uint32(), false));
         indicator_columns.push_back(ind_counters[c]);
     }
@@ -451,7 +422,7 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
     arrow_table_io::write_table(indicators_tmp, indicator_table);
     std::filesystem::rename(indicators_tmp, indicators_path);
 
-    // Per-uid sums of all 22 indicator counters, in the (uid) order of the
+    // Per-uid sums of all 19 indicator counters, in the (uid) order of the
     // sorted indicator table. The three created-object aspects are bound to
     // their kCounters columns by name; the tag columns are always the
     // trailing kTagCount entries, in kTop12TagKeys order, so a schema change
@@ -474,16 +445,12 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
     std::vector<int64_t> rep_uids;
     std::vector<std::string> rep_usernames;
     std::vector<uint16_t> rep_first_seen;
-    std::vector<bool> rep_bulk;
-    std::vector<uint32_t> rep_max_day_changes;
     std::array<std::vector<uint64_t>, kCounterCount> counter_sums;
     {
         std::array<uint64_t, kCounterCount> acc{};
         int64_t cur = 0;
         bool in = false;
         uint16_t group_first_seen = 0;
-        uint32_t window_total = 0;
-        uint32_t max_day_changes = 0;
         std::string group_username;
         const auto* uid_arr = static_cast<const arrow::Int64Array*>(ind_uid.get());
         const auto flush = [&]() {
@@ -492,8 +459,6 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
             if (group_username.empty()) group_username = "<" + std::to_string(cur) + ">";
             rep_usernames.push_back(group_username);
             rep_first_seen.push_back(group_first_seen);
-            rep_bulk.push_back(window_total >= static_cast<uint32_t>(thresholds.bulk_edit_min));
-            rep_max_day_changes.push_back(max_day_changes);
             for (size_t c = 0; c < kCounterCount; ++c) {
                 counter_sums[c].push_back(acc[c]);
             }
@@ -507,33 +472,16 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
                 cur = u;
                 acc.fill(0);
                 group_first_seen = day;
-                window_total = 0;
-                max_day_changes = 0;
                 group_username.clear();
             }
             // Combined rows are index-aligned with the indicator rows, so the
             // row's username is the last (current) username seen for the uid.
             group_username = user_array->GetView(i);
-            uint64_t total_events = 0;
             for (size_t c = 0; c < kCounterCount; ++c) {
                 const auto* arr =
                     static_cast<const arrow::UInt32Array*>(ind_counters[c].get());
-                const uint32_t v = arr->Value(i);
-                acc[c] += v;
-                if (c < 6) total_events += v;  // node/way change counters
+                acc[c] += arr->Value(i);
             }
-            if (static_cast<int32_t>(day) - static_cast<int32_t>(group_first_seen) <
-                thresholds.new_user_window_days) {
-                window_total += static_cast<uint32_t>(total_events);
-            }
-            // Same per-day cutoff the edits viewer applies to flag mass edit
-            // or delete bursts (node/way modified+deleted).
-            const uint32_t day_changes =
-                static_cast<const arrow::UInt32Array*>(ind_counters[1].get())->Value(i) +
-                static_cast<const arrow::UInt32Array*>(ind_counters[2].get())->Value(i) +
-                static_cast<const arrow::UInt32Array*>(ind_counters[4].get())->Value(i) +
-                static_cast<const arrow::UInt32Array*>(ind_counters[5].get())->Value(i);
-            max_day_changes = std::max(max_day_changes, day_changes);
         }
         flush();
     }
@@ -557,19 +505,16 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
     }
 
     // Wide one-row-per-uid table: uid, current username (identity, so the
-    // viewers can filter by exact username), the user's first-seen day, the
-    // bulk-new-user flag, the busiest single-day node/way modified+deleted
-    // count, reputation, the 22 indicator totals, and the per-aspect
-    // percentile column, sorted by username (uid tie-break) so an exact
-    // username filter prunes to the matching pages. The dataset-wide
-    // active/max stats are written once as file key_value_metadata (_active
-    // and _max keys) instead of repeated per-row columns, and the per-aspect
-    // points derive client-side from pct and the constant paper caps.
+    // viewers can filter by exact username), the user's first-seen day,
+    // reputation, the 19 indicator totals, and the per-aspect percentile
+    // column, sorted by username (uid tie-break) so an exact username filter
+    // prunes to the matching pages. The dataset-wide active/max stats are
+    // written once as file key_value_metadata (_active and _max keys) instead
+    // of repeated per-row columns, and the per-aspect points derive
+    // client-side from pct and the constant paper caps.
     arrow::Int64Builder rep_uid_builder;
     arrow::StringBuilder rep_username_builder;
     arrow::UInt16Builder rep_first_seen_builder;
-    arrow::BooleanBuilder rep_bulk_builder;
-    arrow::UInt32Builder rep_max_day_changes_builder;
     arrow::UInt8Builder rep_score_builder;
     std::array<arrow::UInt32Builder, kCounterCount> rep_counter_builders;
     std::array<arrow::DoubleBuilder, kRepAspectCount> rep_pct_builders;
@@ -577,8 +522,6 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
         append_checked(rep_uid_builder, rep_uids[i]);
         append_checked(rep_username_builder, rep_usernames[i]);
         append_checked(rep_first_seen_builder, rep_first_seen[i]);
-        append_checked(rep_bulk_builder, rep_bulk[i]);
-        append_checked(rep_max_day_changes_builder, rep_max_day_changes[i]);
         append_checked(rep_score_builder, rep.reputation[i]);
         for (size_t c = 0; c < kCounterCount; ++c) {
             append_checked(rep_counter_builders[c], counter_sums[c][i]);
@@ -592,8 +535,6 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
         arrow::field("uid", arrow::int64(), false),
         arrow::field("username", arrow::utf8(), false),
         arrow::field("first_seen_day", arrow::uint16(), false),
-        arrow::field("bulk_new_user", arrow::boolean(), false),
-        arrow::field("max_day_changes", arrow::uint32(), false),
         arrow::field("reputation", arrow::uint8(), false),
     };
     for (const auto& c : kCounters) {
@@ -605,20 +546,15 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
     }
 
     std::vector<std::shared_ptr<arrow::Array>> rep_columns;
-    rep_columns.reserve(6 + kCounterCount + kRepAspectCount);
-    std::shared_ptr<arrow::Array> rep_uid, rep_username_arr, rep_first_seen_arr, rep_bulk_arr;
-    std::shared_ptr<arrow::Array> rep_max_day_changes_arr, rep_score;
+    rep_columns.reserve(4 + kCounterCount + kRepAspectCount);
+    std::shared_ptr<arrow::Array> rep_uid, rep_username_arr, rep_first_seen_arr, rep_score;
     finish_checked(rep_uid_builder, &rep_uid);
     finish_checked(rep_username_builder, &rep_username_arr);
     finish_checked(rep_first_seen_builder, &rep_first_seen_arr);
-    finish_checked(rep_bulk_builder, &rep_bulk_arr);
-    finish_checked(rep_max_day_changes_builder, &rep_max_day_changes_arr);
     finish_checked(rep_score_builder, &rep_score);
     rep_columns.push_back(rep_uid);
     rep_columns.push_back(rep_username_arr);
     rep_columns.push_back(rep_first_seen_arr);
-    rep_columns.push_back(rep_bulk_arr);
-    rep_columns.push_back(rep_max_day_changes_arr);
     rep_columns.push_back(rep_score);
     for (size_t c = 0; c < kCounterCount; ++c) {
         std::shared_ptr<arrow::Array> arr;
