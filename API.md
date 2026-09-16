@@ -69,9 +69,7 @@ the date in a query with `DATE '1970-01-01' + change_date`.
 
 Rows are sorted by `(h3_cell, change_date)` after the merge pass, so
 row-group min/max statistics support both bbox pruning and date pruning
-within each month file. The calendar-month partitioning bounds the number of
-concurrently open Parquet writers by the number of months that contain data —
-independent of extract size or H3 resolution.
+within each month file.
 
 ### Querying with DuckDB
 
@@ -99,8 +97,7 @@ query on pan/zoom (debounced) and takes its `BASE_URL` from the
 ## Users part
 
 Both files exist only when the pipeline ran with `--user-indicators`. They
-are non-partitioned single files, kept that way so the `uid` join stays cheap
-and the numerics-only indicators file stays small.
+are two non-partitioned single files.
 
 - `user_indicators.parquet` — one row per `(uid, change_date)`, sorted by
   `(uid, change_date)`:
@@ -165,16 +162,6 @@ and the numerics-only indicators file stays small.
   excluded from the day totals, so only the per-user sums are stored (in
   `user_reputation.parquet`); the per-day file keeps just the change counters
   and `relation_created`.
-
-### Scaling
-
-OSM full history is `(id, version)`-sorted, so the scan is a running pass
-with O(1) object state, writing day-aggregates to a staged
-`user_indicator_stage/stage_*.parquet` directory that finalize merges, sorts
-by `(uid, change_date)`, derives the reputation rows, and removes.
-`user_reputation.parquet` is a pure derived view of that data: one row per
-user, so it grows with new users, not new edits, and can be rebuilt from the
-per-user totals without re-reading history.
 
 ### Querying with DuckDB
 

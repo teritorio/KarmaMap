@@ -11,8 +11,8 @@
 // node_id is big-endian with the sign bit flipped so the encoded bytes sort
 // in numeric order, matching the (node_id, day) sort of the records. day is
 // the uint16 UTC epoch-day value shared with change_date; the cell is packed
-// 6-byte LE (h3_utils::pack_cell). Full layout details are in README "Node
-// cache".
+// 6-byte LE (h3_utils::pack_cell). Full layout details are in HOW_IT_WORKS.md
+// "Node cache".
 
 #include <fcntl.h>
 #include <sys/mman.h>
