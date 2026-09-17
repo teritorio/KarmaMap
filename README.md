@@ -174,7 +174,7 @@ wget -O data/canary-islands-internal.osh.pbf https://osm-internal.download.geofa
 ```
 
 ```bash
-docker compose run --rm karmamap karmamap --input /data/canary-islands-internal.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/
+docker compose run --rm karmamap karmamap --user-indicators --input /data/canary-islands-internal.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/
 ```
 
 Input and Output files size
