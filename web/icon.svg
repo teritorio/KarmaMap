@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="ramp" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#ffffb2"/>
+      <stop offset="0.4" stop-color="#fecc5c"/>
+      <stop offset="0.7" stop-color="#fd8d3c"/>
+      <stop offset="1" stop-color="#e31a1c"/>
+    </linearGradient>
+  </defs>
+  <rect width="100" height="100" rx="22" fill="#1f2937"/>
+  <path d="M 50 20 L 76 35 L 76 65 L 50 80 L 24 65"
+        fill="none" stroke="url(#ramp)" stroke-width="12" stroke-linecap="round"/>
+  <polygon fill="url(#ramp)"
+           points="50,20 43.1,32.1 36.1,19.9"/>
+</svg>
