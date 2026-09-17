@@ -23,6 +23,7 @@
       padding: 0.75rem 1rem; background: #1f2937; color: white;
     }
     #controls a { color: #93c5fd; text-decoration: none; font-size: 0.9rem; }
+    #controls .divider { width: 1px; height: 28px; background: #9ba7b9; }
     #controls label { font-size: 0.85rem; }
     #controls input[type="text"], #controls button {
       font-size: 0.9rem; padding: 0.3rem 0.5rem;
@@ -79,8 +80,11 @@
   <div id="controls">
     <img src="../icon.svg" alt="" width="32" height="32" />
     <strong>KarmaMap</strong>
+
     <a href="../changes/">changes</a>
-    <a href="./index.html">users</a>
+    <a href="../users/">users</a>
+
+    <span class="divider"></span>
 
     <label for="username">OSM username</label>
     <input type="text" id="username" placeholder="e.g. alice" autocomplete="off" />
