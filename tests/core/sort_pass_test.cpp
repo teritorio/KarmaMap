@@ -24,12 +24,10 @@ constexpr uint64_t kLow = 0x0F0000000000003FULL;
 constexpr uint64_t kMid = 0x1F0000000000003FULL;
 constexpr uint64_t kHigh = 0x2F0000000000003FULL;
 
-// Creates root/year=YYYY/month=MM.
-void make_partitions(const std::string& root, const std::vector<std::string>& yyyy_mm) {
-    for (const auto& month : yyyy_mm) {
-        const auto dash = month.find('-');
-        std::filesystem::create_directories(
-            root + "/year=" + month.substr(0, dash) + "/month=" + month.substr(dash + 1));
+// Creates root/year=YYYY [no month subdirs].
+void make_partitions(const std::string& root, const std::vector<std::string>& years) {
+    for (const auto& year : years) {
+        std::filesystem::create_directories(root + "/year=" + year);
     }
 }
 
@@ -104,19 +102,19 @@ void write_staging_int32_date(
 
 TEST(SortPass, MergesNodesAndWays) {
     TempDir dir;
-    make_partitions(dir.path(), {"2024-06"});
-    const std::string month = dir.path() + "/year=2024/month=06";
+    make_partitions(dir.path(), {"2024"});
+    const std::string year = dir.path() + "/year=2024";
 
-    write_staging(month + "/nodes.parquet", {{kLow, 1, 3}, {kMid, 2, 5}});
-    write_staging(month + "/ways.parquet", {{kLow, 1, 7}, {kHigh, 3, 2}});
+    write_staging(year + "/nodes.parquet", {{kLow, 1, 3}, {kMid, 2, 5}});
+    write_staging(year + "/ways.parquet", {{kLow, 1, 7}, {kHigh, 3, 2}});
 
     sort_pass::merge_and_sort_partitions(dir.path());
 
-    EXPECT_TRUE(std::filesystem::exists(month + "/data.parquet"));
-    EXPECT_FALSE(std::filesystem::exists(month + "/nodes.parquet"));
-    EXPECT_FALSE(std::filesystem::exists(month + "/ways.parquet"));
+    EXPECT_TRUE(std::filesystem::exists(year + "/data.parquet"));
+    EXPECT_FALSE(std::filesystem::exists(year + "/nodes.parquet"));
+    EXPECT_FALSE(std::filesystem::exists(year + "/ways.parquet"));
 
-    const auto merged = read_merged(month + "/data.parquet");
+    const auto merged = read_merged(year + "/data.parquet");
     ASSERT_EQ(merged.size(), 3);
 
     const size_t ia = merged.index_of(kLow, 1);
@@ -134,13 +132,13 @@ TEST(SortPass, MergesNodesAndWays) {
 
 TEST(SortPass, NodesOnlyZeroesWays) {
     TempDir dir;
-    make_partitions(dir.path(), {"2024-01"});
-    const std::string month = dir.path() + "/year=2024/month=01";
-    write_staging(month + "/nodes.parquet", {{kLow, 1, 4}});
+    make_partitions(dir.path(), {"2024"});
+    const std::string year = dir.path() + "/year=2024";
+    write_staging(year + "/nodes.parquet", {{kLow, 1, 4}});
 
     sort_pass::merge_and_sort_partitions(dir.path());
 
-    const auto merged = read_merged(month + "/data.parquet");
+    const auto merged = read_merged(year + "/data.parquet");
     ASSERT_EQ(merged.size(), 1);
     EXPECT_EQ(merged.nodes[0], 4);
     EXPECT_EQ(merged.ways[0], 0);
@@ -148,13 +146,13 @@ TEST(SortPass, NodesOnlyZeroesWays) {
 
 TEST(SortPass, WaysOnlyZeroesNodes) {
     TempDir dir;
-    make_partitions(dir.path(), {"2024-01"});
-    const std::string month = dir.path() + "/year=2024/month=01";
-    write_staging(month + "/ways.parquet", {{kLow, 1, 6}});
+    make_partitions(dir.path(), {"2024"});
+    const std::string year = dir.path() + "/year=2024";
+    write_staging(year + "/ways.parquet", {{kLow, 1, 6}});
 
     sort_pass::merge_and_sort_partitions(dir.path());
 
-    const auto merged = read_merged(month + "/data.parquet");
+    const auto merged = read_merged(year + "/data.parquet");
     ASSERT_EQ(merged.size(), 1);
     EXPECT_EQ(merged.nodes[0], 0);
     EXPECT_EQ(merged.ways[0], 6);
@@ -162,16 +160,16 @@ TEST(SortPass, WaysOnlyZeroesNodes) {
 
 TEST(SortPass, SortsByCellThenDay) {
     TempDir dir;
-    make_partitions(dir.path(), {"2024-01"});
-    const std::string month = dir.path() + "/year=2024/month=01";
+    make_partitions(dir.path(), {"2024"});
+    const std::string year = dir.path() + "/year=2024";
 
     // Descending (cell, day) on input; output must be ascending.
-    write_staging(month + "/nodes.parquet", {{kHigh, 2, 1}, {kMid, 3, 1},
-                                             {kMid, 1, 1}, {kLow, 4, 1}});
+    write_staging(year + "/nodes.parquet", {{kHigh, 2, 1}, {kMid, 3, 1},
+                                            {kMid, 1, 1}, {kLow, 4, 1}});
 
     sort_pass::merge_and_sort_partitions(dir.path());
 
-    const auto merged = read_merged(month + "/data.parquet");
+    const auto merged = read_merged(year + "/data.parquet");
     ASSERT_EQ(merged.size(), 4);
     const uint64_t expected_cells[] = {kLow, kMid, kMid, kHigh};
     const uint16_t expected_days[] = {4, 1, 3, 2};
@@ -183,19 +181,19 @@ TEST(SortPass, SortsByCellThenDay) {
 
 TEST(SortPass, ReMergeFallsBackToDataForMissingStaging) {
     TempDir dir;
-    make_partitions(dir.path(), {"2024-01"});
-    const std::string month = dir.path() + "/year=2024/month=01";
+    make_partitions(dir.path(), {"2024"});
+    const std::string year = dir.path() + "/year=2024";
 
-    write_staging(month + "/nodes.parquet", {{kLow, 1, 3}});
-    write_staging(month + "/ways.parquet", {{kLow, 1, 7}});
+    write_staging(year + "/nodes.parquet", {{kLow, 1, 3}});
+    write_staging(year + "/ways.parquet", {{kLow, 1, 7}});
     sort_pass::merge_and_sort_partitions(dir.path());
 
     // Add only a new ways staging file; the node count must be carried over
     // from the previous data.parquet rather than zeroed.
-    write_staging(month + "/ways.parquet", {{kHigh, 2, 4}});
+    write_staging(year + "/ways.parquet", {{kHigh, 2, 4}});
     sort_pass::merge_and_sort_partitions(dir.path());
 
-    const auto merged = read_merged(month + "/data.parquet");
+    const auto merged = read_merged(year + "/data.parquet");
     ASSERT_EQ(merged.size(), 2);
     EXPECT_EQ(merged.nodes[merged.index_of(kLow, 1)], 3);
     EXPECT_EQ(merged.ways[merged.index_of(kLow, 1)], 0);
@@ -203,15 +201,15 @@ TEST(SortPass, ReMergeFallsBackToDataForMissingStaging) {
     EXPECT_EQ(merged.ways[merged.index_of(kHigh, 2)], 4);
 }
 
-TEST(SortPass, AlreadyMergedMonthUntouched) {
+TEST(SortPass, AlreadyMergedYearUntouched) {
     TempDir dir;
-    make_partitions(dir.path(), {"2024-01"});
-    const std::string month = dir.path() + "/year=2024/month=01";
+    make_partitions(dir.path(), {"2024"});
+    const std::string year = dir.path() + "/year=2024";
 
-    write_staging(month + "/nodes.parquet", {{kLow, 1, 3}});
+    write_staging(year + "/nodes.parquet", {{kLow, 1, 3}});
     sort_pass::merge_and_sort_partitions(dir.path());
 
-    const std::string data_path = month + "/data.parquet";
+    const std::string data_path = year + "/data.parquet";
     const auto before = read_parquet(data_path);
     const uintmax_t size_before = std::filesystem::file_size(data_path);
 
@@ -220,7 +218,7 @@ TEST(SortPass, AlreadyMergedMonthUntouched) {
     const auto after = read_parquet(data_path);
     EXPECT_EQ(after->num_rows(), before->num_rows());
     EXPECT_EQ(std::filesystem::file_size(data_path), size_before);
-    EXPECT_FALSE(std::filesystem::exists(month + "/nodes.parquet"));
+    EXPECT_FALSE(std::filesystem::exists(year + "/nodes.parquet"));
 }
 
 TEST(SortPass, MissingOrEmptyRootIsNoOp) {
@@ -231,12 +229,12 @@ TEST(SortPass, MissingOrEmptyRootIsNoOp) {
 
 TEST(SortPass, WrongChangeDateTypeThrows) {
     TempDir dir;
-    make_partitions(dir.path(), {"2024-01"});
-    const std::string month = dir.path() + "/year=2024/month=01";
-    write_staging_int32_date(month + "/nodes.parquet", {{kLow, 1, 3}});
+    make_partitions(dir.path(), {"2024"});
+    const std::string year = dir.path() + "/year=2024";
+    write_staging_int32_date(year + "/nodes.parquet", {{kLow, 1, 3}});
 
     EXPECT_THROW(sort_pass::merge_and_sort_partitions(dir.path()), std::runtime_error);
-    EXPECT_FALSE(std::filesystem::exists(month + "/data.parquet"));
+    EXPECT_FALSE(std::filesystem::exists(year + "/data.parquet"));
 }
 
 }  // namespace

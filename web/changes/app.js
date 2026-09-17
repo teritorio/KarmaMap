@@ -1,4 +1,4 @@
-import { loadManifest } from './manifest.js'
+import { loadManifest, coverageDays } from './manifest.js'
 import { bboxToCells, cellsMinMaxSet } from './h3-bbox.js'
 import { queryChanges } from './query.js'
 import { initMap, renderResults, getViewportBbox, setResultsLogScale } from './map.js'
@@ -32,13 +32,6 @@ function monthStartDate(month) {
   return `${month}-01`
 }
 
-// Day 0 of next month = last day of this month.
-function monthEndDate(month) {
-  const [y, m] = month.split('-').map(Number)
-  const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate()
-  return `${month}-${pad2(lastDay)}`
-}
-
 function debounce(fn, delay) {
   let timer
   return (...args) => {
@@ -68,22 +61,21 @@ function monthsBetween(startMonth, endMonth) {
   return (ey - sy) * 12 + (em - sm) + 1
 }
 
-// Manifest coverage is month-granular, so day pickers are bounded to whole
-// edge months. A permalink's start/end take priority over these defaults.
+// Coverage is day-granular, so day pickers are bounded to the exact first
+// and last day with data. A permalink's start/end take priority over these
+// defaults.
 function setupDateRangeInputs(manifest, permalink) {
-  const minMonth = manifest.date_range?.min_month
-  const maxMonth = manifest.date_range?.max_month
-  if (!minMonth || !maxMonth) return
+  const coverage = coverageDays(manifest)
+  if (!coverage) return
 
-  const minDate = monthStartDate(minMonth)
-  const maxDate = monthEndDate(maxMonth)
+  const { minDate, maxDate } = coverage
 
   for (const el of [startDateEl, endDateEl]) {
     el.min = minDate
     el.max = maxDate
   }
 
-  const defaultStartMonth = subtractMonths(maxMonth, DEFAULT_MONTHS_SPAN - 1)
+  const defaultStartMonth = subtractMonths(maxDate.slice(0, 7), DEFAULT_MONTHS_SPAN - 1)
   const defaultStartDate = monthStartDate(defaultStartMonth) < minDate ? minDate : monthStartDate(defaultStartMonth)
 
   startDateEl.value = permalink.start || defaultStartDate

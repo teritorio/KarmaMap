@@ -1,5 +1,5 @@
 // Bbox + date-range query across the partitioned Parquet dataset: the date
-// range selects the month partition files (intersected with what the
+// range selects the year partition files (intersected with what the
 // manifest says exists on disk), each distinct file is queried once with
 // hyparquet (row-group/page pruning on h3_cell and change_date), then
 // filtered to the exact cell set (h3_cell only supports a contiguous
@@ -7,10 +7,6 @@
 
 import { parquetQuery, asyncBufferFromUrl } from 'hyparquet'
 import { compressors } from 'hyparquet-compressors'
-
-function pad2(n) {
-  return String(n).padStart(2, '0')
-}
 
 function monthsInRange(startMonth, endMonth) {
   const [sy, sm] = startMonth.split('-').map(Number)
@@ -20,7 +16,7 @@ function monthsInRange(startMonth, endMonth) {
   let y = sy
   let m = sm
   while (y < ey || (y === ey && m <= em)) {
-    months.push(`${y}-${pad2(m)}`)
+    months.push(`${y}-${String(m).padStart(2, '0')}`)
     m += 1
     if (m > 12) {
       m = 1
@@ -30,11 +26,15 @@ function monthsInRange(startMonth, endMonth) {
   return months
 }
 
-// Partition file URL for a month, matching the C++ writer's hive layout
-// (root_dir/year=YYYY/month=MM/data.parquet).
-function partitionPath(datasetPath, month) {
-  const [y, m] = month.split('-')
-  return `${datasetPath}/year=${y}/month=${m}/data.parquet`
+function yearsInRange(startMonth, endMonth) {
+  const years = new Set(monthsInRange(startMonth, endMonth).map((m) => m.slice(0, 4)))
+  return [...years]
+}
+
+// Partition file URL for a year, matching the C++ writer's hive layout
+// (root_dir/year=YYYY/data.parquet).
+function partitionPath(datasetPath, year) {
+  return `${datasetPath}/year=${year}/data.parquet`
 }
 
 // change_date is a uint16 count of UTC days since the Unix epoch
@@ -78,7 +78,7 @@ function dayKey(changeDate) {
 }
 
 // Returns byCell (Map<bigint, count>) and byDay (Map<"YYYY-MM-DD", count>),
-// both summed across every dataset and every month in range.
+// both summed across every dataset and every year in range.
 export async function queryChanges({
   baseUrl,
   manifest,
@@ -90,22 +90,22 @@ export async function queryChanges({
   startMonth,
   endMonth,
 }) {
-  const months = monthsInRange(startMonth, endMonth)
+  const years = yearsInRange(startMonth, endMonth)
 
   const startDay = epochDay(startDate)
   const endDay = epochDay(endDate)
 
   const tasks = []
-  for (const month of months) {
+  for (const year of years) {
     for (const datasetName of Object.keys(manifest.datasets)) {
       const dataset = manifest.datasets[datasetName]
       // Non-partitioned datasets (e.g. the user-indicator files) declare an
-      // empty partition list; they are not part of the month-partitioned
+      // empty partition list; they are not part of the year-partitioned
       // bbox query and are skipped entirely.
       if (!Array.isArray(dataset.partitions) || dataset.partitions.length === 0) continue
-      if (!dataset.partitions.includes(month)) continue // no file for this month, skip the fetch entirely
+      if (!dataset.partitions.includes(year)) continue // no file for this year, skip the fetch entirely
 
-      const path = partitionPath(dataset.path, month)
+      const path = partitionPath(dataset.path, year)
       tasks.push(queryOneFile(baseUrl, path, cellMin, cellMax, startDay, endDay, cellSet))
     }
   }

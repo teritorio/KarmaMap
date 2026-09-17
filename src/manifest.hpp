@@ -1,12 +1,13 @@
 #pragma once
 
 // Writes output-dir/manifest.json, describing what a client (e.g. a
-// browser-side hyparquet consumer) needs to know without guessing:
-// H3 resolution used, overall month coverage, and the list of partitions
-// actually present for each dataset.
+// browser-side hyparquet consumer) needs to know without guessing: the H3
+// resolution used, the list of partitions actually present for each
+// dataset, and the exact change_date span (min_date/max_date) of the
+// changes dataset.
 //
-// Built purely from a directory scan (year=YYYY/month=MM layout), not
-// from Parquet file contents - cheap, and correct regardless of which
+// Built from a year=YYYY directory scan plus the change_date min/max read
+// from each data.parquet footer - cheap, and correct regardless of which
 // --pass combination produced the files on disk.
 
 #include <string>

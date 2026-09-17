@@ -9,11 +9,11 @@ data contract — layout, schemas, encodings — lives in [API.md](API.md).
 A single binary, `karmamap`, runs three stages by default:
 
 1. Node pass: builds the mmap node cache `(node_id, day) -> position` and
-   counts node changes into `changes/year=YYYY/month=MM/nodes.parquet`.
+   counts node changes into `changes/year=YYYY/nodes.parquet`.
 2. Way pass: resolves each way's node positions via the cache and counts
    way changes at the distinct cells of those positions into
-   `changes/year=YYYY/month=MM/ways.parquet`.
-3. Merge pass: full-outer-joins each month's `nodes.parquet` and
+   `changes/year=YYYY/ways.parquet`.
+3. Merge pass: full-outer-joins each year's `nodes.parquet` and
    `ways.parquet` on `(h3_cell, change_date)` into `data.parquet`, sorted by
    `(h3_cell, change_date)` so row-group min/max support bbox and
    date-range pruning. Idempotent: an existing `data.parquet` supplies
@@ -53,9 +53,9 @@ The pipeline uses a single H3 resolution:
   the Parquet `h3_cell` column and used across all passes. Range 0-13 (the
   node cache packs at most 13 H3 digits into 6 bytes).
 
-Rows are partitioned by the calendar month of `change_date`, not by H3
+Rows are partitioned by the calendar year of `change_date`, not by H3
 cell, so the number of concurrently open Parquet writers is bounded by the
-number of months that contain data — independent of extract size or H3
+number of years that contain data — independent of extract size or H3
 resolution.
 
 ## Node cache
@@ -118,10 +118,12 @@ keep the `uid` join cheap and the numerics-only indicators file small.
 ### Changes viewer
 
 `web/changes/query.js` queries bbox + date range. The date range selects the
-month partitions (intersected with the manifest's partition list); each
+year partitions (intersected with the manifest's partition list); each
 distinct file is queried once via `parquetQuery`, which prunes row groups on
 `h3_cell` and `change_date`, then aggregates `node_count + way_count`
-client-side per cell and per day. The non-contiguous H3 cell set of the
+client-side per cell and per day. The manifest's `date_range` (read from the
+data.parquet footer stats) bounds the date pickers and histogram axis to the
+exact days that hold data. The non-contiguous H3 cell set of the
 viewport bbox is applied as a coarse `[min, max]` range filter first, then
 exact membership is checked client-side. `web/changes/app.js` triggers a new
 query on pan/zoom (debounced) and resolves its data root relative to the

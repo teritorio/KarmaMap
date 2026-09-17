@@ -2,11 +2,11 @@
 
 KarmaMap reads an OSM full-history file (`.osh.pbf`) and produces one
 partitioned Parquet change map - `changes/` - with `(h3_cell, change_date,
-node_count, way_count)` rows, partitioned by calendar month
-(`year=YYYY/month=MM/data.parquet`, standard hive partitioning), for
+node_count, way_count)` rows, partitioned by calendar year
+(`year=YYYY/data.parquet`, standard hive partitioning), for
 bbox + date-range queries (e.g. with DuckDB or the included web frontend).
 `node_count` counts node changes, `way_count` way changes, in the same file
-per month so a client reads one dataset per month. The optional
+per year so a client reads one dataset per year. The optional
 `--user-indicators` pass adds the karma layer: per-user, per-day activity
 and a 0-100 reputation per contributor.
 
@@ -18,7 +18,7 @@ reputation scoring follows [Neis, Goetz & Zipf, *ISPRS Int. J. Geo-Inf.*
 ## What it produces
 
 - `changes/` — `(h3_cell, change_date, node_count, way_count)` counts,
-  partitioned by calendar month.
+  partitioned by calendar year.
 - `user_indicators.parquet` and `user_reputation.parquet` — per-user, per-day
   activity and reputation, only with `--user-indicators`.
 

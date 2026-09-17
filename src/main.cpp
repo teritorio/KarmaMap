@@ -2,13 +2,13 @@
 //
 // Reads an OSM full-history file (.osh.pbf) and produces one partitioned
 // Parquet dataset under --output-dir:
-//   changes/year=YYYY/month=MM/data.parquet  (h3_cell, change_date, node_count, way_count)
+//   changes/year=YYYY/data.parquet  (h3_cell, change_date, node_count, way_count)
 //
 // Three stages: node pass (writes the mmap node-position cache + counts
 // nodes into .../nodes.parquet), way pass (resolves node positions by a
 // batched sweep over the cache, counts ways at the distinct cells of their
 // node positions into .../ways.parquet, no segment path tracing), merge
-// pass (merges each month's node and way counts into node_count/way_count
+// pass (merges each year's node and way counts into node_count/way_count
 // columns of data.parquet, sorted by (h3_cell, change_date) so that Parquet
 // row group min/max statistics become useful for bbox and date-range
 // pruning).
@@ -34,7 +34,7 @@
 namespace {
 
 // Wipes a dataset root from a previous run, so a re-run never leaves stale
-// year=YYYY/month=MM partition files behind. No-op if absent.
+// year=YYYY partition files behind. No-op if absent.
 void reset_dataset_root(const std::string& root) {
     std::filesystem::remove_all(root);
 }
@@ -72,14 +72,10 @@ void run_node_pass(const Options& opts) {
                        std::chrono::steady_clock::now() - start)
                        .count();
     std::cerr << "[node pass] done in " << elapsed << "s\n";
-    // INSTR
     std::cerr << "[node pass] nodes=" << handler.nodes()
               << " cache_writes=" << handler.cache_writes()
               << " cache_records=" << cache_writer.records()
-              << " cache_bytes=" << cache_writer.bytes()
-              << " writer increments=" << parquet_writer.increments()
-              << " flushes=" << parquet_writer.flushes()
-              << " open_partitions=" << parquet_writer.open_partitions() << "\n";
+              << " cache_bytes=" << cache_writer.bytes() << "\n";
 }
 
 void run_way_pass(const Options& opts) {
@@ -87,7 +83,7 @@ void run_way_pass(const Options& opts) {
     std::cerr << "[way pass] -> " << root << "\n";
 
     // Writes into pass 1's existing changes/ root so both staging files
-    // share the month directories; does not wipe it (pass 2 may run alone).
+    // share the year directories; does not wipe it (pass 2 may run alone).
     parquet_out::PartitionedParquetWriter parquet_writer(root, "ways.parquet");
 
     node_cache::Reader cache_reader(opts.node_cache_path, opts.h3_resolution);
@@ -110,11 +106,7 @@ void run_way_pass(const Options& opts) {
                        std::chrono::steady_clock::now() - start)
                        .count();
     std::cerr << "[way pass] done in " << elapsed << "s\n";
-    // INSTR
     handler.print_stats();
-    std::cerr << "[way pass] writer increments=" << parquet_writer.increments()
-              << " flushes=" << parquet_writer.flushes()
-              << " open_partitions=" << parquet_writer.open_partitions() << "\n";
 }
 
 void run_sort_pass(const Options& opts) {

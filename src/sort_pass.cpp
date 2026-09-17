@@ -79,18 +79,18 @@ void merge_source(const std::shared_ptr<arrow::Table>& table, const char* count_
     }
 }
 
-void merge_one_month(const std::string& month_dir) {
-    const std::string nodes_path = month_dir + "/nodes.parquet";
-    const std::string ways_path = month_dir + "/ways.parquet";
-    const std::string output_path = month_dir + "/data.parquet";
-    const std::string tmp_path = month_dir + "/data.parquet.tmp";
+void merge_one_year(const std::string& year_dir) {
+    const std::string nodes_path = year_dir + "/nodes.parquet";
+    const std::string ways_path = year_dir + "/ways.parquet";
+    const std::string output_path = year_dir + "/data.parquet";
+    const std::string tmp_path = year_dir + "/data.parquet.tmp";
 
     const bool has_nodes = std::filesystem::exists(nodes_path);
     const bool has_ways = std::filesystem::exists(ways_path);
     const bool has_data = std::filesystem::exists(output_path);
     if (!has_nodes && !has_ways) return;  // nothing new to merge (already merged, or empty)
 
-    std::cerr << "[sort pass] " << month_dir << "\n";
+    std::cerr << "[sort pass] " << year_dir << "\n";
 
     MergedMap merged;
     if (has_nodes) {
@@ -170,10 +170,8 @@ void merge_and_sort_partitions(const std::string& root_dir) {
     if (!std::filesystem::exists(root_dir)) return;
 
     for (const auto& year_entry : std::filesystem::directory_iterator(root_dir)) {
-        if (!year_entry.is_directory()) continue;
-        for (const auto& month_entry : std::filesystem::directory_iterator(year_entry.path())) {
-            if (!month_entry.is_directory()) continue;
-            merge_one_month(month_entry.path().string());
+        if (year_entry.is_directory()) {
+            merge_one_year(year_entry.path().string());
         }
     }
 }

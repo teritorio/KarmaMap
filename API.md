@@ -6,7 +6,7 @@ read them — DuckDB, a Parquet library, or a browser-side reader. The files
 are plain Parquet (ZSTD-compressed); nothing else is needed to consume them.
 The two access parts:
 
-- **Changes** — `changes/`: monthly partitioned `(h3_cell, change_date,
+- **Changes** — `changes/`: yearly partitioned `(h3_cell, change_date,
   node_count, way_count)` change counts.
 - **Users** (only with `--user-indicators`) — `user_indicators.parquet` and
   `user_reputation.parquet`: per-user, per-day activity and reputation.
@@ -20,27 +20,25 @@ output-dir/
 ├── user_reputation.parquet    # only with --user-indicators
 └── changes/
     └── year=2025/
-        ├── month=01/
-        │   ├── data.parquet      # (h3_cell, change_date, node_count, way_count)
-        │   ├── nodes.parquet     # staging, merged and removed by pass 3
-        │   └── ways.parquet      # staging, merged and removed by pass 3
-        ├── month=02/
-        │   └── data.parquet
-        └── ...
+        ├── data.parquet      # (h3_cell, change_date, node_count, way_count)
+        ├── nodes.parquet     # staging, merged and removed by pass 3
+        └── ways.parquet      # staging, merged and removed by pass 3
 ```
 
 Files are ZSTD-compressed. `manifest.json` is rewritten at the end of every
-run from a directory scan of the `changes/` root, so clients know the H3
-resolution, which month partitions exist, and the overall date range:
+run from a directory scan of the `changes/` root plus each `data.parquet`'s
+footer statistics, so clients know the H3 resolution, which year partitions
+exist, and the exact first/last day with data (`date_range`; omitted when no
+row data exists yet):
 
 ```json
 {
   "h3_resolution": 9,
-  "date_range": { "min_month": "2005-01", "max_month": "2026-08" },
+  "date_range": { "min_date": "2005-01-01", "max_date": "2026-08-19" },
   "datasets": {
     "changes": {
       "path": "changes",
-      "partitions": ["2005-01", "2005-02", "..."]
+      "partitions": ["2005", "2006", "..."]
     },
     "user_indicators": { "path": "user_indicators.parquet", "partitions": [] },
     "user_reputation": { "path": "user_reputation.parquet", "partitions": [] }
@@ -48,13 +46,16 @@ resolution, which month partitions exist, and the overall date range:
 }
 ```
 
-`date_range` is `null` when the dataset is empty. The user-indicator entries
-appear only when their files exist; an empty partition list signals a
-non-partitioned single file, which month-based query clients skip.
+`date_range` is the merged `change_date` min/max read from each year's
+`data.parquet` footer (column statistics), so date pickers can bound their
+inputs to the actual data span rather than the edge whole years. The
+user-indicator entries appear only when their files exist; an empty
+partition list signals a non-partitioned single file, which year-based
+query clients skip.
 
 ## Changes part
 
-Each month's `data.parquet` holds:
+Each year's `data.parquet` holds:
 
 | Column | Type | Meaning |
 |---|---|---|
@@ -69,14 +70,14 @@ the date in a query with `DATE '1970-01-01' + change_date`.
 
 Rows are sorted by `(h3_cell, change_date)` after the merge pass, so
 row-group min/max statistics support both bbox pruning and date pruning
-within each month file.
+within each year file.
 
 ### Querying with DuckDB
 
 ```sql
 SELECT DATE '1970-01-01' + change_date AS change_date,
        SUM(node_count) + SUM(way_count) AS total
-FROM read_parquet('data/output/changes/year=*/month=*/data.parquet', hive_partitioning = true)
+FROM read_parquet('data/output/changes/year=*/data.parquet', hive_partitioning = true)
 GROUP BY change_date
 ORDER BY change_date
 LIMIT 20;

@@ -5,6 +5,7 @@
 // render as gaps on the log axis, flat zero bars on the linear axis).
 
 import * as echarts from 'echarts'
+import { coverageDays } from './manifest.js'
 
 let chart = null
 let resizeObserver = null
@@ -23,26 +24,20 @@ function formatBarValue(count) {
   return count
 }
 
-function monthStartTimestamp(month) {
-  const [y, m] = month.split('-').map(Number)
-  return Date.UTC(y, m - 1, 1)
-}
-
-// Day 0 of next month = last day of this month.
-function monthEndTimestamp(month) {
-  const [y, m] = month.split('-').map(Number)
-  return Date.UTC(y, m, 0)
-}
-
 function dateStrFromTimestamp(ts) {
   return new Date(ts).toISOString().slice(0, 10)
 }
 
+// "YYYY-MM-DD" -> UTC ms from the epoch, so the axis uses calendar days.
+function isoDateTimestamp(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number)
+  return Date.UTC(y, m - 1, d)
+}
+
 export function initHistogram(containerEl, manifest) {
-  const minMonth = manifest.date_range?.min_month
-  const maxMonth = manifest.date_range?.max_month
-  axisMin = minMonth ? monthStartTimestamp(minMonth) : undefined
-  axisMax = maxMonth ? monthEndTimestamp(maxMonth) : undefined
+  const coverage = coverageDays(manifest)
+  axisMin = coverage ? isoDateTimestamp(coverage.minDate) : undefined
+  axisMax = coverage ? isoDateTimestamp(coverage.maxDate) : undefined
 
   chart = echarts.init(containerEl)
 
