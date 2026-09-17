@@ -14,8 +14,8 @@ import {
 } from './query.js'
 import { initHistogram, setHistogramData, setLogScale } from './histogram.js'
 
-// Where the Caddy service serves output-dir/ from (the web root at /).
-const BASE_URL = 'http://localhost:8080/data'
+// Data root: the data/ directory one level above the viewer pages.
+const BASE_URL = '../data'
 
 const usernameEl = document.getElementById('username')
 const searchBtn = document.getElementById('search')
@@ -199,7 +199,7 @@ async function main() {
   try {
     manifest = await loadManifest(BASE_URL)
   } catch (err) {
-    setStatus(`Failed to load manifest.json from ${BASE_URL}. Is "docker compose up caddy" running? (${err.message})`)
+    setStatus(`Failed to load manifest.json from ${BASE_URL}. Is the data server running? (${err.message})`)
     return
   }
 

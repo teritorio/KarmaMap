@@ -156,9 +156,10 @@ header Access-Control-Allow-Headers "Range"
 header Access-Control-Expose-Headers "Content-Range, Content-Length, Accept-Ranges"
 ```
 
-The web viewers take their data root from the `BASE_URL` constant in
-`web/changes/app.js` and `web/users/app.js` (default `http://localhost:8080/data`,
-serving `output-dir/` at the `/data/` path and the frontend at the root).
+The web viewers resolve their data root relative to the page URL: the
+`data/` directory one level above `changes/` and `users/`. Frontend and
+data share one base path, and in the bundled compose `caddy` serves the
+frontend at `/` and `output-dir/` at `/data`.
 
 How each viewer queries the data is documented in
 [HOW_IT_WORKS.md](HOW_IT_WORKS.md).
@@ -173,8 +174,7 @@ wget -O data/canary-islands-internal.osh.pbf https://osm-internal.download.geofa
 ```
 
 ```bash
-docker compose run --rm karmamap \
-  karmamap --input /data/canary-islands-internal.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/
+docker compose run --rm karmamap karmamap --input /data/canary-islands-internal.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/
 ```
 
 Input and Output files size

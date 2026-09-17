@@ -124,8 +124,8 @@ distinct file is queried once via `parquetQuery`, which prunes row groups on
 client-side per cell and per day. The non-contiguous H3 cell set of the
 viewport bbox is applied as a coarse `[min, max]` range filter first, then
 exact membership is checked client-side. `web/changes/app.js` triggers a new
-query on pan/zoom (debounced) and takes its `BASE_URL` from the `BASE_URL`
-constant (see README, "Serving the web frontend").
+query on pan/zoom (debounced) and resolves its data root relative to the
+page URL (`../data`, see README, "Serving the web frontend").
 
 ### Users viewer
 

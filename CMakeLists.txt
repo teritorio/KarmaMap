@@ -67,8 +67,8 @@ set(BUILD_FILTERS OFF CACHE BOOL "" FORCE)
 set(BUILD_GENERATORS OFF CACHE BOOL "" FORCE)
 set(ENABLE_DOCS OFF CACHE BOOL "" FORCE)
 # ENABLE_DOCS=OFF did not fully suppress H3's Doxygen lookup in practice;
-# the Dockerfile installs doxygen and graphviz (for the "dot" component)
-# as a fallback so configure succeeds either way.
+# doxygen and graphviz (for the "dot" component) must be present so
+# configure succeeds either way.
 FetchContent_MakeAvailable(h3)
 
 add_library(karmamap_core STATIC

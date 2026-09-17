@@ -5,8 +5,8 @@ import { initMap, renderResults, getViewportBbox, setResultsLogScale } from './m
 import { initHistogram, setHistogramData, setHistogramWindow, setLogScale, onHistogramRangeChange } from './histogram.js'
 import { readPermalink, writePermalink } from './permalink.js'
 
-// Where the Caddy service serves output-dir/ from (the web root at /).
-const BASE_URL = 'http://localhost:8080/data'
+// Data root: the data/ directory one level above the viewer pages.
+const BASE_URL = '../data'
 
 // Minimum map zoom for a query; below this the bbox covers too many cells.
 const MIN_ZOOM = 12
@@ -208,7 +208,7 @@ async function main() {
   try {
     manifest = await loadManifest(BASE_URL)
   } catch (err) {
-    setStatus(`Failed to load manifest.json from ${BASE_URL}. Is "docker compose up caddy" running? (${err.message})`)
+    setStatus(`Failed to load manifest.json from ${BASE_URL}. Is the data server running? (${err.message})`)
     return
   }
 
