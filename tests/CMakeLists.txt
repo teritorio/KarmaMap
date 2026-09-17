@@ -8,7 +8,7 @@
 #                         (parquet_batch_writer, manifest, sort_pass,
 #                         user_indicator finalize) with a custom main that
 #                         initializes Arrow's compute engine.
-# Linking osh_change_index_core (PUBLIC) pulls Arrow, Parquet, zstd, H3 and
+# Linking karmamap_core (PUBLIC) pulls Arrow, Parquet, zstd, H3 and
 # the user_indicators.cpp osmium includes transitively.
 
 find_package(GTest REQUIRED)
@@ -29,7 +29,7 @@ target_link_libraries(unit_tests PRIVATE
   GTest::GTest
   GTest::Main
   pthread
-  osh_change_index_core
+  karmamap_core
 )
 
 gtest_discover_tests(unit_tests)
@@ -48,7 +48,7 @@ target_include_directories(core_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(core_tests PRIVATE
   GTest::GTest
   pthread
-  osh_change_index_core
+  karmamap_core
 )
 
 gtest_discover_tests(core_tests)

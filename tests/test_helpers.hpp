@@ -25,7 +25,7 @@ class TempDir {
 public:
     TempDir() {
         dir_ = std::filesystem::temp_directory_path() /
-               ("osh_change_index_test_" +
+               ("karmamap_test_" +
                 std::to_string(
                     std::chrono::high_resolution_clock::now().time_since_epoch().count()));
         std::filesystem::create_directories(dir_);

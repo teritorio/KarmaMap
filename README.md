@@ -1,18 +1,19 @@
-# osh_change_index
+# KarmaMap
 
-Reads an OSM full-history file (`.osh.pbf`) and produces one partitioned
-Parquet dataset — `changes/` — with `(h3_cell, change_date, node_count,
-way_count)` rows, partitioned by calendar month
+KarmaMap reads an OSM full-history file (`.osh.pbf`) and produces one
+partitioned Parquet change map - `changes/` - with `(h3_cell, change_date,
+node_count, way_count)` rows, partitioned by calendar month
 (`year=YYYY/month=MM/data.parquet`, standard hive partitioning), for
 bbox + date-range queries (e.g. with DuckDB or the included web frontend).
 `node_count` counts node changes, `way_count` way changes, in the same file
 per month so a client reads one dataset per month. The optional
-`--user-indicators` pass adds two non-partitioned user datasets.
+`--user-indicators` pass adds the karma layer: per-user, per-day activity
+and a 0-100 reputation per contributor.
 
 The output is queried directly in the browser by two static viewers shipped
-in `web/`: a changes map + histogram, and a per-user OSMPatrol reputation
-viewer. The reputation scoring follows [Neis, Goetz & Zipf, *ISPRS Int. J.
-Geo-Inf.* 2012, 1(3), 315-332](https://www.mdpi.com/2220-9964/1/3/315).
+in `web/`: a changes map + histogram, and a per-user reputation viewer. The
+reputation scoring follows [Neis, Goetz & Zipf, *ISPRS Int. J. Geo-Inf.*
+2012, 1(3), 315-332](https://www.mdpi.com/2220-9964/1/3/315).
 
 ## What it produces
 
@@ -45,7 +46,7 @@ Geo-Inf.* 2012, 1(3), 315-332](https://www.mdpi.com/2220-9964/1/3/315).
 
 Host paths are read from a `.env` file (see `.env.template`) and used by
 `docker-compose.yml`. `DATA_DIR` is mounted at `/data` for the
-`osh_change_index` service — `--input`, `--node-cache` and `--output-dir`
+`karmamap` service — `--input`, `--node-cache` and `--output-dir`
 are absolute paths under it — and `OUTPUT_DIR` is served read-only by the
 `caddy` service.
 
@@ -76,8 +77,8 @@ They are compiled and executed as part of the Docker build stage, so a
 failing test fails the image build. Run them manually with:
 
 ```bash
-docker build --target build -t osh_change_index:build . \
-  && docker run --rm osh_change_index:build bash -c "ctest --test-dir build --output-on-failure"
+docker build --target build -t karmamap:build . \
+  && docker run --rm karmamap:build bash -c "ctest --test-dir build --output-on-failure"
 ```
 
 Build without tests by configuring with `-DOSH_ENABLE_TESTS=OFF`.
@@ -85,7 +86,7 @@ Build without tests by configuring with `-DOSH_ENABLE_TESTS=OFF`.
 ### Usage
 
 ```
-osh_change_index --input <planet.osh.pbf> --node-cache <file> --output-dir <dir> [core options]
+karmamap --input <planet.osh.pbf> --node-cache <file> --output-dir <dir> [core options]
 ```
 
 #### Core options
@@ -105,7 +106,7 @@ osh_change_index --input <planet.osh.pbf> --node-cache <file> --output-dir <dir>
 Place the input file under `DATA_DIR/input` (default `data/`), then:
 
 ```bash
-docker compose --profile=build run --rm osh_change_index osh_change_index --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/
+docker compose --profile=build run --rm karmamap karmamap --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/
 ```
 
 To resume after an earlier stage, run the passes one at a time (a way-only
@@ -114,11 +115,11 @@ back next to the already-removed `nodes.parquet` — then `--pass 3`,
 sourcing node counts from the existing `data.parquet`):
 
 ```bash
-docker compose --profile=build run --rm osh_change_index osh_change_index --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/ --pass 1
+docker compose --profile=build run --rm karmamap karmamap --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/ --pass 1
 
-docker compose --profile=build run --rm osh_change_index osh_change_index --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/ --pass 2
+docker compose --profile=build run --rm karmamap karmamap --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/ --pass 2
 
-docker compose --profile=build run --rm osh_change_index osh_change_index --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/ --pass 3
+docker compose --profile=build run --rm karmamap karmamap --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/ --pass 3
 ```
 
 ### Serving the web frontend
@@ -172,8 +173,8 @@ wget -O data/canary-islands-internal.osh.pbf https://osm-internal.download.geofa
 ```
 
 ```bash
-docker compose run --rm osh_change_index \
-  osh_change_index --input /data/canary-islands-internal.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/
+docker compose run --rm karmamap \
+  karmamap --input /data/canary-islands-internal.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/
 ```
 
 Input and Output files size

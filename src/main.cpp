@@ -1,4 +1,4 @@
-// osh_change_index: daily count of OSM changes per H3 cell.
+// karmamap: daily count of OSM changes per H3 cell.
 //
 // Reads an OSM full-history file (.osh.pbf) and produces one partitioned
 // Parquet dataset under --output-dir:

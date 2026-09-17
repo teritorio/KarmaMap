@@ -34,8 +34,8 @@ RUN ctest --test-dir build --output-on-failure
 # proven fragile across Arrow version bumps; this approach tracks whatever
 # the build stage actually produced.
 RUN mkdir -p /out/lib \
-    && cp build/osh_change_index /out/osh_change_index \
-    && ldd /out/osh_change_index \
+    && cp build/karmamap /out/karmamap \
+    && ldd /out/karmamap \
         | awk '$2 == "=>" && $3 ~ /^\// { print $3 }' \
         | sort -u \
         | xargs -I{} cp -L {} /out/lib/
@@ -43,10 +43,10 @@ RUN mkdir -p /out/lib \
 FROM debian:bookworm-slim AS runtime
 
 COPY --from=build /out/lib/ /usr/local/lib/
-COPY --from=build /out/osh_change_index /usr/local/bin/osh_change_index
+COPY --from=build /out/karmamap /usr/local/bin/karmamap
 RUN ldconfig
 
 WORKDIR /data
 
 # No fixed ENTRYPOINT/CMD: invoke explicitly at run time, e.g.
-#   docker run --rm -v ... osh_change_index osh_change_index --input ... --node-cache ... --output-dir ...
+#   docker run --rm -v ... karmamap karmamap --input ... --node-cache ... --output-dir ...

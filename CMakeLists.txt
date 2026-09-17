@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(osh_change_index CXX C)
+project(karmamap CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -71,7 +71,7 @@ set(ENABLE_DOCS OFF CACHE BOOL "" FORCE)
 # as a fallback so configure succeeds either way.
 FetchContent_MakeAvailable(h3)
 
-add_library(osh_change_index_core STATIC
+add_library(karmamap_core STATIC
   src/manifest.cpp
   src/options.cpp
   src/parquet_batch_writer.cpp
@@ -79,17 +79,17 @@ add_library(osh_change_index_core STATIC
   src/user_indicators.cpp
 )
 
-target_include_directories(osh_change_index_core PUBLIC src)
+target_include_directories(karmamap_core PUBLIC src)
 
 # User-indicator scan (user_indicators.cpp) pulls in libosmium and protozero;
 # made PUBLIC so the executable and the test binaries inherit them too.
-target_include_directories(osh_change_index_core PUBLIC
+target_include_directories(karmamap_core PUBLIC
   ${OSMIUM_INCLUDE_DIR}
   ${PROTOZERO_INCLUDE_DIR}
   ${ZSTD_INCLUDE_DIR}
 )
 
-target_link_libraries(osh_change_index_core PUBLIC
+target_link_libraries(karmamap_core PUBLIC
   h3
   Arrow::arrow_shared
   ArrowCompute::arrow_compute_shared
@@ -100,11 +100,11 @@ target_link_libraries(osh_change_index_core PUBLIC
   ${ZSTD_LIBRARY}
 )
 
-target_compile_options(osh_change_index_core PRIVATE -Wall -Wextra -O2)
+target_compile_options(karmamap_core PRIVATE -Wall -Wextra -O2)
 
-add_executable(osh_change_index src/main.cpp)
+add_executable(karmamap src/main.cpp)
 
-target_link_libraries(osh_change_index PRIVATE osh_change_index_core pthread)
+target_link_libraries(karmamap PRIVATE karmamap_core pthread)
 
 if(OSH_ENABLE_TESTS)
   enable_testing()

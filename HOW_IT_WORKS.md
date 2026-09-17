@@ -1,12 +1,12 @@
 # How it works
 
-The internal processing pipeline of the `osh_change_index` binary, plus how
+The internal processing pipeline of the `karmamap` binary, plus how
 the output it produces is queried by the bundled web frontend. The Parquet
 data contract — layout, schemas, encodings — lives in [API.md](API.md).
 
 ## The passes
 
-A single binary, `osh_change_index`, runs three stages by default:
+A single binary, `karmamap`, runs three stages by default:
 
 1. Node pass: builds the mmap node cache `(node_id, day) -> position` and
    counts node changes into `changes/year=YYYY/month=MM/nodes.parquet`.
