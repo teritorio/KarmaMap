@@ -26,6 +26,7 @@
     #controls {
       display: flex; align-items: center; gap: 0.75rem;
       padding: 0.75rem 1rem; background: #1f2937; color: white;
+      position: relative;
     }
     #controls label { font-size: 0.85rem; }
     #controls a { color: #93c5fd; text-decoration: none; font-size: 0.9rem; }
@@ -33,7 +34,11 @@
     #controls input[type="date"], #controls button {
       font-size: 0.9rem; padding: 0.3rem 0.5rem;
     }
-    #status { margin-left: auto; font-size: 0.85rem; opacity: 0.85; }
+    #status {
+      position: absolute; right: 1rem; top: 50%; transform: translateY(-50%);
+      max-width: 50%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      font-size: 0.85rem; opacity: 0.85;
+    }
     #map { flex: 1; }
 
     #histogram {
