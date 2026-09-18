@@ -59,7 +59,6 @@ DATA_DIR=./data/
 ```
 
 Without a `.env`, the compose defaults `DATA_DIR=./data/` (mounted at `/data`)
-and `OUTPUT_DIR=./data/` apply, so the examples below work as written.
 
 ### Build
 
@@ -104,7 +103,7 @@ karmamap --input <planet.osh.pbf> --node-cache <file> --output-dir <dir> [core o
 
 ### Running
 
-Place the input file under `DATA_DIR/input` (default `data/`), then:
+Place the input file under `DATA_DIR` (default `data/`), then:
 
 ```bash
 docker compose --profile=build run --rm karmamap karmamap --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/
@@ -116,11 +115,11 @@ back next to the already-removed `nodes.parquet` — then `--pass 3`,
 sourcing node counts from the existing `data.parquet`):
 
 ```bash
-docker compose --profile=build run --rm karmamap karmamap --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/ --pass 1
+docker compose --profile=build run --rm karmamap karmamap --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/output --pass 1
 
-docker compose --profile=build run --rm karmamap karmamap --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/ --pass 2
+docker compose --profile=build run --rm karmamap karmamap --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/output --pass 2
 
-docker compose --profile=build run --rm karmamap karmamap --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/ --pass 3
+docker compose --profile=build run --rm karmamap karmamap --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/output --pass 3
 ```
 
 ### Serving the web frontend
@@ -175,7 +174,7 @@ wget -O data/canary-islands-internal.osh.pbf https://osm-internal.download.geofa
 ```
 
 ```bash
-docker compose run --rm karmamap karmamap --user-indicators --input /data/canary-islands-internal.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/
+docker compose run --rm karmamap karmamap --user-indicators --input /data/canary-islands-internal.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/output
 ```
 
 Input and Output files size
