@@ -25,7 +25,6 @@ COPY tests ./tests
 RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build -j"$(nproc)"
 
-# A failing test fails the image build.
 RUN ctest --test-dir build --output-on-failure
 
 # Collect the binary together with every shared library it actually links
@@ -47,6 +46,3 @@ COPY --from=build /out/karmamap /usr/local/bin/karmamap
 RUN ldconfig
 
 WORKDIR /data
-
-# No fixed ENTRYPOINT/CMD: invoke explicitly at run time, e.g.
-#   docker run --rm -v ... karmamap karmamap --input ... --node-cache ... --output-dir ...
