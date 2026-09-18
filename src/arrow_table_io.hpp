@@ -10,12 +10,16 @@
 #include <parquet/arrow/reader.h>
 #include <parquet/arrow/writer.h>
 
+#include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace arrow_table_io {
+
+// Default row-group size when a caller does not pass an explicit value.
+inline constexpr int64_t kDefaultRowGroupRows = 500'000;
 
 inline std::shared_ptr<arrow::Table> read_table(const std::string& path) {
     auto infile_result = arrow::io::ReadableFile::Open(path);
@@ -41,7 +45,8 @@ inline std::shared_ptr<arrow::Table> read_table(const std::string& path) {
 }
 
 inline void write_table(const std::string& path, const std::shared_ptr<arrow::Table>& table,
-                        const std::shared_ptr<arrow::KeyValueMetadata>& file_metadata) {
+                        const std::shared_ptr<arrow::KeyValueMetadata>& file_metadata,
+                        int64_t row_group_rows) {
     auto outfile_result = arrow::io::FileOutputStream::Open(path);
     if (!outfile_result.ok()) {
         throw std::runtime_error("Failed to open " + path + " for writing: " +
@@ -52,8 +57,8 @@ inline void write_table(const std::string& path, const std::shared_ptr<arrow::Ta
     props_builder.compression(parquet::Compression::ZSTD);
     auto writer_props = props_builder.build();
 
-    // One row group per file, bounded by a single partition's data.
-    const int64_t chunk_size = table->num_rows() > 0 ? table->num_rows() : 1;
+    // Row groups of at most `row_group_rows` rows.
+    const int64_t chunk_size = table->num_rows() > 0 ? row_group_rows : 1;
 
     // FileWriter is used instead of the WriteTable convenience so caller
     // key_value_metadata lands in the Parquet footer, independent of whether
@@ -88,6 +93,16 @@ inline void write_table(const std::string& path, const std::shared_ptr<arrow::Ta
         throw std::runtime_error("Failed to close " + path + ": " +
                                   close_sink_status.ToString());
     }
+}
+
+inline void write_table(const std::string& path, const std::shared_ptr<arrow::Table>& table,
+                        int64_t row_group_rows) {
+    write_table(path, table, nullptr, row_group_rows);
+}
+
+inline void write_table(const std::string& path, const std::shared_ptr<arrow::Table>& table,
+                        const std::shared_ptr<arrow::KeyValueMetadata>& file_metadata) {
+    write_table(path, table, file_metadata, kDefaultRowGroupRows);
 }
 
 inline void write_table(const std::string& path, const std::shared_ptr<arrow::Table>& table) {

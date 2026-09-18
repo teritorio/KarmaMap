@@ -26,6 +26,7 @@ TEST(Options, DefaultsPreserved) {
     ASSERT_TRUE(ok);
     EXPECT_EQ(opts.h3_resolution, 9);
     EXPECT_EQ(opts.way_batch_bytes, kDefaultWayBatchBytes);
+    EXPECT_EQ(opts.change_group_rows, kDefaultChangeGroupRows);
     EXPECT_TRUE(opts.run_node_pass);
     EXPECT_TRUE(opts.run_way_pass);
     EXPECT_TRUE(opts.run_sort_pass);
@@ -75,6 +76,30 @@ TEST(Options, HelpReturnsFalse) {
 TEST(Options, RequiredArgumentsMissingThrows) {
     Options opts;
     EXPECT_THROW(parse({"prog", "--input", "in.pbf"}, &opts), std::runtime_error);
+}
+
+TEST(Options, ChangeGroupRowsDefault) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
+                       "--output-dir", "out"},
+                      &opts));
+    EXPECT_EQ(opts.change_group_rows, kDefaultChangeGroupRows);
+}
+
+TEST(Options, ChangeGroupRowsValid) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
+                       "--output-dir", "out", "--change-group-rows", "123456"},
+                      &opts));
+    EXPECT_EQ(opts.change_group_rows, 123456);
+}
+
+TEST(Options, ChangeGroupRowsTooSmallThrows) {
+    Options opts;
+    EXPECT_THROW(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
+                        "--output-dir", "out", "--change-group-rows", "500"},
+                       &opts),
+                 std::runtime_error);
 }
 
 }  // namespace

@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <arrow/api.h>
+#include <arrow/io/api.h>
+#include <parquet/arrow/reader.h>
 
 #include <cstdint>
 #include <filesystem>
@@ -9,6 +11,7 @@
 #include <tuple>
 #include <vector>
 
+#include "options.hpp"
 #include "sort_pass.hpp"
 #include "test_helpers.hpp"
 
@@ -29,6 +32,22 @@ void make_partitions(const std::string& root, const std::vector<std::string>& ye
     for (const auto& year : years) {
         std::filesystem::create_directories(root + "/year=" + year);
     }
+}
+
+// Number of row groups in a freshly written Parquet file.
+int num_row_groups(const std::string& path) {
+    auto infile_result = arrow::io::ReadableFile::Open(path);
+    if (!infile_result.ok()) {
+        throw std::runtime_error("Failed to open " + path + ": " +
+                                 infile_result.status().ToString());
+    }
+    auto reader_result =
+        parquet::arrow::OpenFile(*infile_result, arrow::default_memory_pool());
+    if (!reader_result.ok()) {
+        throw std::runtime_error("Failed to open Parquet reader for " + path + ": " +
+                                 reader_result.status().ToString());
+    }
+    return (*reader_result)->num_row_groups();
 }
 
 // Unpacks data.parquet (h3_cell, change_date, node_count, way_count).
@@ -108,7 +127,7 @@ TEST(SortPass, MergesNodesAndWays) {
     write_staging(year + "/nodes.parquet", {{kLow, 1, 3}, {kMid, 2, 5}});
     write_staging(year + "/ways.parquet", {{kLow, 1, 7}, {kHigh, 3, 2}});
 
-    sort_pass::merge_and_sort_partitions(dir.path());
+    sort_pass::merge_and_sort_partitions(dir.path(), kDefaultChangeGroupRows);
 
     EXPECT_TRUE(std::filesystem::exists(year + "/data.parquet"));
     EXPECT_FALSE(std::filesystem::exists(year + "/nodes.parquet"));
@@ -136,7 +155,7 @@ TEST(SortPass, NodesOnlyZeroesWays) {
     const std::string year = dir.path() + "/year=2024";
     write_staging(year + "/nodes.parquet", {{kLow, 1, 4}});
 
-    sort_pass::merge_and_sort_partitions(dir.path());
+    sort_pass::merge_and_sort_partitions(dir.path(), kDefaultChangeGroupRows);
 
     const auto merged = read_merged(year + "/data.parquet");
     ASSERT_EQ(merged.size(), 1);
@@ -150,7 +169,7 @@ TEST(SortPass, WaysOnlyZeroesNodes) {
     const std::string year = dir.path() + "/year=2024";
     write_staging(year + "/ways.parquet", {{kLow, 1, 6}});
 
-    sort_pass::merge_and_sort_partitions(dir.path());
+    sort_pass::merge_and_sort_partitions(dir.path(), kDefaultChangeGroupRows);
 
     const auto merged = read_merged(year + "/data.parquet");
     ASSERT_EQ(merged.size(), 1);
@@ -167,7 +186,7 @@ TEST(SortPass, SortsByCellThenDay) {
     write_staging(year + "/nodes.parquet", {{kHigh, 2, 1}, {kMid, 3, 1},
                                             {kMid, 1, 1}, {kLow, 4, 1}});
 
-    sort_pass::merge_and_sort_partitions(dir.path());
+    sort_pass::merge_and_sort_partitions(dir.path(), kDefaultChangeGroupRows);
 
     const auto merged = read_merged(year + "/data.parquet");
     ASSERT_EQ(merged.size(), 4);
@@ -186,12 +205,12 @@ TEST(SortPass, ReMergeFallsBackToDataForMissingStaging) {
 
     write_staging(year + "/nodes.parquet", {{kLow, 1, 3}});
     write_staging(year + "/ways.parquet", {{kLow, 1, 7}});
-    sort_pass::merge_and_sort_partitions(dir.path());
+    sort_pass::merge_and_sort_partitions(dir.path(), kDefaultChangeGroupRows);
 
     // Add only a new ways staging file; the node count must be carried over
     // from the previous data.parquet rather than zeroed.
     write_staging(year + "/ways.parquet", {{kHigh, 2, 4}});
-    sort_pass::merge_and_sort_partitions(dir.path());
+    sort_pass::merge_and_sort_partitions(dir.path(), kDefaultChangeGroupRows);
 
     const auto merged = read_merged(year + "/data.parquet");
     ASSERT_EQ(merged.size(), 2);
@@ -207,13 +226,13 @@ TEST(SortPass, AlreadyMergedYearUntouched) {
     const std::string year = dir.path() + "/year=2024";
 
     write_staging(year + "/nodes.parquet", {{kLow, 1, 3}});
-    sort_pass::merge_and_sort_partitions(dir.path());
+    sort_pass::merge_and_sort_partitions(dir.path(), kDefaultChangeGroupRows);
 
     const std::string data_path = year + "/data.parquet";
     const auto before = read_parquet(data_path);
     const uintmax_t size_before = std::filesystem::file_size(data_path);
 
-    sort_pass::merge_and_sort_partitions(dir.path());
+    sort_pass::merge_and_sort_partitions(dir.path(), kDefaultChangeGroupRows);
 
     const auto after = read_parquet(data_path);
     EXPECT_EQ(after->num_rows(), before->num_rows());
@@ -223,8 +242,26 @@ TEST(SortPass, AlreadyMergedYearUntouched) {
 
 TEST(SortPass, MissingOrEmptyRootIsNoOp) {
     TempDir dir;
-    EXPECT_NO_THROW(sort_pass::merge_and_sort_partitions(dir.join("nope")));
-    EXPECT_NO_THROW(sort_pass::merge_and_sort_partitions(dir.path()));
+    EXPECT_NO_THROW(sort_pass::merge_and_sort_partitions(dir.join("nope"), 3));
+    EXPECT_NO_THROW(sort_pass::merge_and_sort_partitions(dir.path(), 3));
+}
+
+TEST(SortPass, LargeYearWritesMultipleRowGroups) {
+    TempDir dir;
+    make_partitions(dir.path(), {"2024"});
+    const std::string year = dir.path() + "/year=2024";
+
+    // 7 rows with a row-group budget of 3 -> row groups of 3, 3, 1.
+    write_staging(year + "/nodes.parquet",
+                  {{kLow, 1, 1}, {kLow, 2, 1}, {kLow, 3, 1},
+                   {kLow, 4, 1}, {kLow, 5, 1}, {kLow, 6, 1}, {kLow, 7, 1}});
+
+    sort_pass::merge_and_sort_partitions(dir.path(), /*change_group_rows=*/3);
+
+    const std::string data_path = year + "/data.parquet";
+    ASSERT_TRUE(std::filesystem::exists(data_path));
+    EXPECT_EQ(num_row_groups(data_path), 3);
+    EXPECT_EQ(read_merged(data_path).size(), 7);
 }
 
 TEST(SortPass, WrongChangeDateTypeThrows) {
@@ -233,7 +270,7 @@ TEST(SortPass, WrongChangeDateTypeThrows) {
     const std::string year = dir.path() + "/year=2024";
     write_staging_int32_date(year + "/nodes.parquet", {{kLow, 1, 3}});
 
-    EXPECT_THROW(sort_pass::merge_and_sort_partitions(dir.path()), std::runtime_error);
+    EXPECT_THROW(sort_pass::merge_and_sort_partitions(dir.path(), kDefaultChangeGroupRows), std::runtime_error);
     EXPECT_FALSE(std::filesystem::exists(year + "/data.parquet"));
 }
 

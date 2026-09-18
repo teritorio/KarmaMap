@@ -114,7 +114,8 @@ void run_sort_pass(const Options& opts) {
 
     auto start = std::chrono::steady_clock::now();
 
-    sort_pass::merge_and_sort_partitions(opts.output_dir + "/changes");
+    sort_pass::merge_and_sort_partitions(opts.output_dir + "/changes",
+                                         opts.change_group_rows);
 
     auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                        std::chrono::steady_clock::now() - start)

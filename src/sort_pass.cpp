@@ -79,7 +79,7 @@ void merge_source(const std::shared_ptr<arrow::Table>& table, const char* count_
     }
 }
 
-void merge_one_year(const std::string& year_dir) {
+void merge_one_year(const std::string& year_dir, int64_t change_group_rows) {
     const std::string nodes_path = year_dir + "/nodes.parquet";
     const std::string ways_path = year_dir + "/ways.parquet";
     const std::string output_path = year_dir + "/data.parquet";
@@ -151,7 +151,7 @@ void merge_one_year(const std::string& year_dir) {
     // staging files. A re-run reads whatever staging files survived and, for
     // counts whose staging file was already removed, reuses data.parquet
     // (only ever created by a completed rename).
-    arrow_table_io::write_table(tmp_path, merged_table);
+    arrow_table_io::write_table(tmp_path, merged_table, change_group_rows);
     std::filesystem::rename(tmp_path, output_path);
     if (has_nodes) std::filesystem::remove(nodes_path);
     if (has_ways) std::filesystem::remove(ways_path);
@@ -159,7 +159,7 @@ void merge_one_year(const std::string& year_dir) {
 
 }  // namespace
 
-void merge_and_sort_partitions(const std::string& root_dir) {
+void merge_and_sort_partitions(const std::string& root_dir, int64_t change_group_rows) {
     // Registers Arrow's compute kernels (e.g. sort_indices, take); without
     // this the functions are missing from the registry and sorting fails.
     auto init_status = arrow::compute::Initialize();
@@ -171,7 +171,7 @@ void merge_and_sort_partitions(const std::string& root_dir) {
 
     for (const auto& year_entry : std::filesystem::directory_iterator(root_dir)) {
         if (year_entry.is_directory()) {
-            merge_one_year(year_entry.path().string());
+            merge_one_year(year_entry.path().string(), change_group_rows);
         }
     }
 }

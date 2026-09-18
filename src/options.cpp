@@ -20,7 +20,11 @@ void print_usage(const char* argv0) {
         << "                         requires passes 1 and 2 to have already run),\n"
         << "                         or all (default)\n"
         << "  --way-batch-mb         Way-pass lookup batch budget in MiB (default: 512)\n"
-        << "  --h3-resolution        Resolution of the data cells, 0-13 (default: 9)\n\n"
+        << "  --h3-resolution        Resolution of the data cells, 0-13 (default: 9)\n"
+        << "  --change-group-rows    Target rows per Parquet row group of the changes\n"
+        << "                         dataset (default: 10000); smaller row groups keep\n"
+        << "                         h3_cell/change_date min-max compact so range-pruning\n"
+        << "                         clients download only the pages they need\n"
         << "  --user-indicators      Additionally score history per user and per UTC day,\n"
         << "                         writing user_indicators.parquet and\n"
         << "                         user_reputation.parquet (non-partitioned single\n"
@@ -52,6 +56,12 @@ bool parse_args(int argc, char** argv, Options* opts) {
                 throw std::runtime_error("--way-batch-mb must be in 16..1048576");
             }
             opts->way_batch_bytes = mb * 1024ULL * 1024ULL;
+        } else if (arg == "--change-group-rows") {
+            const long long rows = std::stoll(next_value("--change-group-rows"));
+            if (rows < 1'000) {
+                throw std::runtime_error("--change-group-rows must be at least 1000");
+            }
+            opts->change_group_rows = rows;
         } else if (arg == "--pass") {
             std::string v = next_value("--pass");
             opts->run_node_pass = (v == "1" || v == "all");
