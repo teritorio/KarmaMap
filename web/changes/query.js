@@ -5,7 +5,7 @@
 // filtered to the exact cell set (h3_cell only supports a contiguous
 // range) and aggregated client-side across node_count + way_count.
 
-import { parquetQuery, asyncBufferFromUrl } from 'hyparquet'
+import { parquetQuery, parquetMetadataAsync, asyncBufferFromUrl } from 'hyparquet'
 import { compressors } from 'hyparquet-compressors'
 
 function monthsInRange(startMonth, endMonth) {
@@ -40,7 +40,7 @@ function partitionPath(datasetPath, year) {
 // change_date is a uint16 count of UTC days since the Unix epoch
 // (1970-01-01), so day-range filtering and day-to-key conversion both work
 // on integer day counts.
-async function queryOneFile(baseUrl, path, cellMin, cellMax, startDay, endDay, cellSet) {
+async function queryOneFile(baseUrl, path, footerSize, cellMin, cellMax, startDay, endDay, cellSet) {
   const url = `${baseUrl}/${path}`
 
   let file
@@ -52,14 +52,22 @@ async function queryOneFile(baseUrl, path, cellMin, cellMax, startDay, endDay, c
     return []
   }
 
-  const rows = await parquetQuery({
-    file,
-    compressors,
-    filter: {
-      h3_cell: { $gte: cellMin, $lte: cellMax },
-      change_date: { $gte: startDay, $lte: endDay },
-    },
-  })
+  const filter = {
+    h3_cell: { $gte: cellMin, $lte: cellMax },
+    change_date: { $gte: startDay, $lte: endDay },
+  }
+
+  // footer_size per partition (from the manifest) points exactly at the
+  // parquet footer, so the initial fetch reads just those bytes instead of
+  // the 512 KB tail window hyparquet uses by default.
+  const rows = footerSize
+    ? await parquetQuery({
+        file,
+        compressors,
+        filter,
+        metadata: await parquetMetadataAsync(file, { initialFetchSize: footerSize + 8 }),
+      })
+    : await parquetQuery({ file, compressors, filter })
 
   // The range filter is a coarse pre-filter; keep only rows in the exact
   // (non-contiguous) bbox cell set.
@@ -106,7 +114,8 @@ export async function queryChanges({
       if (!dataset.partitions.includes(year)) continue // no file for this year, skip the fetch entirely
 
       const path = partitionPath(dataset.path, year)
-      tasks.push(queryOneFile(baseUrl, path, cellMin, cellMax, startDay, endDay, cellSet))
+      const footerSize = dataset.partition_footer_sizes?.[year]
+      tasks.push(queryOneFile(baseUrl, path, footerSize, cellMin, cellMax, startDay, endDay, cellSet))
     }
   }
 

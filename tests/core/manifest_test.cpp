@@ -109,6 +109,13 @@ TEST(Manifest, WritesDateRangeFromDataFiles) {
               std::string::npos);
     EXPECT_NE(json.find("\"partitions\": [\"2024\", \"2025\", \"2026\"]"),
               std::string::npos);
+
+    // partition_footer_sizes contains the years with readable data.parquet
+    // and omits 2026 (directory without a data file).
+    const std::string pfs = json.substr(json.find("\"partition_footer_sizes\":"));
+    EXPECT_NE(pfs.find("\"2024\": "), std::string::npos);
+    EXPECT_NE(pfs.find("\"2025\": "), std::string::npos);
+    EXPECT_EQ(pfs.find("\"2026\""), std::string::npos);
 }
 
 TEST(Manifest, IgnoresForeignEntries) {
@@ -138,6 +145,28 @@ TEST(Manifest, WritesUserDatasetEntries) {
     EXPECT_NE(json.find("\"user_indicators\": { \"path\": \"user_indicators.parquet\", \"partitions\": [] }"),
               std::string::npos);
     EXPECT_NE(json.find("\"user_reputation\": { \"path\": \"user_reputation.parquet\", \"partitions\": [] }"),
+              std::string::npos);
+    // The fixture files are not parquet, so no footer_size is emitted.
+    EXPECT_EQ(json.find("footer_size"), std::string::npos);
+}
+
+TEST(Manifest, WritesFooterSizeForUserDatasets) {
+    TempDir dir;
+    make_partitions(dir.join("changes"), {"2024"});
+
+    // A real (small) parquet file so the manifest can read its footer size.
+    arrow::UInt32Builder builder;
+    ASSERT_TRUE(builder.Append(1).ok());
+    std::shared_ptr<arrow::Array> values;
+    ASSERT_TRUE(builder.Finish(&values).ok());
+    auto schema = arrow::schema({arrow::field("v", arrow::uint32(), false)});
+    arrow_table_io::write_table(dir.join("user_indicators.parquet"),
+                                arrow::Table::Make(schema, {values}));
+
+    manifest::write_manifest(dir.path(), 4);
+
+    const std::string json = read_file(dir.join("manifest.json"));
+    EXPECT_NE(json.find("\"user_indicators\": { \"path\": \"user_indicators.parquet\", \"partitions\": [], \"footer_size\": "),
               std::string::npos);
 }
 

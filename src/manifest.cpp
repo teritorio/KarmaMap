@@ -145,6 +145,25 @@ std::string json_string_array(const std::vector<std::string>& values) {
     return out;
 }
 
+// Size in bytes of a parquet file's footer metadata, read from the 8 trailing
+// bytes (uint32 little-endian metadata length followed by the "PAR1" magic).
+// Nullopt when the file is missing or not a plain parquet file.
+std::optional<uint32_t> footer_size(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return std::nullopt;
+    if (!in.seekg(-8, std::ios::end)) return std::nullopt;
+    char tail[8];
+    if (!in.read(tail, sizeof(tail))) return std::nullopt;
+    if (tail[4] != 'P' || tail[5] != 'A' || tail[6] != 'R' || tail[7] != '1') {
+        return std::nullopt;
+    }
+    uint32_t length = static_cast<uint8_t>(tail[0]);
+    length |= static_cast<uint32_t>(static_cast<uint8_t>(tail[1])) << 8;
+    length |= static_cast<uint32_t>(static_cast<uint8_t>(tail[2])) << 16;
+    length |= static_cast<uint32_t>(static_cast<uint8_t>(tail[3])) << 24;
+    return length;
+}
+
 }  // namespace
 
 void write_manifest(const std::string& output_dir, int h3_resolution) {
@@ -172,20 +191,48 @@ void write_manifest(const std::string& output_dir, int h3_resolution) {
     out << "  \"datasets\": {\n";
     bool first_dataset = true;
     auto write_dataset = [&](const std::string& name, const std::string& path,
-                             const std::vector<std::string>& parts) {
+                             const std::vector<std::string>& parts,
+                             const std::string& footer_field) {
         if (!first_dataset) out << ",\n";
         first_dataset = false;
         out << "    \"" << name << "\": { \"path\": \"" << path << "\", \"partitions\": "
-            << json_string_array(parts) << " }";
+            << json_string_array(parts);
+        if (!footer_field.empty()) out << ", " << footer_field;
+        out << " }";
     };
-    write_dataset("changes", "changes", partitions);
+
+    // Per-year parquet footer metadata sizes, so year-based query clients can
+    // fetch exactly the footer bytes instead of the trailing 512 KB tail
+    // window. Years whose data.parquet is missing or unreadable are omitted.
+    std::string partition_footer_sizes;
+    {
+        std::string entries;
+        for (const std::string& year : partitions) {
+            auto size = footer_size(output_dir + "/changes/year=" + year + "/data.parquet");
+            if (!size) continue;
+            if (!entries.empty()) entries += ", ";
+            entries += "\"" + year + "\": " + std::to_string(*size);
+        }
+        if (!entries.empty()) {
+            partition_footer_sizes = "\"partition_footer_sizes\": { " + entries + " }";
+        }
+    }
+    write_dataset("changes", "changes", partitions, partition_footer_sizes);
+
     // The user-indicator outputs are non-partitioned single files; the empty
-    // partition list tells year-based query clients to skip them.
+    // partition list tells year-based query clients to skip them. footer_size
+    // lets the users viewer read the exact footer window of these files.
+    auto single_file_field = [&](const std::string& path) -> std::string {
+        auto size = footer_size(output_dir + "/" + path);
+        return size ? "\"footer_size\": " + std::to_string(*size) : std::string();
+    };
     if (std::filesystem::exists(output_dir + "/user_indicators.parquet")) {
-        write_dataset("user_indicators", "user_indicators.parquet", {});
+        write_dataset("user_indicators", "user_indicators.parquet", {},
+                      single_file_field("user_indicators.parquet"));
     }
     if (std::filesystem::exists(output_dir + "/user_reputation.parquet")) {
-        write_dataset("user_reputation", "user_reputation.parquet", {});
+        write_dataset("user_reputation", "user_reputation.parquet", {},
+                      single_file_field("user_reputation.parquet"));
     }
     out << "\n  }\n";
     out << "}\n";

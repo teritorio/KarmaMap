@@ -38,13 +38,20 @@ row data exists yet):
   "datasets": {
     "changes": {
       "path": "changes",
-      "partitions": ["2005", "2006", "..."]
+      "partitions": ["2005", "2006", "..."],
+      "partition_footer_sizes": { "2005": 41298, "2006": 39807, "..." }
     },
-    "user_indicators": { "path": "user_indicators.parquet", "partitions": [] },
-    "user_reputation": { "path": "user_reputation.parquet", "partitions": [] }
+    "user_indicators": { "path": "user_indicators.parquet", "partitions": [], "footer_size": 35112 },
+    "user_reputation": { "path": "user_reputation.parquet", "partitions": [], "footer_size": 40894 }
   }
 }
 ```
+
+`partition_footer_sizes` (one entry per readable `data.parquet` year) and
+`footer_size` (non-partitioned user files) give the byte length of each
+file's footer metadata, so browser readers fetch exactly the footer instead
+of the trailing 512 KB tail window. They are omitted when the file is
+missing or not a plain Parquet file.
 
 `date_range` is the merged `change_date` min/max read from each year's
 `data.parquet` footer (column statistics), so date pickers can bound their

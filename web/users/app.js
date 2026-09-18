@@ -164,7 +164,7 @@ async function search(manifest) {
   try {
     const repDataset = manifest.datasets.user_reputation
     const { rows: reps, stats } = repDataset
-      ? await queryReputationByUsername(BASE_URL, repDataset.path, name)
+      ? await queryReputationByUsername(BASE_URL, repDataset.path, name, repDataset.footer_size)
       : { rows: [], stats: {} }
     if (reps.length === 0) {
       profileEl.innerHTML = ''
@@ -176,7 +176,8 @@ async function search(manifest) {
     }
 
     const uids = [...new Set(reps.map((p) => p.uid))]
-    const indicators = await queryIndicators(BASE_URL, manifest.datasets.user_indicators.path, uids)
+    const indicatorsDataset = manifest.datasets.user_indicators
+    const indicators = await queryIndicators(BASE_URL, indicatorsDataset.path, uids, indicatorsDataset.footer_size)
     const scores = computeScores(reps, indicators, stats)
 
     renderProfile(name, scores)

@@ -67,19 +67,23 @@ async function fetchParquet(baseUrl, path) {
   }
 }
 
-async function queryRows(baseUrl, path, filter, columns) {
+async function queryRows(baseUrl, path, filter, columns, footerSize) {
   const file = await fetchParquet(baseUrl, path)
   if (!file) return []
-  return parquetQuery({ file, compressors, filter, columns })
+  if (!footerSize) return parquetQuery({ file, compressors, filter, columns })
+  // footer_size (from the manifest) points exactly at the parquet footer, so
+  // the initial fetch reads just those bytes instead of the 512 KB tail
+  // window hyparquet uses by default.
+  const metadata = await parquetMetadataAsync(file, { initialFetchSize: footerSize + 8 })
+  return parquetQuery({ file, compressors, filter, columns, metadata })
 }
 
 // Dataset-wide aspect stats (contributors active on an aspect and its largest
 // per-user total) are the same value for every row, so the pipeline writes
 // them once as Parquet file-level key_value_metadata (<aspect>_active/_max)
-// instead of 30 repeated columns. Read from the footer of the same buffer the
-// query uses.
-async function readAspectStats(file) {
-  const metadata = await parquetMetadataAsync(file)
+// instead of 30 repeated columns. Read from the metadata the query already
+// parsed, so the footer is fetched a single time.
+function readAspectStats(metadata) {
   const kv = new Map((metadata.key_value_metadata ?? []).map((e) => [e.key, e.value]))
   const stats = {}
   for (const key of ASPECT_KEYS) {
@@ -96,11 +100,13 @@ async function readAspectStats(file) {
 // reputation and indicator totals -- plus the dataset-wide active/max stats
 // read from the file footer. uid and the day columns are small integers
 // (int64/uint16), so Number() conversion is lossless.
-export async function queryReputationByUsername(baseUrl, path, username) {
+export async function queryReputationByUsername(baseUrl, path, username, footerSize) {
   const file = await fetchParquet(baseUrl, path)
   if (!file) return { rows: [], stats: {} }
-  const stats = await readAspectStats(file)
-  const rows = await parquetQuery({ file, compressors, filter: { username: { $eq: username } } })
+  const metadata = await parquetMetadataAsync(
+    file, footerSize ? { initialFetchSize: footerSize + 8 } : undefined)
+  const stats = readAspectStats(metadata)
+  const rows = await parquetQuery({ file, compressors, filter: { username: { $eq: username } }, metadata })
   return {
     rows: rows.map((row) => {
       const counters = {}
@@ -120,14 +126,14 @@ export async function queryReputationByUsername(baseUrl, path, username) {
 // uid-sorted file: a [min, max] range filter prunes pages, and the exact
 // uid set is applied client-side (the same pattern the changes viewer uses
 // for its non-contiguous H3 cell set). Used for the per-day timeline only.
-export async function queryIndicators(baseUrl, path, uids) {
+export async function queryIndicators(baseUrl, path, uids, footerSize) {
   if (uids.length === 0) return []
   const minUid = Math.min(...uids)
   const maxUid = Math.max(...uids)
   const uidSet = new Set(uids)
   // The indicator file holds exactly the timeline's 9 columns (uid,
   // change_date and the seven day counters), so no projection is needed.
-  const rows = await queryRows(baseUrl, path, { uid: { $gte: minUid, $lte: maxUid } })
+  const rows = await queryRows(baseUrl, path, { uid: { $gte: minUid, $lte: maxUid } }, undefined, footerSize)
   return rows.filter((row) => uidSet.has(Number(row.uid)))
 }
 
