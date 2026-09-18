@@ -211,6 +211,7 @@ private:
 // One streaming scan + finalize of the stage data. See user_indicators.cpp.
 void run_scan(const std::string& input_path, const std::string& stage_dir);
 
-void run_finalize(const std::string& stage_dir, const std::string& indicators_path);
+void run_finalize(const std::string& stage_dir, const std::string& indicators_path,
+                  int64_t user_group_rows);
 
 }  // namespace user_indicators

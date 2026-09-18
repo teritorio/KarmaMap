@@ -25,6 +25,8 @@ void print_usage(const char* argv0) {
         << "                         dataset (default: 10000); smaller row groups keep\n"
         << "                         h3_cell/change_date min-max compact so range-pruning\n"
         << "                         clients download only the pages they need\n"
+        << "  --user-group-rows      Target rows per Parquet row group of the user-indicator\n"
+        << "                         outputs (default: 1000)\n"
         << "  --user-indicators      Additionally score history per user and per UTC day,\n"
         << "                         writing user_indicators.parquet and\n"
         << "                         user_reputation.parquet (non-partitioned single\n"
@@ -62,6 +64,12 @@ bool parse_args(int argc, char** argv, Options* opts) {
                 throw std::runtime_error("--change-group-rows must be at least 1000");
             }
             opts->change_group_rows = rows;
+        } else if (arg == "--user-group-rows") {
+            const long long rows = std::stoll(next_value("--user-group-rows"));
+            if (rows < 1'000) {
+                throw std::runtime_error("--user-group-rows must be at least 1000");
+            }
+            opts->user_group_rows = rows;
         } else if (arg == "--pass") {
             std::string v = next_value("--pass");
             opts->run_node_pass = (v == "1" || v == "all");

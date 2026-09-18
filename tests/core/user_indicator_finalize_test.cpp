@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "options.hpp"
 #include "test_helpers.hpp"
 #include "user_indicators.hpp"
 
@@ -208,7 +209,7 @@ TEST(UserIndicatorFinalize, ConcatenatesSortsAndDerives) {
                     {12, "", 3000, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0},
                 });
 
-    user_indicators::run_finalize(stage, indicators);
+    user_indicators::run_finalize(stage, indicators, kDefaultUserGroupRows);
 
     EXPECT_FALSE(std::filesystem::exists(stage));
     EXPECT_TRUE(std::filesystem::exists(indicators));
@@ -253,13 +254,13 @@ TEST(UserIndicatorFinalize, NoStageIsNoOp) {
     TempDir dir;
     const std::string indicators = dir.join("user_indicators.parquet");
 
-    EXPECT_NO_THROW(user_indicators::run_finalize(dir.join("nope"), indicators));
+    EXPECT_NO_THROW(user_indicators::run_finalize(dir.join("nope"), indicators, kDefaultUserGroupRows));
     EXPECT_FALSE(std::filesystem::exists(indicators));
 
     // An empty stage directory is equally a no-op.
     const std::string empty_stage = dir.join("empty_stage");
     std::filesystem::create_directories(empty_stage);
-    EXPECT_NO_THROW(user_indicators::run_finalize(empty_stage, indicators));
+    EXPECT_NO_THROW(user_indicators::run_finalize(empty_stage, indicators, kDefaultUserGroupRows));
     EXPECT_FALSE(std::filesystem::exists(indicators));
 }
 
