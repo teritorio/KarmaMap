@@ -40,7 +40,7 @@ alone. The manifest is rebuilt at the end of every run.
 | Deleted way with a previously known geometry | Counted on the last known geometry |
 | Deleted way with no previously known geometry | Skipped |
 | Visible way with no nodes | Skipped |
-| Relations | Out of scope for the change-counting passes; the `--user-indicators` pass counts relation creations only |
+| Relations | Out of scope for the change-counting passes; the `--user-indicators` pass counts relation created/modified/deleted in a day's activity (relations feed the reputation only via creations) |
 | Node cells of a way | Each distinct node cell counted once per way version |
 | Time zone | Strict UTC |
 | Source file ordering | Assumed sorted by `(id, version)` ascending, as documented for OSM full-history files |
@@ -144,6 +144,6 @@ caps — no ranking or percentile math runs in the browser.
 Only the per-day activity timeline is then read from
 `user_indicators.parquet`: a `uid` `[min, max]` range filter prunes the
 uid-sorted file to the pages holding that user, with exact membership kept
-client-side. The day counts add `relation_created` to the six node/way change
-counters; the per-uid edit total stays node/way-only (relations are
-reputation-only).
+client-side. Each day's `count` column already totals the six node/way change
+counters plus the three relation counters; the per-uid edit total stays
+node/way-only (relations are reputation-only).

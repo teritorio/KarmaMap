@@ -3,14 +3,16 @@
 // User-indicator computation: an optional, H3-independent mode that scores
 // the OSM full history per contributing user and per UTC day. Two outputs:
 //
-//   user_indicators.parquet  per (uid, change_date) activity counters
-//                            (uid, change_date, the six node/way change
-//                            counters and relation_created; the per-day
-//                            tag_* counters are aggregated in finalize and
-//                            surface only as reputation totals below)
+//   user_indicators.parquet  per (uid, change_date) activity counter
+//                            (uid, change_date, count = the six node/way
+//                            change counters + relation_created +
+//                            relation_modified + relation_deleted; the
+//                            per-day tag_* counters are aggregated in
+//                            finalize and surface only as reputation
+//                            totals below)
 //   user_reputation.parquet  per-uid reputation + full indicator totals
 //                            (uid, username, first_seen_day, reputation,
-//                             19 counter totals, per-aspect pct;
+//                             21 counter totals, per-aspect pct;
 //                             active/max in file metadata)
 //
 // Both are non-partitioned, with user_indicators sorted by (uid,
@@ -25,10 +27,12 @@
 // every event is attributed to the editing (uid, day). No changeset
 // metadata is required.
 //
-// Relations contribute only a created counter (record_relation_created).
-// Following the OSMPatrol model (Neis, Goetz & Zipf 2012), the per-user
-// reputation is built from the objects a contributor created. Relation
-// modifies/deletes are therefore not counted.
+// Relations obey the same node/way classification (visible version 1 =
+// created, visible later versions = modified, invisible = deleted). Following
+// the OSMPatrol model (Neis, Goetz & Zipf 2012), the per-user reputation is
+// built from the objects a contributor created, so relation modifies/deletes
+// (and the node/way ones) feed only the per-day activity count, never the
+// reputation.
 //
 // The reputation's tag aspect counts the "Top12" most-used tags (up to 4
 // points each, paper sec. 4) on created objects, one counter per tag (see
@@ -49,7 +53,7 @@ namespace user_indicators {
 
 constexpr size_t kFlushThreshold = 1'000'000;  // accumulator rows per stage flush
 
-enum class ObjectKind { Node, Way };
+enum class ObjectKind { Node, Way, Relation };
 
 // Per-(uid, change_date) counters. The tag_* counters mirror the Top12 tag
 // key order in kTop12TagKeys; see apply_created_tags() and kCounters.
@@ -61,6 +65,8 @@ struct DayRow {
     uint32_t way_modified = 0;
     uint32_t way_deleted = 0;
     uint32_t relation_created = 0;
+    uint32_t relation_modified = 0;
+    uint32_t relation_deleted = 0;
     uint32_t tag_amenity = 0;
     uint32_t tag_boundary = 0;
     uint32_t tag_building = 0;
@@ -92,8 +98,8 @@ struct CounterSpec {
     uint32_t DayRow::* member;
 };
 
-// 6 node/way change counters + relation_created + kTagCount tag counters.
-constexpr size_t kCounterCount = 7 + kTagCount;
+// 6 node/way change counters + 3 relation counters + kTagCount tag counters.
+constexpr size_t kCounterCount = 9 + kTagCount;
 
 constexpr std::array<CounterSpec, kCounterCount> kCounters = {{
     {"node_created",     &DayRow::node_created},
@@ -103,6 +109,8 @@ constexpr std::array<CounterSpec, kCounterCount> kCounters = {{
     {"way_modified",     &DayRow::way_modified},
     {"way_deleted",      &DayRow::way_deleted},
     {"relation_created", &DayRow::relation_created},
+    {"relation_modified",&DayRow::relation_modified},
+    {"relation_deleted", &DayRow::relation_deleted},
     {"tag_amenity",      &DayRow::tag_amenity},
     {"tag_boundary",     &DayRow::tag_boundary},
     {"tag_building",     &DayRow::tag_building},
@@ -151,39 +159,40 @@ public:
         if (e.username.empty()) e.username = username;
         DayRow& r = e.row;
 
-        if (!visible) {
-            if (kind == ObjectKind::Node) {
-                r.node_deleted++;
-            } else {
-                r.way_deleted++;
-            }
-        } else if (version == 1) {
-            if (kind == ObjectKind::Node) {
-                r.node_created++;
-            } else {
-                r.way_created++;
-            }
-            // Reputation's tag aspect counts the Top12 tags used during the
-            // creation only (paper sec. 4).
-            apply_created_tags(r, created_tag_bits);
-        } else {
-            if (kind == ObjectKind::Node) {
-                r.node_modified++;
-            } else {
-                r.way_modified++;
-            }
+        switch (kind) {
+            case ObjectKind::Node:
+                if (!visible) {
+                    r.node_deleted++;
+                } else if (version == 1) {
+                    r.node_created++;
+                    apply_created_tags(r, created_tag_bits);
+                } else {
+                    r.node_modified++;
+                }
+                break;
+            case ObjectKind::Way:
+                if (!visible) {
+                    r.way_deleted++;
+                } else if (version == 1) {
+                    r.way_created++;
+                    apply_created_tags(r, created_tag_bits);
+                } else {
+                    r.way_modified++;
+                }
+                break;
+            case ObjectKind::Relation:
+                if (!visible) {
+                    r.relation_deleted++;
+                } else if (version == 1) {
+                    r.relation_created++;
+                    // Reputation's tag aspect counts the Top12 tags used
+                    // during the creation only (paper sec. 4).
+                    apply_created_tags(r, created_tag_bits);
+                } else {
+                    r.relation_modified++;
+                }
+                break;
         }
-    }
-
-    // Isolated relation-created accounting: relations arrive as their own
-    // contiguous runs; only visible v1 versions count.
-    void record_relation_created(int64_t uid, const std::string& username, uint16_t day,
-                                 uint32_t created_tag_bits = 0) {
-        UserDayEntry& e = days_[UserDayKey{uid, day}];
-        if (e.username.empty()) e.username = username;
-        DayRow& r = e.row;
-        r.relation_created++;
-        apply_created_tags(r, created_tag_bits);
     }
 
     const std::unordered_map<UserDayKey, UserDayEntry, UserDayKeyHash>& days() const {

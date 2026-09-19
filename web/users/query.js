@@ -6,11 +6,12 @@
 // prunes straight to the matching pages); the reputation and per-uid counter
 // totals come from the same row. Only the per-day activity timeline still
 // comes from user_indicators.parquet (uid-sorted, so a range filter prunes
-// pages, with exact membership kept client-side); its day counts add
-// relation creations to the six node/way change counters. The per-aspect
-// `points` are recomputed from the stored `pct` and the paper's constant
-// caps, and the dataset-wide `active`/`max` stats are read once from the
-// file's key_value_metadata footer instead of repeated per-row columns. No
+// pages, with exact membership kept client-side); the timeline's per-day
+// counts are read from the single `count` column (the day's total activity:
+// the six node/way change counters plus the three relation counters). The
+// per-aspect `points` are recomputed from the stored `pct` and the paper's
+// constant caps, and the dataset-wide `active`/`max` stats are read once from
+// the file's key_value_metadata footer instead of repeated per-row columns. No
 // ranking or percentile math runs in the browser.
 
 import { parquetQuery, asyncBufferFromUrl, parquetMetadataAsync } from 'hyparquet'
@@ -131,8 +132,8 @@ export async function queryIndicators(baseUrl, path, uids, footerSize) {
   const minUid = Math.min(...uids)
   const maxUid = Math.max(...uids)
   const uidSet = new Set(uids)
-  // The indicator file holds exactly the timeline's 9 columns (uid,
-  // change_date and the seven day counters), so no projection is needed.
+  // The indicator file holds exactly the timeline's 3 columns (uid,
+  // change_date, count), so no projection is needed.
   const rows = await queryRows(baseUrl, path, { uid: { $gte: minUid, $lte: maxUid } }, undefined, footerSize)
   return rows.filter((row) => uidSet.has(Number(row.uid)))
 }
@@ -175,7 +176,7 @@ function computeReputation(row, stats) {
   }
 }
 
-// Totals from the exact user_reputation.parquet row (all 19 indicator sums
+// Totals from the exact user_reputation.parquet row (all 21 indicator sums
 // and the identity columns are stored per uid by the pipeline), plus the
 // per-day timeline from user_indicators.parquet and the activity-by-day edit
 // counts that feed the history graph.
@@ -185,7 +186,7 @@ export function computeScores(reputationRows, indicatorRows, stats) {
 
   const byDay = new Map()
   for (const row of indicatorRows) {
-    const dayCount = DAY_COUNTERS.reduce((sum, k) => sum + Number(row[k] ?? 0), 0)
+    const dayCount = Number(row.count ?? 0)
     const day = dayKey(row.change_date)
     byDay.set(day, (byDay.get(day) ?? 0) + dayCount)
   }

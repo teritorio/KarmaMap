@@ -134,17 +134,15 @@ public:
                     created_tag_bits(way));
     }
 
-    // Relations feed only the created counter: the OSMPatrol reputation is
-    // built from created objects, so visible v1 relations go through
-    // record_relation_created() instead of the node/way counters.
+    // Relations feed the same per-(uid, day) counters as nodes/ways, so
+    // created/modified/deleted changes all contribute to a day's activity
+    // total. Only the created counter and its tags carry reputation value.
     void relation(const osmium::Relation& relation) {
-        if (relation.visible() && relation.version() == 1) {
-            stats_.record_relation_created(static_cast<int64_t>(relation.uid()),
-                                           object_user(relation),
-                                           version_day(relation.timestamp()),
-                                           created_tag_bits(relation));
-            if (stats_.size() >= kFlushThreshold) flush_stage();
-        }
+        add_version(static_cast<int64_t>(relation.uid()), object_user(relation),
+                    version_day(relation.timestamp()), relation.visible(),
+                    static_cast<uint32_t>(relation.version()), ObjectKind::Relation,
+                    created_tag_bits(relation));
+        if (stats_.size() >= kFlushThreshold) flush_stage();
     }
 
     void finish() { flush_stage(); }
@@ -230,11 +228,12 @@ private:
 // Finalize helpers
 // ---------------------------------------------------------------------------
 
-// Live per-day output counters: the six node/way change counters plus
-// relation_created. The per-day tag_* counters are not consumed by the users
-// viewer (the reputation's tag aspects come from the per-user totals below),
-// so they are aggregated internally but never written to the indicator file.
-constexpr size_t kLiveCounterCount = 7;
+// Live per-day output counters: the six node/way change counters plus the
+// three relation counters (created, modified, deleted). The per-day tag_*
+// counters are not consumed by the users viewer (the reputation's tag aspects
+// come from the per-user totals below), so they are aggregated internally but
+// never written to the indicator file.
+constexpr size_t kLiveCounterCount = 9;
 
 // Concatenates the (single-chunk) columns of one stage table into `columns`.
 void append_stage_columns(const std::shared_ptr<arrow::Table>& table,
@@ -354,7 +353,7 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
     // indicator rows.
     arrow::Int64Builder ind_uid_builder;
     arrow::UInt16Builder ind_day_builder;
-    std::array<arrow::UInt32Builder, kCounterCount> ind_counter_builders;
+    arrow::UInt32Builder ind_count_builder;
 
     const int64_t n = combined->num_rows();
     for (int64_t i = 0; i < n; ++i) {
@@ -367,28 +366,25 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
             day_row.*kCounters[c].member = arr->Value(i);
         }
 
+        uint32_t count = 0;
+        for (size_t c = 0; c < kLiveCounterCount; ++c) count += day_row.*kCounters[c].member;
+
         append_checked(ind_uid_builder, uid);
         append_checked(ind_day_builder, day);
-        for (size_t c = 0; c < kCounterCount; ++c) {
-            append_checked(ind_counter_builders[c], day_row.*kCounters[c].member);
-        }
+        append_checked(ind_count_builder, count);
     }
 
-    std::shared_ptr<arrow::Array> ind_uid, ind_day;
-    std::array<std::shared_ptr<arrow::Array>, kCounterCount> ind_counters;
+    std::shared_ptr<arrow::Array> ind_uid, ind_day, ind_count;
     finish_checked(ind_uid_builder, &ind_uid);
     finish_checked(ind_day_builder, &ind_day);
-    for (size_t c = 0; c < kCounterCount; ++c) finish_checked(ind_counter_builders[c], &ind_counters[c]);
+    finish_checked(ind_count_builder, &ind_count);
 
     std::vector<std::shared_ptr<arrow::Field>> indicator_fields = {
         arrow::field("uid", arrow::int64(), false),
         arrow::field("change_date", arrow::uint16(), false),
+        arrow::field("count", arrow::uint32(), false),
     };
-    std::vector<std::shared_ptr<arrow::Array>> indicator_columns = {ind_uid, ind_day};
-    for (size_t c = 0; c < kLiveCounterCount; ++c) {
-        indicator_fields.push_back(arrow::field(kCounters[c].name, arrow::uint32(), false));
-        indicator_columns.push_back(ind_counters[c]);
-    }
+    std::vector<std::shared_ptr<arrow::Array>> indicator_columns = {ind_uid, ind_day, ind_count};
     auto indicator_schema = arrow::schema(indicator_fields);
     // The indicator rows were appended in (uid, change_date) order while
     // walking the sorted combined table, so no re-sort is needed.
@@ -398,7 +394,7 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
     arrow_table_io::write_table(indicators_tmp, indicator_table, user_group_rows);
     std::filesystem::rename(indicators_tmp, indicators_path);
 
-    // Per-uid sums of all 19 indicator counters, in the (uid) order of the
+    // Per-uid sums of all 21 indicator counters, in the (uid) order of the
     // sorted indicator table. The three created-object aspects are bound to
     // their kCounters columns by name; the tag columns are always the
     // trailing kTagCount entries, in kTop12TagKeys order, so a schema change
@@ -454,7 +450,7 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
             group_username = user_array->GetView(i);
             for (size_t c = 0; c < kCounterCount; ++c) {
                 const auto* arr =
-                    static_cast<const arrow::UInt32Array*>(ind_counters[c].get());
+                    static_cast<const arrow::UInt32Array*>(counter_arrays[c].get());
                 acc[c] += arr->Value(i);
             }
         }
@@ -481,7 +477,7 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
 
     // Wide one-row-per-uid table: uid, current username (identity, so the
     // viewers can filter by exact username), the user's first-seen day,
-    // reputation, the 19 indicator totals, and the per-aspect percentile
+    // reputation, the 21 indicator totals, and the per-aspect percentile
     // column, sorted by username (uid tie-break) so an exact username filter
     // prunes to the matching pages. The dataset-wide active/max stats are
     // written once as file key_value_metadata (_active and _max keys) instead

@@ -33,7 +33,7 @@ void finish_ok(B& builder, std::shared_ptr<arrow::Array>* out) {
 }
 
 // Writes one stage file with the exact schema the scan produces: uid,
-// username, change_date and the 19 uint32 counters.
+// username, change_date and the 21 uint32 counters.
 void write_stage_named(const std::string& path,
                        const std::vector<std::tuple<int64_t, std::string, uint16_t,
                                                       std::vector<uint32_t>>>& rows) {
@@ -74,6 +74,8 @@ void write_stage_named(const std::string& path,
         arrow::field("way_modified", arrow::uint32(), false),
         arrow::field("way_deleted", arrow::uint32(), false),
         arrow::field("relation_created", arrow::uint32(), false),
+        arrow::field("relation_modified", arrow::uint32(), false),
+        arrow::field("relation_deleted", arrow::uint32(), false),
         arrow::field("tag_amenity", arrow::uint32(), false),
         arrow::field("tag_boundary", arrow::uint32(), false),
         arrow::field("tag_building", arrow::uint32(), false),
@@ -112,12 +114,13 @@ TEST(ReputationFile, WritesExactWidePerUidTable) {
     std::filesystem::create_directories(stage);
 
     // Counter indices follow the stage schema: 0 node_created, 3 way_created,
-    // 6 relation_created, 9 tag_building, 10 tag_highway.
+    // 6 relation_created, 11 tag_building, 12 tag_highway (7 and 8 are the
+    // relation_modified/deleted counters).
     const uint32_t node_created = 0;
     const uint32_t way_created = 3;
     const uint32_t relation_created = 6;
-    const uint32_t tag_building = 9;
-    const uint32_t tag_highway = 10;
+    const uint32_t tag_building = 11;
+    const uint32_t tag_highway = 12;
     std::vector<uint32_t> c(user_indicators::kCounterCount, 0);
     auto row = [&](std::initializer_list<std::pair<uint32_t, uint32_t>> set) {
         auto r = c;
@@ -147,7 +150,7 @@ TEST(ReputationFile, WritesExactWidePerUidTable) {
     auto combined_result = read_parquet(rep)->CombineChunks();
     ASSERT_TRUE(combined_result.ok());
     const auto& t = *combined_result;
-    ASSERT_EQ(t->num_columns(), 38);
+    ASSERT_EQ(t->num_columns(), 40);
     ASSERT_EQ(t->num_rows(), 4);
 
     const auto col = [&](const std::string& name) -> std::shared_ptr<arrow::Array> {

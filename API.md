@@ -102,9 +102,7 @@ are two non-partitioned single files.
   |---|---|---|
   | `uid` | `int64` | OSM user id |
   | `change_date` | `uint16` | UTC day (same encoding as `changes/`) |
-  | `node_created`, `node_modified`, `node_deleted` | `uint32` | Node change counters |
-  | `way_created`, `way_modified`, `way_deleted` | `uint32` | Way change counters |
-  | `relation_created` | `uint32` | Relation creations (reputation only; part of a day's activity total) |
+  | `count` | `uint32` | Total activity that day: the six node/way change counters plus the three relation counters (created, modified, deleted) |
 
   The per-day `tag_*` counters are aggregated during finalize and only their
   per-user sums are written (in `user_reputation.parquet`), so they never
@@ -120,7 +118,7 @@ are two non-partitioned single files.
   | `username` | `utf8` | The user's current username (identity, for direct lookup) |
   | `first_seen_day` | `uint16` | Day the user's first watched change appears |
   | `reputation` | `uint8` | Exact current score 0-100 (sum of the per-aspect points) |
-  | `node_created` … `tag_waterway` | `uint32` | Per-user sums of the 19 indicator counters |
+  | `node_created` … `tag_waterway` | `uint32` | Per-user sums of the 21 indicator counters |
 
   Then, for each aspect `node`, `way`, `relation` and `tag_<key>` (each
   Top12 tag):
@@ -129,7 +127,7 @@ are two non-partitioned single files.
   |---|---|---|
   | `<aspect>_pct` | `float64` | Percentile rank `100 · P` |
 
-  (38 columns total.) Every aspect is computed exactly in C++: `P` is the
+  (40 columns total.) Every aspect is computed exactly in C++: `P` is the
   user's rank among the contributors active on that aspect (raw count > 0),
   with equal totals sharing the same rank, a sole contributor at the full
   cap `cap` (=20/20/12 and 4 per tag) and a zero total at 0; nothing is
@@ -143,20 +141,18 @@ are two non-partitioned single files.
 
 ### Derivation notes
 
-- Every version event is attributed to the editing `(uid, day)`; day totals
-  are sums of the six node/way change counters; a day's activity totals add
-  `relation_created` to that sum.
-- `relation_created` is counted for visible version-1 relations only.
-  Relation creations feed the OSMPatrol reputation (built from *created*
-  objects only); modifies/deletes are not counted, and relations are
-  excluded from the node/way day-total.
+- Every version event is attributed to the editing `(uid, day)`. The stored
+  per-day `count` is the total activity that day: the six node/way change
+  counters plus the three relation counters (created, modified, deleted).
+- Only visible version-1 relation creations feed the OSMPatrol reputation
+  (built from *created* objects only); relation modifies/deletes add to a
+  day's `count` but carry no reputation value.
 - The `tag_*` counters mirror the paper's "Top12" most-used tags, one counter
   per tag (12 × 4 = 48 reputation points), counted only at object creation.
   The paper's `address` key is replaced by `place`, as OSM address tagging
   uses the `addr:` prefix. Like relations, tag usage is reputation-only and
   excluded from the day totals, so only the per-user sums are stored (in
-  `user_reputation.parquet`); the per-day file keeps just the change counters
-  and `relation_created`.
+  `user_reputation.parquet`); the per-day file keeps just `count`.
 
 ### Querying with DuckDB
 
@@ -165,9 +161,8 @@ Join the files on `uid` to examine users:
 ```sql
 SELECT r.username,
        DATE '1970-01-01' + i.change_date AS change_date,
-       i.node_created + i.node_modified + i.node_deleted +
-       i.way_created + i.way_modified + i.way_deleted AS edits,
-       i.relation_created
+       i.count AS edits,
+       r.relation_created
 FROM read_parquet('output-dir/user_reputation.parquet') r
 JOIN read_parquet('output-dir/user_indicators.parquet') i USING (uid)
 ORDER BY edits DESC

@@ -43,10 +43,10 @@ void write_data_parquet(const std::string& path,
     arrow::UInt32Builder node_builder;
     arrow::UInt32Builder way_builder;
     for (const auto& [day, count] : rows) {
-        cell_builder.Append(0);
-        date_builder.Append(day);
-        node_builder.Append(count);
-        way_builder.Append(0);
+        ASSERT_TRUE(cell_builder.Append(0).ok());
+        ASSERT_TRUE(date_builder.Append(day).ok());
+        ASSERT_TRUE(node_builder.Append(count).ok());
+        ASSERT_TRUE(way_builder.Append(0).ok());
     }
 
     std::shared_ptr<arrow::Array> cells, dates, nodes, ways;

@@ -37,6 +37,8 @@ struct StageRow {
     uint32_t way_modified;
     uint32_t way_deleted;
     uint32_t relation_created;
+    uint32_t relation_modified;
+    uint32_t relation_deleted;
     uint32_t tag_amenity;
     uint32_t tag_boundary;
     uint32_t tag_building;
@@ -68,6 +70,8 @@ void write_stage(const std::string& path, const std::vector<StageRow>& rows) {
         &StageRow::node_created, &StageRow::node_modified, &StageRow::node_deleted,
         &StageRow::way_created,  &StageRow::way_modified,  &StageRow::way_deleted,
         &StageRow::relation_created,
+        &StageRow::relation_modified,
+        &StageRow::relation_deleted,
         &StageRow::tag_amenity,   &StageRow::tag_boundary,  &StageRow::tag_building,
         &StageRow::tag_highway,   &StageRow::tag_landuse,   &StageRow::tag_leisure,
         &StageRow::tag_name,      &StageRow::tag_natural,   &StageRow::tag_place,
@@ -103,6 +107,8 @@ void write_stage(const std::string& path, const std::vector<StageRow>& rows) {
         arrow::field("way_modified", arrow::uint32(), false),
         arrow::field("way_deleted", arrow::uint32(), false),
         arrow::field("relation_created", arrow::uint32(), false),
+        arrow::field("relation_modified", arrow::uint32(), false),
+        arrow::field("relation_deleted", arrow::uint32(), false),
         arrow::field("tag_amenity", arrow::uint32(), false),
         arrow::field("tag_boundary", arrow::uint32(), false),
         arrow::field("tag_building", arrow::uint32(), false),
@@ -127,10 +133,7 @@ void write_stage(const std::string& path, const std::vector<StageRow>& rows) {
 struct IndicatorRows {
     std::vector<int64_t> uid;
     std::vector<uint16_t> day;
-    std::vector<uint32_t> node_created;
-    std::vector<uint32_t> node_modified;
-    std::vector<uint32_t> way_created;
-    std::vector<uint32_t> relation_created;
+    std::vector<uint32_t> count;
 };
 
 IndicatorRows read_indicators(const std::string& path) {
@@ -138,28 +141,17 @@ IndicatorRows read_indicators(const std::string& path) {
     EXPECT_TRUE(combined_result.ok()) << combined_result.status();
     if (!combined_result.ok()) return {};
     const auto& t = *combined_result;
-    // uid, change_date and the seven live per-day counters: the six node/way
-    // change counters and relation_created (the tag_* counters are aggregated
-    // in finalize and surface only in user_reputation.parquet).
-    EXPECT_EQ(t->num_columns(), 9);
+    // uid, change_date and the day's total activity count: the six node/way
+    // change counters plus the three relation counters.
+    EXPECT_EQ(t->num_columns(), 3);
     IndicatorRows out;
     const auto* uid = static_cast<const arrow::Int64Array*>(t->column(0)->chunk(0).get());
     const auto* day = static_cast<const arrow::UInt16Array*>(t->column(1)->chunk(0).get());
-    const auto* node_created =
-        static_cast<const arrow::UInt32Array*>(t->column(2)->chunk(0).get());
-    const auto* node_modified =
-        static_cast<const arrow::UInt32Array*>(t->column(3)->chunk(0).get());
-    const auto* way_created =
-        static_cast<const arrow::UInt32Array*>(t->column(5)->chunk(0).get());
-    const auto* relation_created =
-        static_cast<const arrow::UInt32Array*>(t->column(8)->chunk(0).get());
+    const auto* count = static_cast<const arrow::UInt32Array*>(t->column(2)->chunk(0).get());
     for (int64_t i = 0; i < t->num_rows(); ++i) {
         out.uid.push_back(uid->Value(i));
         out.day.push_back(day->Value(i));
-        out.node_created.push_back(node_created->Value(i));
-        out.node_modified.push_back(node_modified->Value(i));
-        out.way_created.push_back(way_created->Value(i));
-        out.relation_created.push_back(relation_created->Value(i));
+        out.count.push_back(count->Value(i));
     }
     return out;
 }
@@ -198,15 +190,15 @@ TEST(UserIndicatorFinalize, ConcatenatesSortsAndDerives) {
     // Unsorted on purpose: uid 11's rows precede uid 10's in this file.
     write_stage(stage + "/stage_00000.parquet",
                 {
-                    {11, "bob", 2000, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-                    {10, "alice", 1005, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-                    {10, "alice", 1000, 5, 0, 0, 0, 0, 0, 3, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                    {11, "bob", 2000, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                    {10, "alice", 1005, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                    {10, "alice", 1000, 5, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0},
                 });
     // Second file: exercises multi-file concatenation.
     write_stage(stage + "/stage_00001.parquet",
                 {
-                    {10, "alice_alias", 1050, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
-                    {12, "", 3000, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+                    {10, "alice_alias", 1050, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+                    {12, "", 3000, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0},
                 });
 
     user_indicators::run_finalize(stage, indicators, kDefaultUserGroupRows);
@@ -223,15 +215,13 @@ TEST(UserIndicatorFinalize, ConcatenatesSortsAndDerives) {
         EXPECT_EQ(ind.uid[i], exp_uid[i]) << "row " << i;
         EXPECT_EQ(ind.day[i], exp_day[i]) << "row " << i;
     }
-    // Counters survived per (uid, day).
-    EXPECT_EQ(ind.node_created[0], 5);
-    EXPECT_EQ(ind.node_created[1], 6);
-    EXPECT_EQ(ind.node_created[4], 1);  // uid 12
-    EXPECT_EQ(ind.node_modified[3], 4);  // uid 11 day 2000
-    EXPECT_EQ(ind.way_created[2], 2);    // uid 10 day 1050
-    EXPECT_EQ(ind.relation_created[0], 3);       // uid 10 day 1000
-    EXPECT_EQ(ind.relation_created[1], 0);       // uid 10 day 1005
-    EXPECT_EQ(ind.relation_created[4], 0);       // uid 12
+    // Each day's count sums the live counters that fired: the six node/way
+    // change counters plus the three relation counters.
+    EXPECT_EQ(ind.count[0], 8);  // uid 10 day 1000: 5 node_created + 3 relation_created
+    EXPECT_EQ(ind.count[1], 6);  // uid 10 day 1005: 6 node_created
+    EXPECT_EQ(ind.count[2], 2);  // uid 10 day 1050: 2 way_created
+    EXPECT_EQ(ind.count[3], 4);  // uid 11 day 2000: 4 node_modified
+    EXPECT_EQ(ind.count[4], 1);  // uid 12 day 3000: 1 node_created
 
     const auto rep = read_reputation(dir.join("user_reputation.parquet"));
     // One row per uid, its current username (uid 10's "alice".."alice_alias"

@@ -76,9 +76,9 @@ TEST(UserIndicatorRules, RelationCreatedIsIsolated) {
     UserEventStats s;
     // Relations count only visible v1 versions and never touch the node/way
     // counters.
-    s.record_relation_created(6, "alice", day(100));
-    s.record_relation_created(6, "alice", day(100));
-    s.record_relation_created(6, "alice", day(101));
+    s.add_version(6, "alice", day(100), true, 1, ObjectKind::Relation);
+    s.add_version(6, "alice", day(100), true, 1, ObjectKind::Relation);
+    s.add_version(6, "alice", day(101), true, 1, ObjectKind::Relation);
 
     EXPECT_EQ(row_of(s, 6, day(100)).row.relation_created, 2);
     const auto& r100 = row_of(s, 6, day(100)).row;
@@ -93,7 +93,7 @@ TEST(UserIndicatorRules, RelationCreatedSharesUidDayWithNode) {
     s.add_version(6, "alice", day(100), true, 1, ObjectKind::Node);
     // A relation creation does not disturb the node/way counters already
     // recorded, and shares the (uid, day) entry.
-    s.record_relation_created(6, "alice", day(100));
+    s.add_version(6, "alice", day(100), true, 1, ObjectKind::Relation);
 
     auto r = row_of(s, 6, day(100));
     EXPECT_EQ(r.row.node_created, 1);
@@ -132,8 +132,8 @@ TEST(UserIndicatorRules, TagsIgnoredOnModifyAndDelete) {
 
 TEST(UserIndicatorRules, RelationCreatedTagsAccumulate) {
     UserEventStats s;
-    s.record_relation_created(6, "alice", day(100), 0b110);  // boundary + building
-    s.record_relation_created(6, "alice", day(100), 0b100);  // building again
+    s.add_version(6, "alice", day(100), true, 1, ObjectKind::Relation, 0b110);  // boundary + building
+    s.add_version(6, "alice", day(100), true, 1, ObjectKind::Relation, 0b100);  // building again
 
     auto r = row_of(s, 6, day(100));
     EXPECT_EQ(r.row.relation_created, 2);

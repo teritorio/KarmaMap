@@ -124,7 +124,7 @@ function renderScores(scores) {
   const parts = [
     `<section class="score-group">` +
       `<h3>Activity</h3>` +
-      `<p class="desc">Sum of the six node/way change counters; the activity graph counts relation creations too, but relations score nothing in the reputation.</p>` +
+      `<p class="desc">Sum of the six node/way change counters; the activity graph counts relation changes too, but relations score nothing in the reputation.</p>` +
       `<table class="counter-table">` +
       `<thead><tr><th>Counter</th><th class="value">Value</th><th class="role">Reputation</th></tr></thead>` +
       `<tbody><tr>` +
