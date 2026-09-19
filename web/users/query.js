@@ -25,14 +25,18 @@ function countingFetch(url, options = {}) {
   const start = performance.now()
   return realFetch(url, options).then((resp) => {
     if (!resp.ok) return resp
-    const range = options.headers ? options.headers.Range : undefined
-    const m = typeof range === 'string' ? /bytes=(\d+)-(\d*)/.exec(range) : null
+    const headers = options.headers
+    const range = typeof headers?.get === 'function' ? headers.get('Range') : headers?.Range
+    const req = typeof range === 'string' ? /bytes=(\d+)-(\d*)/.exec(range) : null
+    const cr = resp.headers.get('Content-Range')
+    const res = cr ? /bytes (\d+)-(\d+)\/(\d+)/.exec(cr) : null
     fetchLog.push({
       id: requestId,
       file: String(url).split('?')[0].split('/').pop(),
       range: range ?? '-',
-      start: m ? Number(m[1]) : 0,
-      end: m ? (m[2] ? Number(m[2]) : start + Number(resp.headers.get('Content-Length') ?? 0) - 1) : null,
+      start: res ? Number(res[1]) : (req ? Number(req[1]) : 0),
+      end: res ? Number(res[2]) : null,
+      total: res ? Number(res[3]) : Number(resp.headers.get('Content-Length') ?? 0),
       size: Number(resp.headers.get('Content-Length') ?? 0),
       status: resp.status,
       ms: Math.round(performance.now() - start),
@@ -100,10 +104,28 @@ export function dayKey(changeDate) {
   return new Date(Number(changeDate) * 86400000).toISOString().slice(0, 10)
 }
 
-async function fetchParquet(baseUrl, path) {
+async function probeTotal(url) {
+  const head = await fetch(url, { method: 'HEAD' })
+  const contentLength = Number(head.headers.get('Content-Length') ?? 0)
+  if (head.ok && contentLength > 0) return contentLength
+  const range = await fetch(url, { headers: { Range: 'bytes=0-0' } })
+  const m = /bytes \d+-\d+\/(\d+)/.exec(range.headers.get('Content-Range') ?? '')
+  return m ? Number(m[1]) : 0
+}
+
+async function fetchParquet(baseUrl, path, footerSize) {
   const url = `${baseUrl}/${path}`
   try {
-    return await asyncBufferFromUrl({ url, fetch })
+    if (!footerSize) return await asyncBufferFromUrl({ url, fetch })
+    const totalBytes = await probeTotal(url)
+    if (!totalBytes) return await asyncBufferFromUrl({ url, fetch })
+    return await asyncBufferFromUrl({
+      url,
+      totalBytes,
+      rangeStart: totalBytes - footerSize - 8,
+      rangeEnd: totalBytes - 1,
+      fetch,
+    })
   } catch (err) {
     // A fetch failure means the file isn't there, not a fatal query error.
     console.warn(`Skipping ${url}: ${err.message}`)
@@ -112,7 +134,7 @@ async function fetchParquet(baseUrl, path) {
 }
 
 async function queryRows(baseUrl, path, filter, columns, footerSize) {
-  const file = await fetchParquet(baseUrl, path)
+  const file = await fetchParquet(baseUrl, path, footerSize)
   if (!file) return []
   if (!footerSize) return parquetQuery({ file, compressors, filter, columns, fetch })
   // footer_size (from the manifest) points exactly at the parquet footer, so
@@ -145,7 +167,7 @@ function readAspectStats(metadata) {
 // read from the file footer. uid and the day columns are small integers
 // (int64/uint16), so Number() conversion is lossless.
 export async function queryReputationByUsername(baseUrl, path, username, footerSize) {
-  const file = await fetchParquet(baseUrl, path)
+  const file = await fetchParquet(baseUrl, path, footerSize)
   if (!file) return { rows: [], stats: {} }
   const metadata = await parquetMetadataAsync(
     file, footerSize ? { initialFetchSize: footerSize + 8, fetch } : { fetch })
