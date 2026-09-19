@@ -11,6 +11,7 @@ import { readPermalink, writePermalink } from './permalink.js'
 import {
   queryReputationByUsername, queryIndicators, computeScores,
   dayKey, TAG_COUNTERS, REP_CAPS, REP_FORMULA,
+  enableFetchLogging, resetFetchLog, logFetchDetails,
 } from './query.js'
 import { initHistogram, setHistogramData, setLogScale } from './histogram.js'
 
@@ -159,6 +160,7 @@ async function search(manifest) {
   if (inFlight) return
   inFlight = true
   writePermalink(name)
+  resetFetchLog()
   setStatus(`Looking up user ${name}...`)
 
   try {
@@ -185,6 +187,7 @@ async function search(manifest) {
     renderScores(scores)
     setHistogramData(scores.byDay)
     setStatus(`${name}: reputation ${scores.reputation.value}, ${scores.totalEdits} edits across ${scores.byDay.size} active day${scores.byDay.size === 1 ? '' : 's'}.`)
+    logFetchDetails('users')
   } catch (err) {
     console.error(err)
     setStatus(`Query failed: ${err.message}`)
@@ -195,6 +198,7 @@ async function search(manifest) {
 
 async function main() {
   setStatus('Loading manifest...')
+  enableFetchLogging()
 
   let manifest
   try {

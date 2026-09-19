@@ -16,6 +16,50 @@
 import { parquetQuery, asyncBufferFromUrl, parquetMetadataAsync } from 'hyparquet'
 import { compressors } from 'hyparquet-compressors'
 
+const realFetch = window.fetch.bind(window)
+export const fetchLog = []
+let fetchSeq = 0
+
+function countingFetch(url, options = {}) {
+  const requestId = ++fetchSeq
+  const start = performance.now()
+  return realFetch(url, options).then((resp) => {
+    if (!resp.ok) return resp
+    const range = options.headers ? options.headers.Range : undefined
+    const m = typeof range === 'string' ? /bytes=(\d+)-(\d*)/.exec(range) : null
+    fetchLog.push({
+      id: requestId,
+      file: String(url).split('?')[0].split('/').pop(),
+      range: range ?? '-',
+      start: m ? Number(m[1]) : 0,
+      end: m ? (m[2] ? Number(m[2]) : start + Number(resp.headers.get('Content-Length') ?? 0) - 1) : null,
+      size: Number(resp.headers.get('Content-Length') ?? 0),
+      status: resp.status,
+      ms: Math.round(performance.now() - start),
+    })
+    return resp
+  })
+}
+
+export function enableFetchLogging() {
+  window.fetch = countingFetch
+  return countingFetch
+}
+
+export function resetFetchLog() {
+  fetchLog.length = 0
+}
+
+export function logFetchDetails(label) {
+  if (fetchLog.length === 0) return
+  console.group(`[fetch] ${label}`)
+  console.table(fetchLog)
+  console.log(`[fetch] ${label}: ${fetchLog.length} request(s), ${fetchLog.reduce((sum, r) => sum + r.size, 0)} bytes`)
+  console.groupEnd()
+}
+
+const fetch = enableFetchLogging()
+
 const CHANGE_COUNTERS = [
   'node_created', 'node_modified', 'node_deleted',
   'way_created', 'way_modified', 'way_deleted',
@@ -59,7 +103,7 @@ export function dayKey(changeDate) {
 async function fetchParquet(baseUrl, path) {
   const url = `${baseUrl}/${path}`
   try {
-    return await asyncBufferFromUrl({ url })
+    return await asyncBufferFromUrl({ url, fetch })
   } catch (err) {
     // A fetch failure means the file isn't there, not a fatal query error.
     console.warn(`Skipping ${url}: ${err.message}`)
@@ -70,12 +114,12 @@ async function fetchParquet(baseUrl, path) {
 async function queryRows(baseUrl, path, filter, columns, footerSize) {
   const file = await fetchParquet(baseUrl, path)
   if (!file) return []
-  if (!footerSize) return parquetQuery({ file, compressors, filter, columns })
+  if (!footerSize) return parquetQuery({ file, compressors, filter, columns, fetch })
   // footer_size (from the manifest) points exactly at the parquet footer, so
   // the initial fetch reads just those bytes instead of the 512 KB tail
   // window hyparquet uses by default.
-  const metadata = await parquetMetadataAsync(file, { initialFetchSize: footerSize + 8 })
-  return parquetQuery({ file, compressors, filter, columns, metadata })
+  const metadata = await parquetMetadataAsync(file, { initialFetchSize: footerSize + 8, fetch })
+  return parquetQuery({ file, compressors, filter, columns, metadata, fetch })
 }
 
 // Dataset-wide aspect stats (contributors active on an aspect and its largest
@@ -104,9 +148,9 @@ export async function queryReputationByUsername(baseUrl, path, username, footerS
   const file = await fetchParquet(baseUrl, path)
   if (!file) return { rows: [], stats: {} }
   const metadata = await parquetMetadataAsync(
-    file, footerSize ? { initialFetchSize: footerSize + 8 } : undefined)
+    file, footerSize ? { initialFetchSize: footerSize + 8, fetch } : { fetch })
   const stats = readAspectStats(metadata)
-  const rows = await parquetQuery({ file, compressors, filter: { username: { $eq: username } }, metadata })
+  const rows = await parquetQuery({ file, compressors, filter: { username: { $eq: username } }, metadata, fetch })
   return {
     rows: rows.map((row) => {
       const counters = {}
