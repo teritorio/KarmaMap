@@ -6,7 +6,7 @@
 
 inline constexpr size_t kDefaultWayBatchBytes = 512ULL * 1024 * 1024;
 inline constexpr int64_t kDefaultChangeGroupRows = 10'000;
-inline constexpr int64_t kDefaultUserGroupRows = 1'000;
+inline constexpr int64_t kDefaultUserGroupRows = 10'000;
 
 struct Options {
     std::string input_path;
