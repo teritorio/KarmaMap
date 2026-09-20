@@ -3,15 +3,13 @@
 // exact reputation row and their per-day rows from user_indicators.parquet,
 // and renders the OSMPatrol reputation, raw indicator totals, the profile
 // identity fields and an edit-activity timeline. Same architecture as the
-// changes viewer (page + app + query + histogram + permalink modules), but
-// no spatial component.
+// changes viewer (page + app + query + histogram + permalink modules over the
+// shared data-access lib in web/lib), but no spatial component.
 
-import { loadManifest } from './manifest.js'
+import { loadManifest, dayKey } from '../lib/api.js'
 import { readPermalink, writePermalink } from './permalink.js'
-import {
-  queryReputationByUsername, queryIndicators, computeScores,
-  dayKey, TAG_COUNTERS, REP_CAPS, REP_FORMULA,
-} from './query.js'
+import { queryReputationByUsername, queryIndicators } from './query.js'
+import { computeScores, TAG_COUNTERS, REP_CAPS, REP_FORMULA } from './reputation.js'
 import { initHistogram, setHistogramData, setLogScale } from './histogram.js'
 
 // Data root: the data/ directory one level above the viewer pages.

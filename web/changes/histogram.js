@@ -5,7 +5,7 @@
 // render as gaps on the log axis, flat zero bars on the linear axis).
 
 import * as echarts from 'echarts'
-import { coverageDays } from './manifest.js'
+import { coverageDays } from '../lib/api.js'
 
 let chart = null
 let resizeObserver = null

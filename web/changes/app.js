@@ -1,4 +1,4 @@
-import { loadManifest, coverageDays } from './manifest.js'
+import { loadManifest, coverageDays } from '../lib/api.js'
 import { bboxToCells, cellsMinMaxSet } from './h3-bbox.js'
 import { queryChanges } from './query.js'
 import { initMap, renderResults, getViewportBbox, setResultsLogScale } from './map.js'

@@ -5,8 +5,8 @@
 // filtered to the exact cell set (h3_cell only supports a contiguous
 // range) and aggregated client-side on the `count` column.
 
-import { parquetQuery, parquetMetadataAsync, asyncBufferFromUrl } from 'hyparquet'
-import { compressors } from 'hyparquet-compressors'
+import { queryRows } from '../lib/parquet.js'
+import { epochDay, dayKey } from '../lib/api.js'
 
 function monthsInRange(startMonth, endMonth) {
   const [sy, sm] = startMonth.split('-').map(Number)
@@ -41,48 +41,14 @@ function partitionPath(datasetPath, year) {
 // (1970-01-01), so day-range filtering and day-to-key conversion both work
 // on integer day counts.
 async function queryOneFile(baseUrl, path, footerSize, cellMin, cellMax, startDay, endDay, cellSet) {
-  const url = `${baseUrl}/${path}`
-
-  let file
-  try {
-    file = await asyncBufferFromUrl({ url })
-  } catch (err) {
-    // A fetch failure is "no data for this file", not a fatal query error.
-    console.warn(`Skipping ${url}: ${err.message}`)
-    return []
-  }
-
   const filter = {
     h3_cell: { $gte: cellMin, $lte: cellMax },
     change_date: { $gte: startDay, $lte: endDay },
   }
-
-  // footer_size per partition (from the manifest) points exactly at the
-  // parquet footer, so the initial fetch reads just those bytes instead of
-  // the 512 KB tail window hyparquet uses by default.
-  const rows = footerSize
-    ? await parquetQuery({
-        file,
-        compressors,
-        filter,
-        metadata: await parquetMetadataAsync(file, { initialFetchSize: footerSize + 8 }),
-      })
-    : await parquetQuery({ file, compressors, filter })
-
+  const rows = await queryRows(baseUrl, path, filter, undefined, footerSize)
   // The range filter is a coarse pre-filter; keep only rows in the exact
   // (non-contiguous) bbox cell set.
   return rows.filter((row) => cellSet.has(BigInt(row.h3_cell)))
-}
-
-// UTC day count from a midnight-UTC JS Date, matching the uint16
-// change_date values stored in the Parquet files.
-function epochDay(date) {
-  return Math.floor(date.getTime() / 86400000)
-}
-
-// "YYYY-MM-DD" key for a change_date day-count value.
-function dayKey(changeDate) {
-  return new Date(Number(changeDate) * 86400000).toISOString().slice(0, 10)
 }
 
 // Returns byCell (Map<bigint, count>) and byDay (Map<"YYYY-MM-DD", count>),
