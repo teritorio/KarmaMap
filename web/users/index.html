@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>KarmaMap users</title>
   <link rel="icon" type="image/svg+xml" href="../icon.svg" />
+  <link rel="stylesheet" href="../base.css" />
 
   <script type="importmap">
   {
@@ -17,60 +18,51 @@
   </script>
 
   <style>
-    html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; background: #f3f4f6; }
-    #controls {
-      display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
-      padding: 0.75rem 1rem; background: #1f2937; color: white;
-    }
-    #controls a { color: #93c5fd; text-decoration: none; font-size: 0.9rem; }
-    #controls .divider { width: 1px; height: 28px; background: #9ba7b9; }
-    #controls label { font-size: 0.85rem; }
-    #controls input[type="text"], #controls button {
-      font-size: 0.9rem; padding: 0.3rem 0.5rem;
-    }
-    #status { margin-left: auto; font-size: 0.85rem; opacity: 0.85; }
+    html, body { background: var(--page-bg); }
+    #controls { flex-wrap: wrap; }
+    #status { margin-left: auto; }
 
     #profile {
       display: flex; gap: 1.5rem; flex-wrap: wrap; align-items: center;
-      padding: 0.75rem 1rem; background: #fff; border-bottom: 1px solid #e5e7eb;
+      padding: 0.75rem 1rem; background: var(--surface); border-bottom: 1px solid var(--border);
     }
-    #profile .field strong { display: block; font-size: 0.75rem; color: #6b7280; }
+    #profile .field strong { display: block; font-size: 0.75rem; color: var(--label); }
     #profile .field span { font-size: 0.95rem; }
 
     #score {
       display: flex; flex-direction: column; gap: 0.4rem;
-      padding: 0.75rem 1rem; background: #1f2937; color: #fff;
+      padding: 0.75rem 1rem; background: var(--header-bg); color: var(--surface);
     }
     #score .headline { display: flex; align-items: baseline; gap: 0.6rem; }
     #score .headline .value { font-size: 2rem; font-weight: 700; line-height: 1; }
-    #score .headline .of { font-size: 0.9rem; color: #9ca3af; }
-    #score .note { font-size: 0.75rem; color: #9ca3af; }
+    #score .headline .of { font-size: 0.9rem; color: var(--muted); }
+    #score .note { font-size: 0.75rem; color: var(--muted); }
     .formula {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 0.8rem; color: #e5e7eb; background: #111827; border: 1px solid #374151;
+      font-size: 0.8rem; color: var(--code-fg); background: var(--code-bg); border: 1px solid var(--panel);
       border-radius: 6px; padding: 0.45rem 0.6rem; line-height: 1.5;
     }
-    .formula-note { font-size: 0.7rem; color: #9ca3af; }
+    .formula-note { font-size: 0.7rem; color: var(--muted); }
 
     #scores {
       display: flex; flex-direction: column; gap: 1rem; padding: 1rem 1rem 0;
     }
-    .score-group h3 { font-size: 0.9rem; margin: 0 0 0.2rem; color: #374151; }
-    .score-group > .desc { font-size: 0.75rem; color: #6b7280; margin: 0 0 0.6rem; }
+    .score-group h3 { font-size: 0.9rem; margin: 0 0 0.2rem; color: var(--panel); }
+    .score-group > .desc { font-size: 0.75rem; color: var(--label); margin: 0 0 0.6rem; }
     .counter-table {
-      width: 100%; border-collapse: collapse; background: #fff;
-      border: 1px solid #e5e7eb; border-radius: 6px; overflow: hidden;
+      width: 100%; border-collapse: collapse; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
     }
     .counter-table th {
       text-align: left; font-size: 0.7rem; text-transform: uppercase;
-      color: #6b7280; padding: 0.4rem 0.6rem; border-bottom: 1px solid #e5e7eb;
-      background: #f9fafb;
+      color: var(--label); padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--border);
+      background: var(--surface-alt);
     }
     .counter-table th.value, .counter-table td.value { text-align: right; white-space: nowrap; }
-    .counter-table td { padding: 0.5rem 0.6rem; border-bottom: 1px solid #f3f4f6; font-size: 0.85rem; }
+    .counter-table td { padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border-light); font-size: 0.85rem; }
     .counter-table td.name .counter-name { font-weight: 600; }
-    .counter-table td.name .count-desc { display: block; font-size: 0.75rem; color: #6b7280; margin-top: 0.15rem; }
-    .counter-table td.role, .counter-table th.role { font-size: 0.75rem; color: #9ca3af; width: 9rem; }
+    .counter-table td.name .count-desc { display: block; font-size: 0.75rem; color: var(--label); margin-top: 0.15rem; }
+    .counter-table td.role, .counter-table th.role { font-size: 0.75rem; color: var(--muted); width: 9rem; }
     .counter-table tbody tr:last-child td { border-bottom: none; }
 
     #timeline { height: 260px; margin: 0 1rem 1rem; }
