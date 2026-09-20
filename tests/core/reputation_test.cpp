@@ -141,7 +141,7 @@ TEST(ReputationFile, WritesExactWidePerUidTable) {
                     {4, row({{relation_created, 7}})},
                 });
 
-    user_indicators::run_finalize(stage, indicators, kDefaultUserGroupRows,
+    user_indicators::run_finalize(stage, indicators, kDefaultIndicatorsGroupRows,
                                   kDefaultReputationGroupRows);
 
     const std::string rep = dir.join("user_reputation.parquet");
@@ -267,7 +267,7 @@ TEST(ReputationFile, SortsByUsernameThenUid) {
                           {8, "dave", 104, row(1)},
                       });
 
-    user_indicators::run_finalize(stage, indicators, kDefaultUserGroupRows,
+    user_indicators::run_finalize(stage, indicators, kDefaultIndicatorsGroupRows,
                                   kDefaultReputationGroupRows);
 
     const std::string rep = dir.join("user_reputation.parquet");

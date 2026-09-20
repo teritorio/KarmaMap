@@ -285,7 +285,7 @@ void run_scan(const std::string& input_path, const std::string& stage_dir) {
 }
 
 void run_finalize(const std::string& stage_dir, const std::string& indicators_path,
-                  int64_t user_group_rows, int64_t reputation_group_rows) {
+                  int64_t indicators_group_rows, int64_t reputation_group_rows) {
     // Registers Arrow's compute kernels (sort_indices, take), required even
     // when --user-indicators runs without any of passes 1-3.
     auto init_status = arrow::compute::Initialize();
@@ -391,7 +391,7 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
     auto indicator_table = arrow::Table::Make(indicator_schema, indicator_columns);
 
     const std::string indicators_tmp = indicators_path + ".tmp";
-    arrow_table_io::write_table(indicators_tmp, indicator_table, user_group_rows);
+    arrow_table_io::write_table(indicators_tmp, indicator_table, indicators_group_rows);
     std::filesystem::rename(indicators_tmp, indicators_path);
 
     // Per-uid sums of all 21 indicator counters, in the (uid) order of the

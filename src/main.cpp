@@ -134,7 +134,7 @@ void run_user_indicator_pass(const Options& opts) {
     std::filesystem::remove(opts.output_dir + "/user_reputation.parquet");
 
     user_indicators::run_scan(opts.input_path, stage_dir);
-    user_indicators::run_finalize(stage_dir, indicators_path, opts.user_group_rows,
+    user_indicators::run_finalize(stage_dir, indicators_path, opts.indicators_group_rows,
                                   opts.reputation_group_rows);
 }
 

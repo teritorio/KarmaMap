@@ -27,7 +27,7 @@ TEST(Options, DefaultsPreserved) {
     EXPECT_EQ(opts.h3_resolution, 9);
     EXPECT_EQ(opts.way_batch_bytes, kDefaultWayBatchBytes);
     EXPECT_EQ(opts.change_group_rows, kDefaultChangeGroupRows);
-    EXPECT_EQ(opts.user_group_rows, kDefaultUserGroupRows);
+    EXPECT_EQ(opts.indicators_group_rows, kDefaultIndicatorsGroupRows);
     EXPECT_TRUE(opts.run_node_pass);
     EXPECT_TRUE(opts.run_way_pass);
     EXPECT_TRUE(opts.run_sort_pass);
@@ -103,26 +103,26 @@ TEST(Options, ChangeGroupRowsTooSmallThrows) {
                  std::runtime_error);
 }
 
-TEST(Options, UserGroupRowsDefault) {
+TEST(Options, IndicatorsGroupRowsDefault) {
     Options opts;
     ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
                        "--output-dir", "out"},
                       &opts));
-    EXPECT_EQ(opts.user_group_rows, kDefaultUserGroupRows);
+    EXPECT_EQ(opts.indicators_group_rows, kDefaultIndicatorsGroupRows);
 }
 
-TEST(Options, UserGroupRowsValid) {
+TEST(Options, IndicatorsGroupRowsValid) {
     Options opts;
     ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
-                       "--output-dir", "out", "--user-group-rows", "1234"},
+                       "--output-dir", "out", "--indicators-group-rows", "1234"},
                       &opts));
-    EXPECT_EQ(opts.user_group_rows, 1234);
+    EXPECT_EQ(opts.indicators_group_rows, 1234);
 }
 
-TEST(Options, UserGroupRowsTooSmallThrows) {
+TEST(Options, IndicatorsGroupRowsTooSmallThrows) {
     Options opts;
     EXPECT_THROW(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
-                        "--output-dir", "out", "--user-group-rows", "999"},
+                        "--output-dir", "out", "--indicators-group-rows", "999"},
                        &opts),
                  std::runtime_error);
 }
