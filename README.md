@@ -49,8 +49,10 @@ reputation scoring follows [Neis, Goetz & Zipf, *ISPRS Int. J. Geo-Inf.*
 Host paths are read from a `.env` file (see `.env.template`) and used by
 `docker-compose.yml`. `DATA_DIR` is mounted at `/data` for the
 `karmamap` service — `--input`, `--node-cache` and `--output-dir`
-are absolute paths under it — and `OUTPUT_DIR` is served read-only by the
-`caddy` service.
+are absolute paths under it — and the `caddy` service serves the
+`${DATA_DIR}output` subdirectory read-only at `/data/`. `--output-dir`
+must therefore be `/data/output`: the `DATA_DIR` root itself is never
+served, so pointing it elsewhere leaves nothing for the web frontend.
 
 ```bash
 cp .env.template .env
@@ -110,7 +112,7 @@ karmamap --input <planet.osh.pbf> --node-cache <file> --output-dir <dir> [core o
 Place the input file under `DATA_DIR` (default `data/`), then:
 
 ```bash
-docker compose --profile=build run --rm karmamap karmamap --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/
+docker compose --profile=build run --rm karmamap karmamap --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/output
 ```
 
 To resume after an earlier stage, run the passes one at a time (a way-only
@@ -129,8 +131,9 @@ docker compose --profile=build run --rm karmamap karmamap --input /data/region.o
 ### Serving the web frontend
 
 The `caddy` service serves everything from a single port `8080`: the web
-frontend at the root and `OUTPUT_DIR` (Parquet partitions + `manifest.json`)
-under `/data/`, with range requests and permissive CORS on the data path.
+frontend at the root and the `/data/output` output dir (`${DATA_DIR}output`;
+Parquet partitions + `manifest.json`) under `/data/`, with range requests
+and permissive CORS on the data path.
 
 ```bash
 docker compose up
