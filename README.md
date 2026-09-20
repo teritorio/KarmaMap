@@ -99,7 +99,8 @@ karmamap --input <planet.osh.pbf> --node-cache <file> --output-dir <dir> [core o
 | `--way-batch-mb` | Way-pass lookup batch budget in MiB (default: `512`) |
 | `--h3-resolution` | Resolution of the data cells, 0-13 (default: `9`) |
 | `--change-group-rows` | Target rows per Parquet row group of the changes dataset (`changes/*/year=*/data.parquet`) (default: `10000`); smaller row groups keep `h3_cell`/`change_date` min-max compact so range-pruning clients download only the pages they need |
-| `--user-group-rows` | Target rows per Parquet row group of the user-indicator outputs (`user_indicators.parquet`, `user_reputation.parquet`) (default: `10000`) |
+| `--user-group-rows` | Target rows per Parquet row group of `user_indicators.parquet` (default: `10000`) |
+| `--reputation-group-rows` | Target rows per Parquet row group of `user_reputation.parquet` (default: `1000`) |
 | `--user-indicators` | Also run the user-indicator pass (see [HOW_IT_WORKS.md](HOW_IT_WORKS.md)); independent of passes 1-3 |
 
 ### Running

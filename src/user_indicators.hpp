@@ -221,6 +221,6 @@ private:
 void run_scan(const std::string& input_path, const std::string& stage_dir);
 
 void run_finalize(const std::string& stage_dir, const std::string& indicators_path,
-                  int64_t user_group_rows);
+                  int64_t user_group_rows, int64_t reputation_group_rows);
 
 }  // namespace user_indicators

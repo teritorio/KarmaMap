@@ -7,6 +7,7 @@
 inline constexpr size_t kDefaultWayBatchBytes = 512ULL * 1024 * 1024;
 inline constexpr int64_t kDefaultChangeGroupRows = 10'000;
 inline constexpr int64_t kDefaultUserGroupRows = 10'000;
+inline constexpr int64_t kDefaultReputationGroupRows = 1'000;
 
 struct Options {
     std::string input_path;
@@ -16,6 +17,7 @@ struct Options {
     size_t way_batch_bytes = kDefaultWayBatchBytes;
     int64_t change_group_rows = kDefaultChangeGroupRows;
     int64_t user_group_rows = kDefaultUserGroupRows;
+    int64_t reputation_group_rows = kDefaultReputationGroupRows;
     bool run_node_pass = true;
     bool run_way_pass = true;
     bool run_sort_pass = true;

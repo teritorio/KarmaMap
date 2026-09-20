@@ -127,4 +127,28 @@ TEST(Options, UserGroupRowsTooSmallThrows) {
                  std::runtime_error);
 }
 
+TEST(Options, ReputationGroupRowsDefault) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
+                        "--output-dir", "out"},
+                      &opts));
+    EXPECT_EQ(opts.reputation_group_rows, kDefaultReputationGroupRows);
+}
+
+TEST(Options, ReputationGroupRowsValid) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
+                        "--output-dir", "out", "--reputation-group-rows", "1234"},
+                      &opts));
+    EXPECT_EQ(opts.reputation_group_rows, 1234);
+}
+
+TEST(Options, ReputationGroupRowsTooSmallThrows) {
+    Options opts;
+    EXPECT_THROW(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
+                        "--output-dir", "out", "--reputation-group-rows", "999"},
+                       &opts),
+                 std::runtime_error);
+}
+
 }  // namespace
