@@ -391,7 +391,10 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
     auto indicator_table = arrow::Table::Make(indicator_schema, indicator_columns);
 
     const std::string indicators_tmp = indicators_path + ".tmp";
-    arrow_table_io::write_table(indicators_tmp, indicator_table, indicators_group_rows);
+    // The viewer filters on uid; only that column keeps row-group min/max
+    // statistics in the footer.
+    arrow_table_io::write_table(indicators_tmp, indicator_table, indicators_group_rows,
+                                {"uid"});
     std::filesystem::rename(indicators_tmp, indicators_path);
 
     // Per-uid sums of all 21 indicator counters, in the (uid) order of the
@@ -561,7 +564,11 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
     const std::string reputation_path =
         (indicators_parent / "user_reputation.parquet").string();
     const std::string reputation_tmp = reputation_path + ".tmp";
-    arrow_table_io::write_table(reputation_tmp, rep_table, rep_meta, reputation_group_rows);
+    // The viewer filters on username (exact); uid is kept too as the stable
+    // identity key. Only those two columns keep row-group min/max statistics
+    // in the footer.
+    arrow_table_io::write_table(reputation_tmp, rep_table, rep_meta, reputation_group_rows,
+                                {"username", "uid"});
     std::filesystem::rename(reputation_tmp, reputation_path);
 
     std::filesystem::remove_all(stage_dir);

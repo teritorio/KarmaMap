@@ -10,6 +10,7 @@
 #include <parquet/arrow/reader.h>
 #include <parquet/arrow/writer.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
@@ -46,7 +47,8 @@ inline std::shared_ptr<arrow::Table> read_table(const std::string& path) {
 
 inline void write_table(const std::string& path, const std::shared_ptr<arrow::Table>& table,
                         const std::shared_ptr<arrow::KeyValueMetadata>& file_metadata,
-                        int64_t row_group_rows) {
+                        int64_t row_group_rows,
+                        const std::vector<std::string>& statistics_columns) {
     auto outfile_result = arrow::io::FileOutputStream::Open(path);
     if (!outfile_result.ok()) {
         throw std::runtime_error("Failed to open " + path + " for writing: " +
@@ -55,6 +57,17 @@ inline void write_table(const std::string& path, const std::shared_ptr<arrow::Ta
 
     parquet::WriterProperties::Builder props_builder;
     props_builder.compression(parquet::Compression::ZSTD);
+    // Only the columns the viewers prune on (`statistics_columns`) keep
+    // row-group min/max statistics in the footer; the others are written
+    // without chunk stats to keep the footer metadata compact.
+    for (const auto& field : table->schema()->fields()) {
+        const std::string& name = field->name();
+        if (!statistics_columns.empty() &&
+            std::find(statistics_columns.begin(), statistics_columns.end(), name) ==
+                statistics_columns.end()) {
+            props_builder.disable_statistics(name);
+        }
+    }
     auto writer_props = props_builder.build();
 
     // Row groups of at most `row_group_rows` rows.
@@ -93,6 +106,18 @@ inline void write_table(const std::string& path, const std::shared_ptr<arrow::Ta
         throw std::runtime_error("Failed to close " + path + ": " +
                                   close_sink_status.ToString());
     }
+}
+
+inline void write_table(const std::string& path, const std::shared_ptr<arrow::Table>& table,
+                        const std::shared_ptr<arrow::KeyValueMetadata>& file_metadata,
+                        int64_t row_group_rows) {
+    write_table(path, table, file_metadata, row_group_rows, {});
+}
+
+inline void write_table(const std::string& path, const std::shared_ptr<arrow::Table>& table,
+                        int64_t row_group_rows,
+                        const std::vector<std::string>& statistics_columns) {
+    write_table(path, table, nullptr, row_group_rows, statistics_columns);
 }
 
 inline void write_table(const std::string& path, const std::shared_ptr<arrow::Table>& table,

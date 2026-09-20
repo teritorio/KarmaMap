@@ -151,7 +151,10 @@ void merge_one_year(const std::string& year_dir, int64_t change_group_rows) {
     // staging files. A re-run reads whatever staging files survived and, for
     // counts whose staging file was already removed, reuses data.parquet
     // (only ever created by a completed rename).
-    arrow_table_io::write_table(tmp_path, merged_table, change_group_rows);
+    // The viewers filter on h3_cell (bbox) and change_date (span); only those
+    // columns keep row-group min/max statistics in the footer.
+    arrow_table_io::write_table(tmp_path, merged_table, change_group_rows,
+                                {"h3_cell", "change_date"});
     std::filesystem::rename(tmp_path, output_path);
     if (has_nodes) std::filesystem::remove(nodes_path);
     if (has_ways) std::filesystem::remove(ways_path);

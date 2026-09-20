@@ -1,10 +1,12 @@
 #include <gtest/gtest.h>
 
 #include <arrow/api.h>
+#include <parquet/file_reader.h>
 
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -184,6 +186,65 @@ TEST(Manifest, MissingOutputDirThrows) {
     TempDir dir;
     EXPECT_THROW(manifest::write_manifest(dir.join("nonexistent"), 9),
                  std::runtime_error);
+}
+
+// Reads data.parquet's footer and asserts per-column row-group statistics
+// presence. Real parquet I/O, so it also proves dropping statistics keeps the
+// data readable.
+void check_column_statistics(const std::string& path,
+                             const std::vector<bool>& expect_stats) {
+    auto infile_result = arrow::io::ReadableFile::Open(path);
+    ASSERT_TRUE(infile_result.ok());
+    std::unique_ptr<parquet::ParquetFileReader> reader =
+        parquet::ParquetFileReader::Open(infile_result.ValueOrDie());
+    const std::shared_ptr<parquet::FileMetaData> meta = reader->metadata();
+    ASSERT_GT(meta->num_row_groups(), 0);
+    for (int c = 0; c < static_cast<int>(expect_stats.size()); ++c) {
+        const std::string name = meta->schema()->Column(c)->name();
+        const bool has_stats = meta->RowGroup(0)->ColumnChunk(c)->statistics() != nullptr;
+        EXPECT_EQ(has_stats, expect_stats[c]) << "column " << name;
+    }
+}
+
+TEST(ArrowTableIo, WritesFooterStatisticsOnlyForPrunedColumns) {
+    TempDir dir;
+
+    arrow::UInt64Builder cell_builder;
+    arrow::UInt16Builder date_builder;
+    arrow::UInt32Builder node_builder;
+    arrow::UInt32Builder way_builder;
+    for (uint16_t day = 19700; day < 19705; ++day) {
+        ASSERT_TRUE(cell_builder.Append(day).ok());
+        ASSERT_TRUE(date_builder.Append(day).ok());
+        ASSERT_TRUE(node_builder.Append(day - 19700).ok());
+        ASSERT_TRUE(way_builder.Append(0).ok());
+    }
+    std::shared_ptr<arrow::Array> cells, dates, nodes, ways;
+    ASSERT_TRUE(cell_builder.Finish(&cells).ok());
+    ASSERT_TRUE(date_builder.Finish(&dates).ok());
+    ASSERT_TRUE(node_builder.Finish(&nodes).ok());
+    ASSERT_TRUE(way_builder.Finish(&ways).ok());
+    auto schema = arrow::schema({
+        arrow::field("h3_cell", arrow::uint64(), false),
+        arrow::field("change_date", arrow::uint16(), false),
+        arrow::field("node_count", arrow::uint32(), false),
+        arrow::field("way_count", arrow::uint32(), false),
+    });
+    auto table = arrow::Table::Make(schema, {cells, dates, nodes, ways});
+
+    // Only the pruning columns carry row-group statistics in the footer.
+    const std::string pruned = dir.join("pruned.parquet");
+    arrow_table_io::write_table(pruned, table, 1'000, {"h3_cell", "change_date"});
+    check_column_statistics(pruned, {true, true, false, false});
+
+    // The default keeps statistics on every column (staging files etc.).
+    const std::string all = dir.join("all.parquet");
+    arrow_table_io::write_table(all, table, 1'000);
+    check_column_statistics(all, {true, true, true, true});
+
+    // Dropping statistics must not change the stored values.
+    auto roundtrip = arrow_table_io::read_table(pruned);
+    EXPECT_TRUE(roundtrip->Equals(*table));
 }
 
 }  // namespace

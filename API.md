@@ -77,7 +77,9 @@ the date in a query with `DATE '1970-01-01' + change_date`.
 
 Rows are sorted by `(h3_cell, change_date)` after the merge pass, so
 row-group min/max statistics support both bbox pruning and date pruning
-within each year file.
+within each year file. Only `h3_cell` and `change_date` carry footer
+row-group statistics; `node_count` and `way_count` are written without them
+to keep the footer metadata compact.
 
 ### Querying with DuckDB
 
@@ -107,6 +109,11 @@ are two non-partitioned single files.
   The per-day `tag_*` counters are aggregated during finalize and only their
   per-user sums are written (in `user_reputation.parquet`), so they never
   appear per day.
+
+  Only `uid` carries footer row-group statistics in `user_indicators.parquet`
+  (it is the sole pruning column); in `user_reputation.parquet` both `username`
+  (exact filter) and `uid` (stable identity key) do. Every other column is
+  written without them to keep the footer metadata compact.
 
 - `user_reputation.parquet` — one row per user, sorted by `username` (ties
   broken by `uid`, so an exact username lookup prunes straight to the
