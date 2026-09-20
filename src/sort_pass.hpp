@@ -1,10 +1,11 @@
 #pragma once
 
-// Pass 3: for every year partition under root_dir, full-outer-joins the
-// staging files (nodes.parquet, ways.parquet) on (h3_cell, change_date) and
-// writes the result to data.parquet, sorted by (h3_cell, change_date) so
-// row-group min/max become useful for bbox and date-range pruning. The
-// result is written under a temp name and renamed into place.
+// Pass 3: for every year partition under root_dir, sums the staging files'
+// (nodes.parquet, ways.parquet) counts per (h3_cell, change_date) into a
+// single `count` column and writes the result to data.parquet, sorted by
+// (h3_cell, change_date) so row-group min/max become useful for bbox and
+// date-range pruning. The result is written under a temp name and renamed
+// into place.
 
 #include <cstdint>
 #include <string>

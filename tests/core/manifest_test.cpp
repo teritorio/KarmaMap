@@ -42,29 +42,25 @@ void write_data_parquet(const std::string& path,
                         const std::vector<std::pair<uint16_t, uint32_t>>& rows) {
     arrow::UInt64Builder cell_builder;
     arrow::UInt16Builder date_builder;
-    arrow::UInt32Builder node_builder;
-    arrow::UInt32Builder way_builder;
+    arrow::UInt32Builder count_builder;
     for (const auto& [day, count] : rows) {
         ASSERT_TRUE(cell_builder.Append(0).ok());
         ASSERT_TRUE(date_builder.Append(day).ok());
-        ASSERT_TRUE(node_builder.Append(count).ok());
-        ASSERT_TRUE(way_builder.Append(0).ok());
+        ASSERT_TRUE(count_builder.Append(count).ok());
     }
 
-    std::shared_ptr<arrow::Array> cells, dates, nodes, ways;
+    std::shared_ptr<arrow::Array> cells, dates, counts;
     ASSERT_TRUE(cell_builder.Finish(&cells).ok());
     ASSERT_TRUE(date_builder.Finish(&dates).ok());
-    ASSERT_TRUE(node_builder.Finish(&nodes).ok());
-    ASSERT_TRUE(way_builder.Finish(&ways).ok());
+    ASSERT_TRUE(count_builder.Finish(&counts).ok());
 
     auto schema = arrow::schema({
         arrow::field("h3_cell", arrow::uint64(), false),
         arrow::field("change_date", arrow::uint16(), false),
-        arrow::field("node_count", arrow::uint32(), false),
-        arrow::field("way_count", arrow::uint32(), false),
+        arrow::field("count", arrow::uint32(), false),
     });
     arrow_table_io::write_table(path,
-                                arrow::Table::Make(schema, {cells, dates, nodes, ways}));
+                                arrow::Table::Make(schema, {cells, dates, counts}));
 }
 
 TEST(Manifest, WritesEmptyManifest) {
@@ -211,36 +207,32 @@ TEST(ArrowTableIo, WritesFooterStatisticsOnlyForPrunedColumns) {
 
     arrow::UInt64Builder cell_builder;
     arrow::UInt16Builder date_builder;
-    arrow::UInt32Builder node_builder;
-    arrow::UInt32Builder way_builder;
+    arrow::UInt32Builder count_builder;
     for (uint16_t day = 19700; day < 19705; ++day) {
         ASSERT_TRUE(cell_builder.Append(day).ok());
         ASSERT_TRUE(date_builder.Append(day).ok());
-        ASSERT_TRUE(node_builder.Append(day - 19700).ok());
-        ASSERT_TRUE(way_builder.Append(0).ok());
+        ASSERT_TRUE(count_builder.Append(day - 19700).ok());
     }
-    std::shared_ptr<arrow::Array> cells, dates, nodes, ways;
+    std::shared_ptr<arrow::Array> cells, dates, counts;
     ASSERT_TRUE(cell_builder.Finish(&cells).ok());
     ASSERT_TRUE(date_builder.Finish(&dates).ok());
-    ASSERT_TRUE(node_builder.Finish(&nodes).ok());
-    ASSERT_TRUE(way_builder.Finish(&ways).ok());
+    ASSERT_TRUE(count_builder.Finish(&counts).ok());
     auto schema = arrow::schema({
         arrow::field("h3_cell", arrow::uint64(), false),
         arrow::field("change_date", arrow::uint16(), false),
-        arrow::field("node_count", arrow::uint32(), false),
-        arrow::field("way_count", arrow::uint32(), false),
+        arrow::field("count", arrow::uint32(), false),
     });
-    auto table = arrow::Table::Make(schema, {cells, dates, nodes, ways});
+    auto table = arrow::Table::Make(schema, {cells, dates, counts});
 
     // Only the pruning columns carry row-group statistics in the footer.
     const std::string pruned = dir.join("pruned.parquet");
     arrow_table_io::write_table(pruned, table, 1'000, {"h3_cell", "change_date"});
-    check_column_statistics(pruned, {true, true, false, false});
+    check_column_statistics(pruned, {true, true, false});
 
     // The default keeps statistics on every column (staging files etc.).
     const std::string all = dir.join("all.parquet");
     arrow_table_io::write_table(all, table, 1'000);
-    check_column_statistics(all, {true, true, true, true});
+    check_column_statistics(all, {true, true, true});
 
     // Dropping statistics must not change the stored values.
     auto roundtrip = arrow_table_io::read_table(pruned);

@@ -2,14 +2,14 @@
 //
 // Reads an OSM full-history file (.osh.pbf) and produces one partitioned
 // Parquet dataset under --output-dir:
-//   changes/year=YYYY/data.parquet  (h3_cell, change_date, node_count, way_count)
+//   changes/year=YYYY/data.parquet  (h3_cell, change_date, count)
 //
 // Three stages: node pass (writes the mmap node-position cache + counts
 // nodes into .../nodes.parquet), way pass (resolves node positions by a
 // batched sweep over the cache, counts ways at the distinct cells of their
 // node positions into .../ways.parquet, no segment path tracing), merge
-// pass (merges each year's node and way counts into node_count/way_count
-// columns of data.parquet, sorted by (h3_cell, change_date) so that Parquet
+// pass (merges each year's node and way counts into a single count column
+// of data.parquet, sorted by (h3_cell, change_date) so that Parquet
 // row group min/max statistics become useful for bbox and date-range
 // pruning).
 

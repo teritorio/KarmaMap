@@ -21,28 +21,17 @@ namespace sort_pass {
 
 namespace {
 
-struct MergedPair {
-    uint32_t node = 0;
-    uint32_t way = 0;
-};
-
-using MergedMap = std::unordered_map<parquet_out::CountKey, MergedPair, parquet_out::CountKeyHash>;
-
-// Adds every row of one source table to `merged`, into the node_count or
-// way_count column depending on `is_node`, so rows present in only one
-// source keep 0 in the other column. `count_col` names the count column:
-// "count" for the pass 1/pass 2 staging files, "node_count"/"way_count"
-// when reading an existing data.parquet as a fallback source.
-void merge_source(const std::shared_ptr<arrow::Table>& table, const char* count_col, bool is_node,
-                  MergedMap& merged) {
+// Adds every row of one source table to `merged`, summing each row's count
+// into the (h3_cell, change_date) accumulator. Both the pass 1/pass 2
+// staging files and an existing data.parquet fallback carry a single
+// `count` column, so the same read path serves all three sources.
+void merge_source(std::shared_ptr<arrow::Table> table, parquet_out::CountMap& merged) {
     const int cell_idx = table->schema()->GetFieldIndex("h3_cell");
     const int date_idx = table->schema()->GetFieldIndex("change_date");
-    const int count_idx = table->schema()->GetFieldIndex(count_col);
+    const int count_idx = table->schema()->GetFieldIndex("count");
     if (cell_idx < 0 || date_idx < 0 || count_idx < 0) {
-        throw std::runtime_error(std::string("Unexpected source schema: missing h3_cell/")
-                                     .append("change_date/")
-                                     .append(count_col)
-                                     .append(" column"));
+        throw std::runtime_error("Unexpected source schema: missing h3_cell/"
+                                 "change_date/count column");
     }
 
     // change_date is a uint16 epoch-day count; reject any other type loudly
@@ -73,9 +62,7 @@ void merge_source(const std::shared_ptr<arrow::Table>& table, const char* count_
     for (int64_t i = 0; i < n; ++i) {
         parquet_out::CountKey key{cell_array->Value(i),
                                   static_cast<int32_t>(date_array->Value(i))};
-        MergedPair& value = merged[key];
-        uint32_t& target = is_node ? value.node : value.way;
-        target += count_array->Value(i);
+        merged[key] += count_array->Value(i);
     }
 }
 
@@ -92,18 +79,18 @@ void merge_one_year(const std::string& year_dir, int64_t change_group_rows) {
 
     std::cerr << "[sort pass] " << year_dir << "\n";
 
-    MergedMap merged;
+    parquet_out::CountMap merged;
     if (has_nodes) {
-        merge_source(arrow_table_io::read_table(nodes_path), "count", /*is_node=*/true, merged);
+        merge_source(arrow_table_io::read_table(nodes_path), merged);
     } else if (has_data) {
         // No nodes.parquet, but an earlier data.parquet is present. Its
-        // node_count is the fallback so a re-merge never zeroes the column.
-        merge_source(arrow_table_io::read_table(output_path), "node_count", /*is_node=*/true, merged);
+        // total count is the fallback so a re-merge never zeroes it.
+        merge_source(arrow_table_io::read_table(output_path), merged);
     }
     if (has_ways) {
-        merge_source(arrow_table_io::read_table(ways_path), "count", /*is_node=*/false, merged);
+        merge_source(arrow_table_io::read_table(ways_path), merged);
     } else if (has_data) {
-        merge_source(arrow_table_io::read_table(output_path), "way_count", /*is_node=*/false, merged);
+        merge_source(arrow_table_io::read_table(output_path), merged);
     }
 
     // Columns are built in map order; sort_by_keys reorders them by
@@ -111,40 +98,36 @@ void merge_one_year(const std::string& year_dir, int64_t change_group_rows) {
     const int64_t n = static_cast<int64_t>(merged.size());
     arrow::UInt64Builder cell_builder;
     arrow::UInt16Builder date_builder;
-    arrow::UInt32Builder node_builder;
-    arrow::UInt32Builder way_builder;
+    arrow::UInt32Builder count_builder;
     if (!cell_builder.Reserve(n).ok() || !date_builder.Reserve(n).ok() ||
-        !node_builder.Reserve(n).ok() || !way_builder.Reserve(n).ok()) {
+        !count_builder.Reserve(n).ok()) {
         throw std::runtime_error("Reserve() failed while merging");
     }
 
-    for (const auto& [key, value] : merged) {
+    for (const auto& [key, count] : merged) {
         auto s1 = cell_builder.Append(key.h3_cell);
         auto s2 = date_builder.Append(h3_utils::require_u16_day(key.day));
-        auto s3 = node_builder.Append(value.node);
-        auto s4 = way_builder.Append(value.way);
-        if (!s1.ok() || !s2.ok() || !s3.ok() || !s4.ok()) {
+        auto s3 = count_builder.Append(count);
+        if (!s1.ok() || !s2.ok() || !s3.ok()) {
             throw std::runtime_error("Failed to append a merged row");
         }
     }
 
-    std::shared_ptr<arrow::Array> cells, dates, nodes, ways;
+    std::shared_ptr<arrow::Array> cells, dates, counts;
     auto f1 = cell_builder.Finish(&cells);
     auto f2 = date_builder.Finish(&dates);
-    auto f3 = node_builder.Finish(&nodes);
-    auto f4 = way_builder.Finish(&ways);
-    if (!f1.ok() || !f2.ok() || !f3.ok() || !f4.ok()) {
+    auto f3 = count_builder.Finish(&counts);
+    if (!f1.ok() || !f2.ok() || !f3.ok()) {
         throw std::runtime_error("Failed to finalize merged columns");
     }
 
     auto schema = arrow::schema({
         arrow::field("h3_cell", arrow::uint64(), false),
         arrow::field("change_date", arrow::uint16(), false),
-        arrow::field("node_count", arrow::uint32(), false),
-        arrow::field("way_count", arrow::uint32(), false),
+        arrow::field("count", arrow::uint32(), false),
     });
     auto merged_table = arrow_table_io::sort_by_keys(
-        arrow::Table::Make(schema, {cells, dates, nodes, ways}),
+        arrow::Table::Make(schema, {cells, dates, counts}),
         {arrow::compute::SortKey("h3_cell"), arrow::compute::SortKey("change_date")});
 
     // Write under a temp name, rename into place, and only then remove the

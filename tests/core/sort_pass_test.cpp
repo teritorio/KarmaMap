@@ -50,12 +50,11 @@ int num_row_groups(const std::string& path) {
     return (*reader_result)->num_row_groups();
 }
 
-// Unpacks data.parquet (h3_cell, change_date, node_count, way_count).
+// Unpacks data.parquet (h3_cell, change_date, count).
 struct MergedTable {
     std::vector<uint64_t> cells;
     std::vector<uint16_t> days;
-    std::vector<uint32_t> nodes;
-    std::vector<uint32_t> ways;
+    std::vector<uint32_t> counts;
 
     size_t size() const { return cells.size(); }
 
@@ -77,13 +76,11 @@ MergedTable read_merged(const std::string& path) {
     MergedTable out;
     const auto* cells = static_cast<const arrow::UInt64Array*>(table->column(0)->chunk(0).get());
     const auto* days = static_cast<const arrow::UInt16Array*>(table->column(1)->chunk(0).get());
-    const auto* nodes = static_cast<const arrow::UInt32Array*>(table->column(2)->chunk(0).get());
-    const auto* ways = static_cast<const arrow::UInt32Array*>(table->column(3)->chunk(0).get());
+    const auto* counts = static_cast<const arrow::UInt32Array*>(table->column(2)->chunk(0).get());
     for (int64_t i = 0; i < table->num_rows(); ++i) {
         out.cells.push_back(cells->Value(i));
         out.days.push_back(days->Value(i));
-        out.nodes.push_back(nodes->Value(i));
-        out.ways.push_back(ways->Value(i));
+        out.counts.push_back(counts->Value(i));
     }
     return out;
 }
@@ -136,20 +133,12 @@ TEST(SortPass, MergesNodesAndWays) {
     const auto merged = read_merged(year + "/data.parquet");
     ASSERT_EQ(merged.size(), 3);
 
-    const size_t ia = merged.index_of(kLow, 1);
-    EXPECT_EQ(merged.nodes[ia], 3);
-    EXPECT_EQ(merged.ways[ia], 7);
-
-    const size_t ib = merged.index_of(kMid, 2);
-    EXPECT_EQ(merged.nodes[ib], 5);
-    EXPECT_EQ(merged.ways[ib], 0);
-
-    const size_t ic = merged.index_of(kHigh, 3);
-    EXPECT_EQ(merged.nodes[ic], 0);
-    EXPECT_EQ(merged.ways[ic], 2);
+    EXPECT_EQ(merged.counts[merged.index_of(kLow, 1)], 10);
+    EXPECT_EQ(merged.counts[merged.index_of(kMid, 2)], 5);
+    EXPECT_EQ(merged.counts[merged.index_of(kHigh, 3)], 2);
 }
 
-TEST(SortPass, NodesOnlyZeroesWays) {
+TEST(SortPass, NodesOnly) {
     TempDir dir;
     make_partitions(dir.path(), {"2024"});
     const std::string year = dir.path() + "/year=2024";
@@ -159,11 +148,10 @@ TEST(SortPass, NodesOnlyZeroesWays) {
 
     const auto merged = read_merged(year + "/data.parquet");
     ASSERT_EQ(merged.size(), 1);
-    EXPECT_EQ(merged.nodes[0], 4);
-    EXPECT_EQ(merged.ways[0], 0);
+    EXPECT_EQ(merged.counts[0], 4);
 }
 
-TEST(SortPass, WaysOnlyZeroesNodes) {
+TEST(SortPass, WaysOnly) {
     TempDir dir;
     make_partitions(dir.path(), {"2024"});
     const std::string year = dir.path() + "/year=2024";
@@ -173,8 +161,7 @@ TEST(SortPass, WaysOnlyZeroesNodes) {
 
     const auto merged = read_merged(year + "/data.parquet");
     ASSERT_EQ(merged.size(), 1);
-    EXPECT_EQ(merged.nodes[0], 0);
-    EXPECT_EQ(merged.ways[0], 6);
+    EXPECT_EQ(merged.counts[0], 6);
 }
 
 TEST(SortPass, SortsByCellThenDay) {
@@ -207,17 +194,15 @@ TEST(SortPass, ReMergeFallsBackToDataForMissingStaging) {
     write_staging(year + "/ways.parquet", {{kLow, 1, 7}});
     sort_pass::merge_and_sort_partitions(dir.path(), kDefaultChangeGroupRows);
 
-    // Add only a new ways staging file; the node count must be carried over
-    // from the previous data.parquet rather than zeroed.
+    // Add only a new ways staging file; the already-merged count must be
+    // carried over from the previous data.parquet rather than zeroed.
     write_staging(year + "/ways.parquet", {{kHigh, 2, 4}});
     sort_pass::merge_and_sort_partitions(dir.path(), kDefaultChangeGroupRows);
 
     const auto merged = read_merged(year + "/data.parquet");
     ASSERT_EQ(merged.size(), 2);
-    EXPECT_EQ(merged.nodes[merged.index_of(kLow, 1)], 3);
-    EXPECT_EQ(merged.ways[merged.index_of(kLow, 1)], 0);
-    EXPECT_EQ(merged.nodes[merged.index_of(kHigh, 2)], 0);
-    EXPECT_EQ(merged.ways[merged.index_of(kHigh, 2)], 4);
+    EXPECT_EQ(merged.counts[merged.index_of(kLow, 1)], 10);
+    EXPECT_EQ(merged.counts[merged.index_of(kHigh, 2)], 4);
 }
 
 TEST(SortPass, AlreadyMergedYearUntouched) {

@@ -3,7 +3,7 @@
 // manifest says exists on disk), each distinct file is queried once with
 // hyparquet (row-group/page pruning on h3_cell and change_date), then
 // filtered to the exact cell set (h3_cell only supports a contiguous
-// range) and aggregated client-side across node_count + way_count.
+// range) and aggregated client-side on the `count` column.
 
 import { parquetQuery, parquetMetadataAsync, asyncBufferFromUrl } from 'hyparquet'
 import { compressors } from 'hyparquet-compressors'
@@ -125,7 +125,7 @@ export async function queryChanges({
   const byDay = new Map()
   for (const rows of results) {
     for (const row of rows) {
-      const count = Number(row.node_count ?? 0) + Number(row.way_count ?? 0)
+      const count = Number(row.count)
 
       const cell = BigInt(row.h3_cell)
       byCell.set(cell, (byCell.get(cell) ?? 0) + count)

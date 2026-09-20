@@ -7,7 +7,7 @@ are plain Parquet (ZSTD-compressed); nothing else is needed to consume them.
 The two access parts:
 
 - **Changes** — `changes/`: yearly partitioned `(h3_cell, change_date,
-  node_count, way_count)` change counts.
+  count)` change counts (node + way changes merged per cell per day).
 - **Users** (only with `--user-indicators`) — `user_indicators.parquet` and
   `user_reputation.parquet`: per-user, per-day activity and reputation.
 
@@ -20,7 +20,7 @@ output-dir/
 ├── user_reputation.parquet    # only with --user-indicators
 └── changes/
     └── year=2025/
-        ├── data.parquet      # (h3_cell, change_date, node_count, way_count)
+        ├── data.parquet      # (h3_cell, change_date, count)
         ├── nodes.parquet     # staging, merged and removed by pass 3
         └── ways.parquet      # staging, merged and removed by pass 3
 ```
@@ -68,8 +68,7 @@ Each year's `data.parquet` holds:
 |---|---|---|
 | `h3_cell` | `uint64` | H3 index of the cell, at the dataset's `h3_resolution` |
 | `change_date` | `uint16` | UTC day count since the Unix epoch (1970-01-01) |
-| `node_count` | `uint32` | Node changes in that cell on that day |
-| `way_count` | `uint32` | Way changes in that cell on that day |
+| `count` | `uint32` | Node + way changes in that cell on that day |
 
 `change_date` is stored as a `uint16` count of UTC days instead of Parquet's
 native `DATE` type, cutting the column from 4 to 2 bytes per row. Reconstruct
@@ -78,14 +77,14 @@ the date in a query with `DATE '1970-01-01' + change_date`.
 Rows are sorted by `(h3_cell, change_date)` after the merge pass, so
 row-group min/max statistics support both bbox pruning and date pruning
 within each year file. Only `h3_cell` and `change_date` carry footer
-row-group statistics; `node_count` and `way_count` are written without them
+row-group statistics; `count` is written without them
 to keep the footer metadata compact.
 
 ### Querying with DuckDB
 
 ```sql
 SELECT DATE '1970-01-01' + change_date AS change_date,
-       SUM(node_count) + SUM(way_count) AS total
+       SUM(count) AS total
 FROM read_parquet('data/output/changes/year=*/data.parquet', hive_partitioning = true)
 GROUP BY change_date
 ORDER BY change_date

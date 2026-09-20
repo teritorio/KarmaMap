@@ -13,12 +13,13 @@ A single binary, `karmamap`, runs three stages by default:
 2. Way pass: resolves each way's node positions via the cache and counts
    way changes at the distinct cells of those positions into
    `changes/year=YYYY/ways.parquet`.
-3. Merge pass: full-outer-joins each year's `nodes.parquet` and
-   `ways.parquet` on `(h3_cell, change_date)` into `data.parquet`, sorted by
+3. Merge pass: merges each year's `nodes.parquet` and `ways.parquet`
+   counts per `(h3_cell, change_date)` into the single `count` column of
+   `data.parquet`, sorted by
    `(h3_cell, change_date)` so row-group min/max support bbox and
-   date-range pruning. Idempotent: an existing `data.parquet` supplies
-   whichever count's staging file is already gone, so re-merging never
-   zeroes it.
+   date-range pruning. Idempotent: an existing `data.parquet` supplies the
+   merged total of any count whose staging file is already gone, so
+   re-merging never zeroes it.
 
 Passes 1-3 are independent of the optional user-indicator pass (see below).
 
@@ -120,7 +121,7 @@ keep the `uid` join cheap and the numerics-only indicators file small.
 `web/changes/query.js` queries bbox + date range. The date range selects the
 year partitions (intersected with the manifest's partition list); each
 distinct file is queried once via `parquetQuery`, which prunes row groups on
-`h3_cell` and `change_date`, then aggregates `node_count + way_count`
+`h3_cell` and `change_date`, then aggregates the merged `count`
 client-side per cell and per day. The manifest's `date_range` (read from the
 data.parquet footer stats) bounds the date pickers and histogram axis to the
 exact days that hold data. The non-contiguous H3 cell set of the
