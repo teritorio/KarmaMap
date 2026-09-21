@@ -99,7 +99,9 @@ karmamap --input <planet.osh.pbf> --node-cache <file> --output-dir <dir> [core o
 | `--input` | OSM full-history file (`.osh.pbf`), required |
 | `--node-cache` | Node position cache file (wiped and rebuilt by pass 1, read by pass 2), required |
 | `--output-dir` | Output directory for the Parquet datasets, required (created if missing) |
-| `--pass` | `1` (nodes only), `2` (ways only, requires an already populated node cache), `3` (merge + sort only, requires passes 1 and 2 to have already run), or `all` (default) |
+| `--pass` | `1` (nodes only), `2` (ways only, requires an already populated node cache), `3` (merge + sort only, requires passes 1 and 2 to have already run), `4` (incremental cache only, requires the node cache), or `all` (default) |
+| `--incremental-cache` | Output path of the step-4 cache holding only the last known h3 cell per node (default: `<node-cache>.last`) |
+| `--no-step-4` | Skip step 4 (the incremental cache build); it runs by default after the node pass |
 | `--way-batch-mb` | Way-pass lookup batch budget in MiB (default: `512`) |
 | `--h3-resolution` | Resolution of the data cells, 0-13 (default: `9`) |
 | `--change-group-rows` | Target rows per Parquet row group of the changes dataset (`changes/*/year=*/data.parquet`) (default: `10000`); smaller row groups keep `h3_cell`/`change_date` min-max compact so range-pruning clients download only the pages they need |

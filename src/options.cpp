@@ -18,7 +18,13 @@ void print_usage(const char* argv0) {
         << "  --pass                 1 (nodes only), 2 (ways only, requires an already\n"
         << "                         populated node cache), 3 (merge + sort only,\n"
         << "                         requires passes 1 and 2 to have already run),\n"
-        << "                         or all (default)\n"
+        << "                         4 (incremental cache only, requires the node\n"
+        << "                         cache), or all (default)\n"
+        << "  --no-step-4            Skip step 4 (the incremental cache build); it runs\n"
+        << "                         by default after the node pass\n"
+        << "  --incremental-cache     Output path of the step-4 cache that holds only\n"
+        << "                         the last known h3 cell per node (default:\n"
+        << "                         <node-cache>.last)\n"
         << "  --way-batch-mb         Way-pass lookup batch budget in MiB (default: 512)\n"
         << "  --h3-resolution        Resolution of the data cells, 0-13 (default: 9)\n"
         << "  --change-group-rows    Target rows per Parquet row group of the changes\n"
@@ -50,6 +56,10 @@ bool parse_args(int argc, char** argv, Options* opts) {
             opts->input_path = next_value("--input");
         } else if (arg == "--node-cache") {
             opts->node_cache_path = next_value("--node-cache");
+        } else if (arg == "--incremental-cache") {
+            opts->incremental_cache_path = next_value("--incremental-cache");
+        } else if (arg == "--no-step-4") {
+            opts->run_step4 = false;
         } else if (arg == "--output-dir") {
             opts->output_dir = next_value("--output-dir");
         } else if (arg == "--h3-resolution") {
@@ -83,8 +93,9 @@ bool parse_args(int argc, char** argv, Options* opts) {
             opts->run_node_pass = (v == "1" || v == "all");
             opts->run_way_pass = (v == "2" || v == "all");
             opts->run_sort_pass = (v == "3" || v == "all");
-            if (v != "1" && v != "2" && v != "3" && v != "all") {
-                throw std::runtime_error("--pass must be 1, 2, 3 or all (got: " + v + ")");
+            opts->run_step4 = (v == "4" || v == "all");
+            if (v != "1" && v != "2" && v != "3" && v != "4" && v != "all") {
+                throw std::runtime_error("--pass must be 1, 2, 3, 4 or all (got: " + v + ")");
             }
         } else if (arg == "--user-indicators") {
             opts->run_user_indicators = true;
@@ -97,6 +108,9 @@ bool parse_args(int argc, char** argv, Options* opts) {
 
     if (opts->input_path.empty() || opts->node_cache_path.empty() || opts->output_dir.empty()) {
         throw std::runtime_error("--input, --node-cache and --output-dir are required");
+    }
+    if (opts->incremental_cache_path.empty()) {
+        opts->incremental_cache_path = opts->node_cache_path + ".last";
     }
     if (opts->h3_resolution < 0 ||
         opts->h3_resolution > h3_utils::kMaxPackedCellResolution) {

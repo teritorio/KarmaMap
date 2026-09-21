@@ -12,6 +12,7 @@ inline constexpr int64_t kDefaultReputationGroupRows = 1'000;
 struct Options {
     std::string input_path;
     std::string node_cache_path;
+    std::string incremental_cache_path;
     std::string output_dir;
     int h3_resolution = 9;
     size_t way_batch_bytes = kDefaultWayBatchBytes;
@@ -21,6 +22,7 @@ struct Options {
     bool run_node_pass = true;
     bool run_way_pass = true;
     bool run_sort_pass = true;
+    bool run_step4 = true;
     bool run_user_indicators = false;
 };
 

@@ -31,7 +31,9 @@ TEST(Options, DefaultsPreserved) {
     EXPECT_TRUE(opts.run_node_pass);
     EXPECT_TRUE(opts.run_way_pass);
     EXPECT_TRUE(opts.run_sort_pass);
+    EXPECT_TRUE(opts.run_step4);
     EXPECT_FALSE(opts.run_user_indicators);
+    EXPECT_EQ(opts.incremental_cache_path, "cache.bin.last");
 }
 
 TEST(Options, UserIndicatorsFlagEnablesPass) {
@@ -51,6 +53,34 @@ TEST(Options, PassSelection) {
     EXPECT_FALSE(opts.run_node_pass);
     EXPECT_TRUE(opts.run_way_pass);
     EXPECT_FALSE(opts.run_sort_pass);
+    EXPECT_FALSE(opts.run_step4);
+}
+
+TEST(Options, PassFourOnly) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
+                       "--output-dir", "out", "--pass", "4"},
+                      &opts));
+    EXPECT_FALSE(opts.run_node_pass);
+    EXPECT_FALSE(opts.run_way_pass);
+    EXPECT_FALSE(opts.run_sort_pass);
+    EXPECT_TRUE(opts.run_step4);
+}
+
+TEST(Options, NoStep4Flag) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
+                       "--output-dir", "out", "--no-step-4"},
+                      &opts));
+    EXPECT_FALSE(opts.run_step4);
+}
+
+TEST(Options, IncrementalCacheOverride) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
+                       "--output-dir", "out", "--incremental-cache", "last.bin"},
+                      &opts));
+    EXPECT_EQ(opts.incremental_cache_path, "last.bin");
 }
 
 TEST(Options, MissingValueThrows) {

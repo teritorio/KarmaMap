@@ -11,7 +11,8 @@
 // pass (merges each year's node and way counts into a single count column
 // of data.parquet, sorted by (h3_cell, change_date) so that Parquet
 // row group min/max statistics become useful for bbox and date-range
-// pruning).
+// pruning). Step 4 collapses the node cache into the incremental cache
+// (one record per node, last known h3 cell, no day).
 
 #include <osmium/io/any_input.hpp>
 #include <osmium/visitor.hpp>
@@ -123,6 +124,33 @@ void run_sort_pass(const Options& opts) {
     std::cerr << "[sort pass] done in " << elapsed << "s\n";
 }
 
+void run_step4_pass(const Options& opts) {
+    std::cerr << "[step 4] incremental cache -> " << opts.incremental_cache_path << "\n";
+
+    // Derived from the node cache: records sorted by (node_id, day) mean the
+    // last record per node_id is its last known position, so a straight sweep
+    // feeding the collapsing writer drops the day column for free.
+    node_cache::Reader history_reader(opts.node_cache_path, opts.h3_resolution);
+    node_cache::incremental::Writer cache_writer(opts.incremental_cache_path,
+                                                 opts.h3_resolution);
+
+    auto start = std::chrono::steady_clock::now();
+    const size_t history_records = history_reader.size();
+    for (size_t i = 0; i < history_records; ++i) {
+        cache_writer.add(history_reader.node_at(i), history_reader.cell_at(i));
+    }
+    const uint64_t records = cache_writer.records();
+    cache_writer.finish();
+
+    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                       std::chrono::steady_clock::now() - start)
+                       .count();
+    std::cerr << "[step 4] done in " << elapsed << "s\n";
+    std::cerr << "[step 4] history_records=" << history_records
+              << " nodes=" << records
+              << " cache_bytes=" << cache_writer.bytes() << "\n";
+}
+
 void run_user_indicator_pass(const Options& opts) {
     const std::string stage_dir = opts.output_dir + "/user_indicator_stage";
     const std::string indicators_path = opts.output_dir + "/user_indicators.parquet";
@@ -165,6 +193,9 @@ int main(int argc, char** argv) {
         }
         if (opts.run_sort_pass) {
             run_sort_pass(opts);
+        }
+        if (opts.run_step4) {
+            run_step4_pass(opts);
         }
         if (opts.run_user_indicators) {
             run_user_indicator_pass(opts);

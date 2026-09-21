@@ -22,6 +22,7 @@
 #include <zstd.h>
 
 #include <cstdint>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -440,5 +441,359 @@ private:
     mutable std::vector<uint8_t> cached_buf_;
     mutable size_t cached_block_ = static_cast<size_t>(-1);
 };
+
+// The incremental cache: the same block/directory scheme as the node cache,
+// but holding only the last known h3 cell per node with the day dropped:
+//
+//   record: [node_id 8B][h3 cell 6B]                  (14 bytes)
+//   file:   [header 40B][block 0]...[block N-1][directory 12*N]
+//
+// Built by step 4 as a streaming collapse of the node cache (sorted by
+// (node_id, day), so the last record per node_id is its last position).
+// Because the two formats differ (16-byte vs 14-byte records), the file is
+// always rewritten from scratch: the writer appends fresh blocks and swaps
+// the result into place with a rename once the header and directory are
+// finalized, so a crash never leaves a torn cache at the final path.
+namespace incremental {
+
+constexpr uint32_t kMagic = 0x494E4343;  // "INCC"
+constexpr uint32_t kVersion = 1;
+constexpr size_t kRecordSize = 14;  // node_id (8) + h3 cell (6) packed
+constexpr size_t kHeaderSize = 40;
+constexpr size_t kRecordsPerBlock = 1 << 18;  // 262144 records = 3.5 MiB raw
+constexpr size_t kLog2RecordsPerBlock = 18;
+constexpr uint32_t kCompressionZstd = 1;
+constexpr int kZstdLevel = 3;
+constexpr size_t kDirectoryEntrySize = 12;  // first_node (8) + compressed_size (4)
+
+inline void put_be32(char* dst, uint32_t v) {
+    dst[0] = static_cast<char>(v >> 24);
+    dst[1] = static_cast<char>(v >> 16);
+    dst[2] = static_cast<char>(v >> 8);
+    dst[3] = static_cast<char>(v & 0xFF);
+}
+
+// Buffers records into ZSTD blocks like node_cache::Writer, but collapses
+// consecutive same-node_id input (the last cell wins), so calling add() for
+// every history-cache record yields one record per node holding its last
+// known position. Writes to <path>.tmp and renames over <path> at finish().
+class Writer {
+public:
+    Writer(const std::string& path, int h3_resolution)
+        : final_path_(path), tmp_path_(path + ".tmp"), h3_resolution_(h3_resolution) {
+        const std::filesystem::path dir = std::filesystem::path(final_path_).parent_path();
+        if (!dir.empty()) std::filesystem::create_directories(dir);
+        fd_ = ::open(tmp_path_.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd_ < 0) {
+            throw std::runtime_error("Failed to create incremental cache " + tmp_path_);
+        }
+        char header[kHeaderSize] = {};
+        put_be32(header, kMagic);
+        put_be32(header + 4, kVersion);
+        put_be32(header + 8, static_cast<uint32_t>(kRecordSize));
+        put_be32(header + 12, static_cast<uint32_t>(h3_resolution));
+        put_be64(header + 16, 0);  // record count, patched at finish()
+        put_be64(header + 24, 0);  // block count, patched at finish()
+        put_be32(header + 32, static_cast<uint32_t>(kRecordsPerBlock));
+        put_be32(header + 36, kCompressionZstd);
+        ensure_write(fd_, header, sizeof(header), "incremental cache header");
+    }
+
+    ~Writer() {
+        if (fd_ >= 0) ::close(fd_);
+    }
+
+    // Input must be sorted by node_id (the history cache is); a repeated
+    // node_id keeps the last cell (last version wins).
+    void add(int64_t node_id, uint64_t h3_cell) {
+        if (has_pending_ && pending_node_ > node_id) {
+            throw std::runtime_error(
+                "Incremental cache input not sorted: node " + std::to_string(node_id) +
+                " after node " + std::to_string(pending_node_));
+        }
+        if (has_pending_ && pending_node_ == node_id) {
+            pending_cell_ = h3_cell;  // last version wins
+            return;
+        }
+        flush_pending();
+        pending_node_ = node_id;
+        pending_cell_ = h3_cell;
+        has_pending_ = true;
+    }
+
+    // Finalizes the header and directory on the tmp file, then renames it
+    // over the final path so a previous cache is only ever replaced whole.
+    void finish() {
+        if (fd_ < 0) return;
+        flush_pending();
+        flush_block();  // last partial block (no-op if empty)
+
+        char counts[16];
+        put_be64(counts, records_);
+        put_be64(counts + 8, blocks_);
+        if (::pwrite(fd_, counts, sizeof(counts), 16) != static_cast<ssize_t>(sizeof(counts))) {
+            throw std::runtime_error("Failed to finalize incremental cache header");
+        }
+
+        std::vector<uint8_t> dir(directory_.size() * kDirectoryEntrySize);
+        for (size_t i = 0; i < directory_.size(); ++i) {
+            char* p = reinterpret_cast<char*>(dir.data()) + i * kDirectoryEntrySize;
+            put_be64(p, directory_[i].first_node);
+            put_be32(p + 8, directory_[i].comp_size);
+        }
+        if (!dir.empty()) {
+            ensure_write(fd_, dir.data(), dir.size(), "incremental cache directory");
+        }
+        bytes_ += dir.size();
+
+        if (::fsync(fd_) != 0) {
+            throw std::runtime_error("Failed to fsync incremental cache");
+        }
+        ::close(fd_);
+        fd_ = -1;
+
+        std::filesystem::rename(tmp_path_, final_path_);
+    }
+
+    uint64_t records() const { return records_ + (has_pending_ ? 1 : 0); }
+    uint64_t bytes() const { return bytes_; }
+
+private:
+    void flush_pending() {
+        if (!has_pending_) return;
+        char rec[kRecordSize];
+        put_be64(rec, encode_node(pending_node_));
+        put_cell6(rec + 8, h3_utils::pack_cell(pending_cell_, h3_resolution_));
+        if (buffer_.empty()) block_first_node_ = encode_node(pending_node_);
+        buffer_.insert(buffer_.end(), rec, rec + kRecordSize);
+        records_++;
+        has_pending_ = false;
+        if (buffer_.size() >= kRecordsPerBlock * kRecordSize) flush_block();
+    }
+
+    void flush_block() {
+        if (buffer_.empty()) return;
+        const size_t max_comp = ZSTD_compressBound(buffer_.size());
+        if (comp_scratch_.size() < max_comp) comp_scratch_.resize(max_comp);
+        const size_t comp_size = ZSTD_compress(comp_scratch_.data(), max_comp,
+                                               buffer_.data(), buffer_.size(),
+                                               kZstdLevel);
+        if (ZSTD_isError(comp_size)) {
+            throw std::runtime_error(std::string("ZSTD_compress failed: ") +
+                                     ZSTD_getErrorName(comp_size));
+        }
+        ensure_write(fd_, comp_scratch_.data(), comp_size, "incremental cache block");
+        directory_.push_back({block_first_node_, static_cast<uint32_t>(comp_size)});
+        bytes_ += comp_size;
+        blocks_++;
+        buffer_.clear();
+    }
+
+    struct DirectoryEntry {
+        uint64_t first_node;  // encoded (sign-flipped)
+        uint32_t comp_size;
+    };
+
+    std::string final_path_;
+    std::string tmp_path_;
+    int fd_ = -1;
+    int h3_resolution_;
+
+    bool has_pending_ = false;
+    int64_t pending_node_ = 0;
+    uint64_t pending_cell_ = 0;
+
+    std::vector<uint8_t> buffer_;
+    std::vector<uint8_t> comp_scratch_;
+    std::vector<DirectoryEntry> directory_;
+    uint64_t block_first_node_ = 0;
+    uint64_t records_ = 0;
+    uint64_t blocks_ = 0;
+    uint64_t bytes_ = kHeaderSize;
+};
+
+// Read-only mmap'd view of an incremental cache. Same block/directory access
+// as the node cache, but each node holds a single record, so a lookup is a
+// binary-search sweep followed by a linear scan that stops at the first
+// node_id match.
+class Reader {
+public:
+    Reader(const std::string& path, int expected_h3_resolution) {
+        int fd = ::open(path.c_str(), O_RDONLY);
+        if (fd < 0) {
+            throw std::runtime_error("Incremental cache " + path + " not found; run --pass all first");
+        }
+
+        uint8_t header[kHeaderSize];
+        ssize_t n = ::read(fd, header, sizeof(header));
+        if (n != static_cast<ssize_t>(kHeaderSize)) {
+            ::close(fd);
+            throw std::runtime_error("Incremental cache " + path + " too small");
+        }
+
+        const uint32_t magic = static_cast<uint32_t>(be32(header));
+        const uint32_t version = static_cast<uint32_t>(be32(header + 4));
+        const uint32_t record_size = static_cast<uint32_t>(be32(header + 8));
+        h3_resolution_ = static_cast<int>(be32(header + 12));
+        count_ = be64(header + 16);
+        block_count_ = be64(header + 24);
+        const uint32_t records_per_block = be32(header + 32);
+        const uint32_t compression = be32(header + 36);
+
+        struct stat st {};
+        if (::fstat(fd, &st) != 0) {
+            ::close(fd);
+            throw std::runtime_error("Failed to stat incremental cache " + path);
+        }
+        const uint64_t file_size = static_cast<uint64_t>(st.st_size);
+
+        if (magic != kMagic || version != kVersion || record_size != kRecordSize) {
+            ::close(fd);
+            throw std::runtime_error(
+                "Incompatible incremental cache " + path + " (wrong format or record size)");
+        }
+        if (h3_resolution_ != expected_h3_resolution) {
+            ::close(fd);
+            throw std::runtime_error(
+                "Incremental cache " + path + " was built at H3 resolution " +
+                std::to_string(h3_resolution_) + ", but " +
+                std::to_string(expected_h3_resolution) + " is requested");
+        }
+        if (compression != kCompressionZstd ||
+            records_per_block != kRecordsPerBlock ||
+            block_count_ != (count_ + kRecordsPerBlock - 1) / kRecordsPerBlock) {
+            ::close(fd);
+            throw std::runtime_error(
+                "Incompatible incremental cache " + path + " (not a compressed block format)");
+        }
+
+        const uint64_t dir_size = block_count_ * kDirectoryEntrySize;
+        if (file_size < kHeaderSize + dir_size) {
+            ::close(fd);
+            throw std::runtime_error("Incremental cache " + path + " truncated or incompatible");
+        }
+
+        size_ = static_cast<size_t>(file_size);
+        data_ = static_cast<const uint8_t*>(
+            ::mmap(nullptr, size_, PROT_READ, MAP_PRIVATE, fd, 0));
+        if (data_ == MAP_FAILED) {
+            ::close(fd);
+            throw std::runtime_error("Failed to mmap incremental cache " + path);
+        }
+        ::close(fd);
+        ::madvise(const_cast<uint8_t*>(data_), size_, MADV_SEQUENTIAL);
+
+        const uint64_t dir_start = size_ - dir_size;
+        directory_.reserve(static_cast<size_t>(block_count_));
+        uint64_t offset = kHeaderSize;
+        for (uint64_t i = 0; i < block_count_; ++i) {
+            const uint8_t* p = data_ + dir_start + i * kDirectoryEntrySize;
+            const uint32_t comp_size = be32(p + 8);
+            directory_.push_back({decode_node(p), offset, comp_size});
+            offset += comp_size;
+        }
+        if (offset != dir_start) {
+            throw std::runtime_error(
+                "Incremental cache " + path + " corrupted block directory");
+        }
+    }
+
+    ~Reader() {
+        if (data_ && data_ != MAP_FAILED) ::munmap(const_cast<uint8_t*>(data_), size_);
+    }
+
+    size_t size() const { return static_cast<size_t>(count_); }
+
+    // The returned pointer is only valid until the next access of another
+    // block (one-block decompression cache).
+    const uint8_t* record(size_t i) const {
+        const size_t block = i >> kLog2RecordsPerBlock;
+        ensure_block(block);
+        return cached_buf_.data() + (i & (kRecordsPerBlock - 1)) * kRecordSize;
+    }
+    int64_t node_at(size_t i) const { return decode_node(record(i)); }
+    uint64_t cell_at(size_t i) const {
+        return h3_utils::unpack_cell(read_cell6(record(i) + 8), h3_resolution_);
+    }
+
+    // Last known cell for node_id, or 0 if the node is not in the cache.
+    uint64_t lookup(int64_t node_id) const {
+        size_t rec = sweep_start(node_id);
+        while (rec < size()) {
+            const int64_t rn = node_at(rec);
+            if (rn < node_id) {
+                rec++;
+                continue;
+            }
+            if (rn == node_id) return cell_at(rec);
+            break;  // past this node; absent
+        }
+        return 0;
+    }
+
+    // First record of the last block whose first record is < node_id.
+    size_t sweep_start(int64_t node_id) const {
+        size_t lo = 0, hi = directory_.size();
+        while (lo < hi) {
+            const size_t mid = lo + (hi - lo) / 2;
+            if (directory_[mid].first_node < node_id) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        return lo > 0 ? (lo - 1) * kRecordsPerBlock : 0;
+    }
+
+private:
+    struct Block {
+        int64_t first_node;
+        uint64_t offset;
+        uint32_t comp_size;
+    };
+
+    void ensure_block(size_t block) const {
+        if (cached_block_ == block) return;
+        if (block >= directory_.size()) {
+            throw std::runtime_error("Incremental cache block index out of range");
+        }
+        const Block& b = directory_[block];
+        const size_t raw_size =
+            (block + 1 == directory_.size()
+                 ? static_cast<size_t>(count_ - block * kRecordsPerBlock)
+                 : kRecordsPerBlock) *
+            kRecordSize;
+        if (cached_buf_.size() < raw_size) cached_buf_.resize(raw_size);
+        const size_t sz = ZSTD_decompress(cached_buf_.data(), raw_size,
+                                          data_ + b.offset, b.comp_size);
+        if (ZSTD_isError(sz) || sz != raw_size) {
+            throw std::runtime_error(std::string("ZSTD_decompress failed: ") +
+                                     (ZSTD_isError(sz) ? ZSTD_getErrorName(sz) : "size mismatch"));
+        }
+        cached_block_ = block;
+    }
+
+    static uint32_t be32(const uint8_t* p) {
+        return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
+               (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
+    }
+
+    static uint64_t be64(const uint8_t* p) {
+        uint64_t v = 0;
+        for (int i = 0; i < 8; ++i) v = (v << 8) | p[i];
+        return v;
+    }
+
+    int h3_resolution_ = 0;
+    uint64_t count_ = 0;
+    uint64_t block_count_ = 0;
+    size_t size_ = 0;
+    const uint8_t* data_ = nullptr;
+    std::vector<Block> directory_;
+    mutable std::vector<uint8_t> cached_buf_;
+    mutable size_t cached_block_ = static_cast<size_t>(-1);
+};
+
+}  // namespace incremental
 
 }  // namespace node_cache

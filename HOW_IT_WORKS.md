@@ -6,7 +6,7 @@ data contract — layout, schemas, encodings — lives in [API.md](API.md).
 
 ## The passes
 
-A single binary, `karmamap`, runs three stages by default:
+A single binary, `karmamap`, runs four stages by default:
 
 1. Node pass: builds the mmap node cache `(node_id, day) -> position` and
    counts node changes into `changes/year=YYYY/nodes.parquet`.
@@ -20,8 +20,12 @@ A single binary, `karmamap`, runs three stages by default:
    date-range pruning. Idempotent: an existing `data.parquet` supplies the
    merged total of any count whose staging file is already gone, so
    re-merging never zeroes it.
+4. Step 4 (incremental cache): collapses the node cache into a second cache
+   holding only the last known h3 cell per node (day dropped), written to
+   `<node-cache>.last` by default (see "Incremental cache" below).
 
-Passes 1-3 are independent of the optional user-indicator pass (see below).
+Passes 1-3 and step 4 are independent of the optional user-indicator pass
+(see below).
 
 ### Incremental runs
 
@@ -98,6 +102,28 @@ The reader mmaps the file read-only and decompresses one block at a time
 into a 4 MiB cache. The per-block first keys seed the way pass's sweep cursor
 between batches (a binary search over the directory, then one forward-only
 scan); no RAM sample index is kept.
+
+## Incremental cache
+
+Step 4 derives a second, history-less cache from the node cache. The node
+cache holds every `(node_id, day)` version, so its last record per node_id is
+that node's last known position; the incremental cache keeps exactly one
+14-byte record per node — `[node_id 8B][h3 cell 6B]`, the day column dropped,
+`node_id -> h3_cell`. Same block/directory scheme as the node cache
+(a `"INCC"` magic, 2¹⁸ records per ZSTD block, trailing directory of first
+key + compressed size), built by one streaming sweep of the node cache fed
+into a collapsing writer.
+
+Because the record layout differs from the node cache, blocks are never
+reused across runs: the writer appends fresh blocks to `<path>.tmp` and swaps
+it over the final path with a rename once the header and directory are
+finalized, so a crash leaves either the old cache or only the tmp file,
+never a torn cache. The `--incremental-cache` flag sets the output path
+(default `<node-cache>.last`); `--no-step-4` skips the build.
+
+A reader (`node_cache::incremental::Reader`) mmaps the file and looks up a
+node's last known cell via the block-directory binary search plus a linear
+scan (returning 0 for nodes absent from the cache).
 
 ## User-indicator pass
 

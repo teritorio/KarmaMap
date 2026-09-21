@@ -18,6 +18,7 @@ add_executable(unit_tests
   unit/h3_utils_test.cpp
   unit/date_utils_test.cpp
   unit/node_cache_test.cpp
+  unit/incremental_cache_test.cpp
   unit/user_indicator_rules_test.cpp
   unit/reputation_test.cpp
   unit/options_test.cpp
