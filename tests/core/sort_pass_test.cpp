@@ -259,4 +259,127 @@ TEST(SortPass, WrongChangeDateTypeThrows) {
     EXPECT_FALSE(std::filesystem::exists(year + "/data.parquet"));
 }
 
+// ---------------------------------------------------------------------------
+// merge_update_partitions (update mode staging -> data.parquet)
+// ---------------------------------------------------------------------------
+
+TEST(UpdateMerge, FoldsStagedDiffsOverExistingData) {
+    TempDir dir;
+    make_partitions(dir.path(), {"2024"});
+    const std::string year = dir.path() + "/year=2024";
+
+    write_staging(year + "/nodes.parquet", {{kLow, 1, 10}});
+    write_staging(year + "/ways.parquet", {{kLow, 1, 7}});
+    sort_pass::merge_and_sort_partitions(dir.path(), kDefaultChangeGroupRows);
+
+    // Update run: a nodes-only diff for sequence 2847600 lands on top of the
+    // merged data. The pre-existing (kLow,1) count must carry over.
+    write_staging(year + "/nodes.2847600.parquet", {{kLow, 1, 3}, {kMid, 2, 5}});
+    sort_pass::merge_update_partitions(dir.path(), kDefaultChangeGroupRows, 2847600);
+
+    const auto merged = read_merged(year + "/data.parquet");
+    ASSERT_EQ(merged.size(), 2);
+    EXPECT_EQ(merged.counts[merged.index_of(kLow, 1)], 20);
+    EXPECT_EQ(merged.counts[merged.index_of(kMid, 2)], 5);
+    EXPECT_FALSE(std::filesystem::exists(year + "/nodes.2847600.parquet"));
+    EXPECT_EQ(sort_pass::read_source_sequence(year + "/data.parquet"), 2847600);
+}
+
+TEST(UpdateMerge, MultipleSequencesAreCumulative) {
+    TempDir dir;
+    make_partitions(dir.path(), {"2024"});
+    const std::string year = dir.path() + "/year=2024";
+
+    write_staging(year + "/nodes.2847600.parquet", {{kLow, 1, 4}});
+    write_staging(year + "/ways.2847600.parquet", {{kLow, 1, 9}});
+    sort_pass::merge_update_partitions(dir.path(), kDefaultChangeGroupRows, 2847600);
+    EXPECT_EQ(read_merged(year + "/data.parquet").counts[0], 13);
+
+    write_staging(year + "/nodes.2847601.parquet", {{kLow, 1, 2}});
+    write_staging(year + "/ways.2847601.parquet", {{kMid, 2, 6}});
+    sort_pass::merge_update_partitions(dir.path(), kDefaultChangeGroupRows, 2847601);
+
+    const auto merged = read_merged(year + "/data.parquet");
+    ASSERT_EQ(merged.size(), 2);
+    EXPECT_EQ(merged.counts[merged.index_of(kLow, 1)], 15);
+    EXPECT_EQ(merged.counts[merged.index_of(kMid, 2)], 6);
+    EXPECT_FALSE(std::filesystem::exists(year + "/nodes.2847601.parquet"));
+    EXPECT_FALSE(std::filesystem::exists(year + "/ways.2847601.parquet"));
+    EXPECT_EQ(sort_pass::read_source_sequence(year + "/data.parquet"), 2847601);
+}
+
+TEST(UpdateMerge, AlreadyAppliedStampDropsOrphanedStaging) {
+    TempDir dir;
+    make_partitions(dir.path(), {"2024"});
+    const std::string year = dir.path() + "/year=2024";
+
+    write_staging(year + "/nodes.2847600.parquet", {{kLow, 1, 4}});
+    sort_pass::merge_update_partitions(dir.path(), kDefaultChangeGroupRows, 2847600);
+
+    const std::string data_path = year + "/data.parquet";
+    const uintmax_t size_before = std::filesystem::file_size(data_path);
+
+    // A crash left the staging behind after a completed run of the same seq.
+    write_staging(year + "/nodes.2847600.parquet", {{kHigh, 3, 99}});
+    sort_pass::merge_update_partitions(dir.path(), kDefaultChangeGroupRows, 2847600);
+
+    const auto merged = read_merged(data_path);
+    ASSERT_EQ(merged.size(), 1);  // orphan staging must NOT be re-merged
+    EXPECT_EQ(merged.counts[merged.index_of(kLow, 1)], 4);
+    EXPECT_EQ(std::filesystem::file_size(data_path), size_before);
+    EXPECT_FALSE(std::filesystem::exists(year + "/nodes.2847600.parquet"));
+}
+
+TEST(UpdateMerge, MissingOrEmptyRootIsNoOp) {
+    TempDir dir;
+    EXPECT_NO_THROW(sort_pass::merge_update_partitions(dir.join("nope"), 3, 1));
+    EXPECT_NO_THROW(sort_pass::merge_update_partitions(dir.path(), 3, 1));
+}
+
+TEST(UpdateMerge, SkipsAndDropsStagingNewerThanApplied) {
+    TempDir dir;
+    make_partitions(dir.path(), {"2024"});
+    const std::string year = dir.path() + "/year=2024";
+
+    // 101 was staged by a crashed run that fetched further than this run
+    // applies; it must not be folded (nor survive) at applied_seq 100.
+    write_staging(year + "/nodes.100.parquet", {{kLow, 1, 4}});
+    write_staging(year + "/nodes.101.parquet", {{kMid, 2, 9}});
+    sort_pass::merge_update_partitions(dir.path(), kDefaultChangeGroupRows, 100);
+
+    const auto merged = read_merged(year + "/data.parquet");
+    ASSERT_EQ(merged.size(), 1);
+    EXPECT_EQ(merged.counts[merged.index_of(kLow, 1)], 4);
+    EXPECT_EQ(sort_pass::read_source_sequence(year + "/data.parquet"), 100);
+    EXPECT_FALSE(std::filesystem::exists(year + "/nodes.100.parquet"));
+    EXPECT_FALSE(std::filesystem::exists(year + "/nodes.101.parquet"));
+
+    // The run that reaches 101 re-stages and folds it.
+    write_staging(year + "/nodes.101.parquet", {{kMid, 2, 9}});
+    sort_pass::merge_update_partitions(dir.path(), kDefaultChangeGroupRows, 101);
+    const auto after = read_merged(year + "/data.parquet");
+    ASSERT_EQ(after.size(), 2);
+    EXPECT_EQ(after.counts[after.index_of(kLow, 1)], 4);
+    EXPECT_EQ(after.counts[after.index_of(kMid, 2)], 9);
+    EXPECT_EQ(sort_pass::read_source_sequence(year + "/data.parquet"), 101);
+}
+
+TEST(UpdateMerge, FullRunStagingWithoutSequenceIsAlwaysFolded) {
+    TempDir dir;
+    make_partitions(dir.path(), {"2024"});
+    const std::string year = dir.path() + "/year=2024";
+
+    // nodes.parquet carries no sequence (full-run staging) and is folded even
+    // though it sits next to a newer update staging file that is dropped.
+    write_staging(year + "/nodes.parquet", {{kLow, 1, 3}});
+    write_staging(year + "/ways.101.parquet", {{kLow, 1, 2}});
+    sort_pass::merge_update_partitions(dir.path(), kDefaultChangeGroupRows, 100);
+
+    const auto merged = read_merged(year + "/data.parquet");
+    ASSERT_EQ(merged.size(), 1);
+    EXPECT_EQ(merged.counts[merged.index_of(kLow, 1)], 3);
+    EXPECT_FALSE(std::filesystem::exists(year + "/nodes.parquet"));
+    EXPECT_FALSE(std::filesystem::exists(year + "/ways.101.parquet"));
+}
+
 }  // namespace

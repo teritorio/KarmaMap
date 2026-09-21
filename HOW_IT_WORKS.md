@@ -125,6 +125,56 @@ A reader (`node_cache::incremental::Reader`) mmaps the file and looks up a
 node's last known cell via the block-directory binary search plus a linear
 scan (returning 0 for nodes absent from the cache).
 
+## Update mode
+
+With `--update` (instead of `--input`), the binary applies osmosis
+replication diffs to an existing dataset whose `manifest.json` recorded an
+`--update-url`. The update stream is that recorded source URL unless
+`--update-url` is given explicitly (which must then match). The starting
+sequence is the recorded source sequence; each
+`.osc.gz` diff (URL `AAA/BBB/CCC.osc.gz`, where N = AAA*1000000 + BBB*1000 +
+CCC from the 3/3/3 split of the sequence) is downloaded to `<output-dir>/diffs/` — a file
+already present is reused, a partial download is removed on failure — and
+applied. Bare `--update` fetches every diff up to the current `state.txt`;
+`--update N` stops after N.
+
+Each diff invokes update-mode passes 1 and 2:
+
+- **Update node pass**: counts the diff's node changes into
+  `changes/year=YYYY/nodes.<seq>.parquet` and folds created/modified
+  positions into an in-memory overlay over the flat incremental cache
+  (`<incremental-cache>`, default `<node-cache>.last`), tracking deletions
+  separately.
+- **Update way pass**: counts the diff's way changes into
+  `changes/year=YYYY/ways.<seq>.parquet`, resolving node refs against the
+  overlay — post-update view for visible ways (overlay else base, deleted
+  resolves to nothing), pre-update view for deleted ways (overlay else base
+  = their last known geometry).
+
+Once per run the `.last` incremental cache is rebuilt as base + overlay minus
+deletions (the incremental writer's tmp+rename swap keeps it consistent), and
+the staged per-sequence counts are folded into each year's `data.parquet` by
+`merge_update_partitions` — base `data.parquet` plus its `nodes.<seq>` /
+`ways.<seq>` staging per year, one rename per year. Fetching N diffs never
+rewrites the dataset N times.
+
+Apply-once semantics: the merged `data.parquet` footer carries a
+`karmamap_source_seq` key stamped with the highest sequence folded in. A
+partition whose stamp is already >= the applied sequence drops any orphaned
+staging and leaves the merged data untouched, so a crash after the merge
+rename (or a rerun of the same diff) is a no-op. Staging carrying a sequence
+later than the applied one (a crashed run that fetched further than a capped
+rerun applies) is dropped rather than folded. Years holding no staging are
+never rewritten.
+
+With `--user-indicators`, each diff additionally runs the user-indicator scan
+into `user_indicator_update_stage/seq_<n>/`; one finalize pass folds the
+per-`(uid, change_date)` activity deltas and per-uid counter totals into
+`user_indicators.parquet` (in place, sorted) and rebuilds
+`user_reputation.parquet` from the combined existing + delta totals. The
+manifest's source block is updated to reflect the highest applied sequence
+and its timestamp once per run.
+
 ## User-indicator pass
 
 The optional `--user-indicators` pass scores history **per user and per UTC

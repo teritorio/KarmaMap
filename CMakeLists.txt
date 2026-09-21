@@ -79,6 +79,7 @@ add_library(karmamap_core STATIC
   src/parquet_batch_writer.cpp
   src/sort_pass.cpp
   src/state.cpp
+  src/update.cpp
   src/user_indicators.cpp
 )
 

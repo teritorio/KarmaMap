@@ -17,9 +17,11 @@
 #include <osmium/io/any_input.hpp>
 #include <osmium/visitor.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -31,6 +33,7 @@
 #include "partitioned_parquet_writer.hpp"
 #include "sort_pass.hpp"
 #include "state.hpp"
+#include "update.hpp"
 #include "user_indicators.hpp"
 #include "way_processor.hpp"
 
@@ -40,6 +43,30 @@ namespace {
 // year=YYYY partition files behind. No-op if absent.
 void reset_dataset_root(const std::string& root) {
     std::filesystem::remove_all(root);
+}
+
+// The cookie jar used for the update stream, or "" when the update URL does
+// not sit behind the authenticated Geofabrik internal server. For the
+// internal host the OSM-session jar is obtained or refreshed up front (from
+// OSM_GEOFABRIK_USER/OSM_GEOFABRIK_PASSWORD in .env) so both the state fetch
+// and every diff download can use it.
+std::string resolve_update_cookie(const Options& opts) {
+    if (!geofabrik_cookie::requires_auth(opts.update_url)) return "";
+    std::string jar =
+        opts.cookie_path.empty() ? geofabrik_cookie::default_cookie_path(opts.output_dir)
+                                 : opts.cookie_path;
+    if (!geofabrik_cookie::has_credentials() && !std::filesystem::exists(jar)) {
+        throw std::runtime_error(
+            "The update URL points at the Geofabrik internal server "
+            "(osm-internal.download.geofabrik.de), which requires an OSM "
+            "account; set OSM_GEOFABRIK_USER/OSM_GEOFABRIK_PASSWORD in .env "
+            "(or pass --cookie with an existing jar)");
+    }
+    if (geofabrik_cookie::has_credentials()) {
+        std::cerr << "[auth] ensuring Geofabrik cookie at " << jar << "\n";
+        geofabrik_cookie::ensure_valid_cookie(jar);
+    }
+    return jar;
 }
 
 void run_node_pass(const Options& opts) {
@@ -168,6 +195,107 @@ void run_user_indicator_pass(const Options& opts) {
                                   opts.reputation_group_rows);
 }
 
+// Update mode: advances an existing dataset along its replication diff stream
+// (see options.cpp --update). Starting from the sequence recorded in
+// manifest.json's source block, every diff up to the target (the current
+// state.txt, capped by --update [N]) is downloaded to <output-dir>/diffs and
+// applied by the update node and way passes into per-sequence staging
+// partitions (nodes.<seq>.parquet / ways.<seq>.parquet). Once after all diffs
+// the flat incremental cache is rebuilt (base + overlay minus deletions) and
+// the staging partitions are merged into data.parquet, so N diffs never
+// rewrite the dataset N times. Returns the provenance to write to manifest
+// (the applied sequence, with the fetched state.txt timestamp).
+std::optional<replication_state::State> run_update_mode(
+    const Options& opts, const replication_state::State& current) {
+    std::cerr << "[update] fetching diff stream state below " << current.url << "\n";
+    const std::string cookie = resolve_update_cookie(opts);
+
+    const std::optional<replication_state::State> dataset_source =
+        manifest::read_source(opts.output_dir);
+    if (!dataset_source) {
+        throw std::runtime_error(
+            "--update needs the sequence the dataset is at, but no source "
+            "provenance block exists in " +
+            opts.output_dir +
+            "/manifest.json; build the dataset first with --input --update-url");
+    }
+    if (replication_state::normalize_update_url(opts.update_url) != dataset_source->url) {
+        throw std::runtime_error("--update-url " + opts.update_url +
+                                 " does not match the dataset's source " + dataset_source->url +
+                                 "; --update only advances a dataset along its "
+                                 "originating diff stream");
+    }
+
+    const uint64_t base_seq = dataset_source->sequence_number;
+    const uint64_t first = base_seq + 1;
+    const uint64_t target =
+        opts.max_update_diffs > 0
+            ? std::min(current.sequence_number,
+                       base_seq + static_cast<uint64_t>(opts.max_update_diffs))
+            : current.sequence_number;
+    if (first > target) {
+        std::cerr << "[update] already at sequence " << base_seq
+                  << " (state.txt=" << current.sequence_number << "); nothing to apply\n";
+        return current;
+    }
+
+    const std::string changes_root = opts.output_dir + "/changes";
+    if (!std::filesystem::is_directory(changes_root)) {
+        throw std::runtime_error("--update needs an existing dataset, but " +
+                                 changes_root + " was not found");
+    }
+    if (!std::filesystem::exists(opts.incremental_cache_path)) {
+        throw std::runtime_error("--update needs the incremental cache " +
+                                 opts.incremental_cache_path +
+                                 "; build the dataset first with --input (--pass all)");
+    }
+
+    std::cerr << "[update] applying sequences " << first << ".." << target << "\n";
+
+    update_pass::NodeState node_state(opts.incremental_cache_path, opts.h3_resolution);
+    const std::string diffs_dir = opts.output_dir + "/diffs";
+    const std::string indicator_stage_root =
+        opts.output_dir + "/user_indicator_update_stage";
+    if (opts.run_user_indicators) {
+        // Stage groups from a crashed earlier run may cover sequences this run
+        // does not re-scan; drop them so finalize only folds what was applied.
+        std::filesystem::remove_all(indicator_stage_root);
+    }
+    uint64_t applied = base_seq;
+    for (uint64_t seq = first; seq <= target; ++seq) {
+        const std::string diff_path = replication_state::fetch_diff(
+            current.url, seq, cookie, diffs_dir + "/" + std::to_string(seq) + ".osc.gz");
+        update_pass::run_node_update(diff_path, changes_root, seq, opts.h3_resolution,
+                                     &node_state);
+        update_pass::run_way_update(diff_path, changes_root, seq, node_state);
+        if (opts.run_user_indicators) {
+            user_indicators::run_scan_diff(
+                diff_path, indicator_stage_root + "/seq_" + std::to_string(seq));
+        }
+        applied = seq;
+    }
+
+    std::cerr << "[update] rebuilding incremental cache " << opts.incremental_cache_path << "\n";
+    node_state.rebuild(opts.incremental_cache_path, opts.h3_resolution);
+
+    std::cerr << "[update] merging staging partitions into " << changes_root << "\n";
+    sort_pass::merge_update_partitions(changes_root, opts.change_group_rows, applied);
+
+    if (opts.run_user_indicators) {
+        user_indicators::run_update_finalize(indicator_stage_root,
+                                             opts.output_dir + "/user_indicators.parquet",
+                                             opts.indicators_group_rows,
+                                             opts.reputation_group_rows);
+    }
+
+    // Provenance now reflects the applied state: the sequence is the last
+    // applied diff (indexed by --update [N]), the timestamp is the fetched
+    // state.txt's (the newest applied day's).
+    replication_state::State new_source = current;
+    new_source.sequence_number = applied;
+    return new_source;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -187,54 +315,50 @@ int main(int argc, char** argv) {
     try {
         std::filesystem::create_directories(opts.output_dir);
 
+        // Source provenance. Fail fast before the passes run: the state.txt
+        // is fetched and parsed up front, so a bad update URL aborts
+        // immediately. Unless --update-url is given, update mode derives the
+        // update stream from the dataset's recorded source URL in
+        // manifest.json (the URL its data was built from).
         std::optional<replication_state::State> source;
-        if (!opts.update_url.empty()) {
-            // Fail fast before the passes run: provenance is fetched and
-            // parsed up front, so a bad update URL aborts immediately.
-            std::string cookie_file;
-            if (geofabrik_cookie::requires_auth(opts.update_url)) {
-                // The internal Geofabrik server sits behind an OSM session
-                // cookie; obtain or refresh the jar before the state fetch.
-                std::string jar =
-                    opts.cookie_path.empty()
-                        ? geofabrik_cookie::default_cookie_path(opts.output_dir)
-                        : opts.cookie_path;
-                if (!geofabrik_cookie::has_credentials() &&
-                    !std::filesystem::exists(jar)) {
-                    throw std::runtime_error(
-                        "The update URL points at the Geofabrik internal "
-                        "server (osm-internal.download.geofabrik.de), which "
-                        "requires an OSM account; set OSM_GEOFABRIK_USER/"
-                        "OSM_GEOFABRIK_PASSWORD in .env (or pass --cookie with "
-                        "an existing jar)");
-                }
-                if (geofabrik_cookie::has_credentials()) {
-                    std::cerr << "[auth] ensuring Geofabrik cookie at " << jar
-                              << "\n";
-                    geofabrik_cookie::ensure_valid_cookie(jar);
-                }
-                cookie_file = jar;
+        if (opts.update_mode && opts.update_url.empty()) {
+            const std::optional<replication_state::State> dataset_source =
+                manifest::read_source(opts.output_dir);
+            if (!dataset_source || dataset_source->url.empty()) {
+                throw std::runtime_error(
+                    "--update needs the dataset's update stream, but " +
+                    opts.output_dir +
+                    "/manifest.json carries no source URL; rebuild the dataset "
+                    "with --update-url, or pass --update-url");
             }
+            opts.update_url = dataset_source->url;
+        }
+        if (!opts.update_url.empty()) {
+            const std::string cookie_file = resolve_update_cookie(opts);
             std::cerr << "[source] fetching " << opts.update_url << "state.txt\n";
             source = replication_state::fetch(opts.update_url, cookie_file);
             std::cerr << "[source] sequence_number=" << source->sequence_number
                       << " timestamp=" << source->timestamp << "\n";
         }
 
-        if (opts.run_node_pass) {
-            run_node_pass(opts);
-        }
-        if (opts.run_way_pass) {
-            run_way_pass(opts);
-        }
-        if (opts.run_sort_pass) {
-            run_sort_pass(opts);
-        }
-        if (opts.run_step4) {
-            run_step4_pass(opts);
-        }
-        if (opts.run_user_indicators) {
-            run_user_indicator_pass(opts);
+        if (opts.update_mode) {
+            source = run_update_mode(opts, *source);
+        } else {
+            if (opts.run_node_pass) {
+                run_node_pass(opts);
+            }
+            if (opts.run_way_pass) {
+                run_way_pass(opts);
+            }
+            if (opts.run_sort_pass) {
+                run_sort_pass(opts);
+            }
+            if (opts.run_step4) {
+                run_step4_pass(opts);
+            }
+            if (opts.run_user_indicators) {
+                run_user_indicator_pass(opts);
+            }
         }
 
         std::cerr << "[manifest] writing " << opts.output_dir << "/manifest.json\n";

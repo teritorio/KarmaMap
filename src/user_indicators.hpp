@@ -223,4 +223,21 @@ void run_scan(const std::string& input_path, const std::string& stage_dir);
 void run_finalize(const std::string& stage_dir, const std::string& indicators_path,
                   int64_t indicators_group_rows, int64_t reputation_group_rows);
 
+// Update mode: scans one replication diff (an .osc.gz change file) into a
+// fresh stage_dir. The scan handler classifies diff objects the same way the
+// history scan does (visible version 1 = created, later versions = modified,
+// invisible = deleted); the version_ == 1 test matches a diff, whose creates
+// always carry version 1.
+void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
+
+// Merges the per-diff update stage dirs under `stage_root` (each
+// stage_root/seq_<n>/stage_*.parquet) into the existing datasets: the per
+// (uid, change_date) deltas are summed into user_indicators.parquet, and
+// user_reputation.parquet is recomputed from the existing per-uid totals plus
+// the diff totals (so newly appeared contributors join the ranking). Called
+// once per --update run. The existing files must carry the schemas written by
+// run_finalize (full-run datasets) or a previous update finalize.
+void run_update_finalize(const std::string& stage_root, const std::string& indicators_path,
+                         int64_t indicators_group_rows, int64_t reputation_group_rows);
+
 }  // namespace user_indicators

@@ -25,4 +25,10 @@ void write_manifest(const std::string& output_dir, int h3_resolution,
                     const std::optional<replication_state::State>& source =
                         std::nullopt);
 
+// Reads back the source provenance block of output-dir/manifest.json (the
+// normalized update URL, replication sequence number and timestamp).
+// Nullopt when the manifest is missing or carries no usable source block.
+// --update uses this to find the sequence the dataset is already at.
+std::optional<replication_state::State> read_source(const std::string& output_dir);
+
 }  // namespace manifest

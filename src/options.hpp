@@ -16,6 +16,8 @@ struct Options {
     std::string output_dir;
     std::string update_url;
     std::string cookie_path;  // empty: use <output-dir>/.geofabrik.cookie
+    bool update_mode = false;
+    int64_t max_update_diffs = 0;  // 0: catch up to the current state txt
     int h3_resolution = 9;
     size_t way_batch_bytes = kDefaultWayBatchBytes;
     int64_t change_group_rows = kDefaultChangeGroupRows;
@@ -26,6 +28,7 @@ struct Options {
     bool run_sort_pass = true;
     bool run_step4 = true;
     bool run_user_indicators = false;
+    bool pass_given = false;  // whether --pass was passed (rejected with --update)
 };
 
 void print_usage(const char* argv0);

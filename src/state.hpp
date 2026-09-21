@@ -33,6 +33,13 @@ std::string normalize_update_url(const std::string& update_url);
 // The state.txt URL derived from an update URL (<update_url>/state.txt).
 std::string state_txt_url(const std::string& update_url);
 
+// The osmosis replication diff URL for a sequence: groups of three digits
+// from the right (N = AAA*1000000 + BBB*1000 + CCC) split into the URL
+// directory, padded to three digits, the last group being the file name:
+//   diff_url("https://x/y-updates/", 2847632) ==
+//     "https://x/y-updates/002/847/632.osc.gz"
+std::string diff_url(const std::string& update_url, uint64_t sequence_number);
+
 // Parses osmosis-format state.txt text. Throws std::runtime_error when a
 // field is missing or malformed.
 State parse_state(const std::string& content, const std::string& url);
@@ -44,5 +51,12 @@ State parse_state(const std::string& content, const std::string& url);
 // osm-internal.download.geofabrik.de. Throws std::runtime_error on transport,
 // HTTP or parse failures.
 State fetch(const std::string& update_url, const std::string& cookie_file = "");
+
+// Downloads the replication diff for `sequence_number` (see diff_url) to
+// `dest_path`. A file already present at dest_path is reused without a
+// network hit. `cookie_file` is sent with the request when non-empty.
+// Returns dest_path. Throws std::runtime_error on transport or HTTP failures.
+std::string fetch_diff(const std::string& update_url, uint64_t sequence_number,
+                       const std::string& cookie_file, const std::string& dest_path);
 
 }  // namespace replication_state

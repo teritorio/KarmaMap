@@ -12,8 +12,25 @@ void print_usage(const char* argv0) {
         << " --input <planet.osh.pbf> --node-cache <file> --output-dir <dir> "
            "[core options]\n\n"
         << "Core options:\n"
-        << "  --input                OSM full-history file (.osh.pbf)\n"
-        << "  --node-cache           Node position cache file (wiped and rebuilt by pass 1, read by pass 2)\n"
+        << "  --input                OSM full-history file (.osh.pbf); mutually\n"
+        << "                         exclusive with --update\n"
+        << "  --update [N]           Update mode (no --input): fetch and apply osmosis\n"
+        << "                         replication diffs to an existing dataset. The\n"
+        << "                         starting sequence is read from manifest.json's\n"
+        << "                         source block, whose URL is the update stream\n"
+        << "                         (overridable with --update-url; an explicit URL\n"
+        << "                         must match the recorded one). Each diff is\n"
+        << "                         downloaded from that URL (3/3/3 osmosis layout,\n"
+        << "                         .osc.gz) and applied by re-running passes 1-3 in\n"
+        << "                         update mode (deltas merged once into the datasets\n"
+        << "                         at the end of the run). N caps the number of\n"
+        << "                         diffs fetched per run (default: catch up to the\n"
+        << "                         current state.txt). The incremental cache to\n"
+        << "                         read/rebuild is --incremental-cache, or derived\n"
+        << "                         from --node-cache (<node-cache>.last); the full\n"
+        << "                         history node cache is not used.\n"
+        << "  --node-cache           Node position cache file (wiped and rebuilt by pass 1, read by pass 2);\n"
+        << "                         with --update only used to derive the incremental cache\n"
         << "  --output-dir           Output directory for the Parquet datasets\n"
         << "  --update-url           Osmosis replication update URL (e.g.\n"
         << "                         https://.../canary-islands-updates/); its\n"
@@ -54,6 +71,20 @@ void print_usage(const char* argv0) {
 }
 
 bool parse_args(int argc, char** argv, Options* opts) {
+    auto is_count = [](const std::string& token) {
+        if (token.empty()) return false;
+        for (char c : token) {
+            if (c < '0' || c > '9') return false;
+        }
+        return true;
+    };
+    auto parse_count = [&](const std::string& token, const char* flag) {
+        if (!is_count(token)) {
+            throw std::runtime_error(std::string("Invalid value for ") + flag + ": " + token);
+        }
+        return std::stoll(token);
+    };
+
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         auto next_value = [&](const char* flag) -> std::string {
@@ -105,6 +136,7 @@ bool parse_args(int argc, char** argv, Options* opts) {
             opts->reputation_group_rows = rows;
         } else if (arg == "--pass") {
             std::string v = next_value("--pass");
+            opts->pass_given = true;
             opts->run_node_pass = (v == "1" || v == "all");
             opts->run_way_pass = (v == "2" || v == "all");
             opts->run_sort_pass = (v == "3" || v == "all");
@@ -112,6 +144,15 @@ bool parse_args(int argc, char** argv, Options* opts) {
             if (v != "1" && v != "2" && v != "3" && v != "4" && v != "all") {
                 throw std::runtime_error("--pass must be 1, 2, 3, 4 or all (got: " + v + ")");
             }
+        } else if (arg == "--update") {
+            opts->update_mode = true;
+            // Optional max diff count: --update [N]
+            if (i + 1 < argc && is_count(argv[i + 1])) {
+                opts->max_update_diffs = parse_count(argv[++i], "--update");
+            }
+        } else if (arg.compare(0, 9, "--update=") == 0) {
+            opts->update_mode = true;
+            opts->max_update_diffs = parse_count(arg.substr(9), "--update");
         } else if (arg == "--user-indicators") {
             opts->run_user_indicators = true;
         } else if (arg == "--help" || arg == "-h") {
@@ -121,11 +162,39 @@ bool parse_args(int argc, char** argv, Options* opts) {
         }
     }
 
-    if (opts->input_path.empty() || opts->node_cache_path.empty() || opts->output_dir.empty()) {
-        throw std::runtime_error("--input, --node-cache and --output-dir are required");
+    if (opts->update_mode) {
+        if (!opts->input_path.empty()) {
+            throw std::runtime_error("--input and --update are mutually exclusive");
+        }
+        if (opts->pass_given) {
+            throw std::runtime_error(
+                "--pass is not used with --update: update mode always runs the "
+                "node, way and merge passes and rebuilds the incremental cache");
+        }
+    } else if (opts->input_path.empty()) {
+        throw std::runtime_error("--input is required (or use --update to apply diffs)");
     }
-    if (opts->incremental_cache_path.empty()) {
-        opts->incremental_cache_path = opts->node_cache_path + ".last";
+    if (opts->output_dir.empty()) {
+        throw std::runtime_error("--output-dir is required");
+    }
+    if (opts->update_mode) {
+        // Update mode only needs the incremental (<node-cache>.last) cache;
+        // the full history node cache is a full-mode input.
+        if (opts->incremental_cache_path.empty()) {
+            if (opts->node_cache_path.empty()) {
+                throw std::runtime_error(
+                    "--update needs the incremental cache; pass --node-cache "
+                    "(defaults to <node-cache>.last) or --incremental-cache");
+            }
+            opts->incremental_cache_path = opts->node_cache_path + ".last";
+        }
+    } else {
+        if (opts->node_cache_path.empty()) {
+            throw std::runtime_error("--node-cache is required");
+        }
+        if (opts->incremental_cache_path.empty()) {
+            opts->incremental_cache_path = opts->node_cache_path + ".last";
+        }
     }
     if (opts->h3_resolution < 0 ||
         opts->h3_resolution > h3_utils::kMaxPackedCellResolution) {

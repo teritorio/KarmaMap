@@ -10,6 +10,7 @@
 
 #include "node_cache.hpp"
 #include "test_helpers.hpp"
+#include "update.hpp"
 
 namespace {
 
@@ -201,6 +202,111 @@ TEST(IncrementalCache, CollapsesHistoryCache) {
     EXPECT_EQ(r.lookup(1), cell(0xBBBB));
     EXPECT_EQ(r.lookup(2), cell(0xCCCC));
     EXPECT_EQ(r.lookup(3), cell(0xFFFF));
+}
+
+// ---------------------------------------------------------------------------
+// update_pass::NodeState (diff overlay over the flat incremental cache)
+// ---------------------------------------------------------------------------
+
+TEST(NodeState, ResolvesAgainstBaseCache) {
+    TempDir dir;
+    const std::string path = dir.join("incr.bin");
+    {
+        node_cache::incremental::Writer w(path, 9);
+        w.add(10, cell(0xAAAA));
+        w.add(20, cell(0xBBBB));
+        w.finish();
+    }
+    update_pass::NodeState state(path, 9);
+    EXPECT_EQ(state.pre(10), cell(0xAAAA));
+    EXPECT_EQ(state.post(10), cell(0xAAAA));
+    EXPECT_EQ(state.pre(20), cell(0xBBBB));
+    EXPECT_EQ(state.pre(999), 0);  // unknown node
+    EXPECT_EQ(state.overlay_size(), 0);
+    EXPECT_EQ(state.deleted_size(), 0);
+}
+
+TEST(NodeState, CreatedNodeOverlaysBase) {
+    TempDir dir;
+    const std::string path = dir.join("incr.bin");
+    {
+        node_cache::incremental::Writer w(path, 9);
+        w.add(10, cell(0xAAAA));
+        w.finish();
+    }
+    update_pass::NodeState state(path, 9);
+    state.set_position(10, cell(0xCCCC));  // modification
+    state.set_position(20, cell(0xDDDD));  // creation
+    EXPECT_EQ(state.pre(10), cell(0xCCCC));
+    EXPECT_EQ(state.post(10), cell(0xCCCC));
+    EXPECT_EQ(state.post(20), cell(0xDDDD));
+    EXPECT_EQ(state.overlay_size(), 2);
+}
+
+TEST(NodeState, DeletedNodePreKeepsLastCellPostIsZero) {
+    TempDir dir;
+    const std::string path = dir.join("incr.bin");
+    {
+        node_cache::incremental::Writer w(path, 9);
+        w.add(10, cell(0xAAAA));
+        w.add(20, cell(0xBBBB));
+        w.finish();
+    }
+    update_pass::NodeState state(path, 9);
+    const uint64_t last = state.remove_node(10);
+    EXPECT_EQ(last, cell(0xAAAA));  // pre-update view for deleted ways
+    EXPECT_EQ(state.pre(10), cell(0xAAAA));  // last known cell kept for deleted-way resolution
+    EXPECT_EQ(state.post(10), 0);
+    EXPECT_EQ(state.deleted_size(), 1);
+    EXPECT_EQ(state.overlay_size(), 0);
+}
+
+TEST(NodeState, SetPositionAfterDeleteReinstates) {
+    TempDir dir;
+    const std::string path = dir.join("incr.bin");
+    {
+        node_cache::incremental::Writer w(path, 9);
+        w.add(10, cell(0xAAAA));
+        w.finish();
+    }
+    update_pass::NodeState state(path, 9);
+    state.remove_node(10);
+    state.set_position(10, cell(0xEEEE));  // deleted then recreated in the batch
+    EXPECT_EQ(state.pre(10), cell(0xEEEE));
+    EXPECT_EQ(state.post(10), cell(0xEEEE));
+    EXPECT_EQ(state.deleted_size(), 0);
+}
+
+TEST(NodeState, RebuildMergesOverlayAndDropsDeleted) {
+    TempDir dir;
+    const std::string path = dir.join("incr.bin");
+    const std::string out = dir.join("incr.last");
+    {
+        node_cache::incremental::Writer w(path, 9);
+        w.add(1, cell(0xAAAA));
+        w.add(2, cell(0xBBBB));
+        w.add(5, cell(0xCCCC));
+        w.finish();
+    }
+    {
+        update_pass::NodeState state(path, 9);
+        state.set_position(2, cell(0xDDDD));   // modify base node
+        state.remove_node(5);                  // delete base node
+        state.set_position(7, cell(0xEEEE));   // new node
+        state.set_position(9, cell(0xFFFF));   // new node
+        state.rebuild(out, 9);
+    }
+    node_cache::incremental::Reader r(out, 9);
+    EXPECT_EQ(r.size(), 4);
+    EXPECT_EQ(r.node_at(0), 1);
+    EXPECT_EQ(r.node_at(1), 2);
+    EXPECT_EQ(r.node_at(2), 7);
+    EXPECT_EQ(r.node_at(3), 9);
+    EXPECT_EQ(r.lookup(1), cell(0xAAAA));
+    EXPECT_EQ(r.lookup(2), cell(0xDDDD));  // overridden
+    EXPECT_EQ(r.lookup(5), 0);             // deleted
+    EXPECT_EQ(r.lookup(7), cell(0xEEEE));  // interleaved sorted
+    EXPECT_EQ(r.lookup(9), cell(0xFFFF));
 }
 
 }  // namespace

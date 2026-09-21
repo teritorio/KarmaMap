@@ -7,6 +7,7 @@
 
 namespace {
 
+using replication_state::diff_url;
 using replication_state::normalize_update_url;
 using replication_state::parse_state;
 using replication_state::state_txt_url;
@@ -24,6 +25,23 @@ TEST(StateUrl, StateTxtUrlAppendsToNormalizedBase) {
               "https://x/y-updates/state.txt");
     EXPECT_EQ(state_txt_url("https://x/y-updates"),
               "https://x/y-updates/state.txt");
+}
+
+TEST(StateUrl, DiffUrlThreeThreeThreeLayout) {
+    EXPECT_EQ(diff_url("https://x/y-updates/", 2847632ULL),
+              "https://x/y-updates/002/847/632.osc.gz");
+}
+
+TEST(StateUrl, DiffUrlPadsLowSequences) {
+    EXPECT_EQ(diff_url("https://x/y-updates/", 42ULL),
+              "https://x/y-updates/000/000/042.osc.gz");
+    EXPECT_EQ(diff_url("https://x/y-updates/", 0ULL),
+              "https://x/y-updates/000/000/000.osc.gz");
+}
+
+TEST(StateUrl, DiffUrlNormalizesTrailingSlash) {
+    EXPECT_EQ(diff_url("https://x/y-updates", 9999999ULL),
+              "https://x/y-updates/009/999/999.osc.gz");
 }
 
 TEST(StateParse, ParsesOsmosisFormat) {

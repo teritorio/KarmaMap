@@ -230,4 +230,111 @@ TEST(Options, ReputationGroupRowsTooSmallThrows) {
                  std::runtime_error);
 }
 
+// ---------------------------------------------------------------------------
+// --update
+// ---------------------------------------------------------------------------
+
+TEST(Options, UpdateModeWithoutUpdateUrlParses) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "--update", "--node-cache", "cache.bin",
+                       "--output-dir", "out"},
+                      &opts));
+    EXPECT_TRUE(opts.update_mode);
+    EXPECT_TRUE(opts.update_url.empty());  // resolved from manifest.json at runtime
+}
+
+TEST(Options, UpdateModeWithIncrementalCacheOnly) {
+    Options opts;  // full history node cache not needed in update mode
+    ASSERT_TRUE(parse({"prog", "--update", "--incremental-cache", "incr.bin",
+                       "--output-dir", "out"},
+                      &opts));
+    EXPECT_TRUE(opts.update_mode);
+    EXPECT_TRUE(opts.node_cache_path.empty());
+    EXPECT_EQ(opts.incremental_cache_path, "incr.bin");
+}
+
+TEST(Options, UpdateModeWithoutCacheThrows) {
+    Options opts;
+    EXPECT_THROW(parse({"prog", "--update", "--output-dir", "out"}, &opts),
+                 std::runtime_error);
+}
+
+TEST(Options, UpdateModeBare) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "--update", "--update-url",
+                       "https://example.com/region-updates/",
+                       "--node-cache", "cache.bin", "--output-dir", "out"},
+                      &opts));
+    EXPECT_TRUE(opts.update_mode);
+    EXPECT_EQ(opts.max_update_diffs, 0);  // catch up to the current state.txt
+    EXPECT_TRUE(opts.input_path.empty());
+}
+
+TEST(Options, UpdateModeCountSeparateToken) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "--update", "5", "--update-url",
+                       "https://example.com/region-updates/",
+                       "--node-cache", "cache.bin", "--output-dir", "out"},
+                      &opts));
+    EXPECT_TRUE(opts.update_mode);
+    EXPECT_EQ(opts.max_update_diffs, 5);
+}
+
+TEST(Options, UpdateModeCountEquals) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "--update=3", "--update-url",
+                       "https://example.com/region-updates/",
+                       "--node-cache", "cache.bin", "--output-dir", "out"},
+                      &opts));
+    EXPECT_TRUE(opts.update_mode);
+    EXPECT_EQ(opts.max_update_diffs, 3);
+}
+
+TEST(Options, UpdateModeCountZeroIsBare) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "--update", "0", "--update-url",
+                       "https://example.com/region-updates/",
+                       "--node-cache", "cache.bin", "--output-dir", "out"},
+                      &opts));
+    EXPECT_TRUE(opts.update_mode);
+    EXPECT_EQ(opts.max_update_diffs, 0);
+}
+
+TEST(Options, UpdateModeInvalidCountThrows) {
+    Options opts;
+    EXPECT_THROW(parse({"prog", "--update", "abc", "--update-url",
+                        "https://example.com/region-updates/",
+                        "--node-cache", "cache.bin", "--output-dir", "out"},
+                       &opts),
+                 std::runtime_error);
+}
+
+TEST(Options, UpdateModeWithInputThrows) {
+    Options opts;
+    EXPECT_THROW(parse({"prog", "--input", "in.pbf", "--update", "--update-url",
+                        "https://example.com/region-updates/",
+                        "--node-cache", "cache.bin", "--output-dir", "out"},
+                       &opts),
+                 std::runtime_error);
+}
+
+TEST(Options, UpdateModeWithPassThrows) {
+    Options opts;
+    EXPECT_THROW(parse({"prog", "--update", "--update-url",
+                        "https://example.com/region-updates/",
+                        "--node-cache", "cache.bin", "--output-dir", "out",
+                        "--pass", "2"},
+                       &opts),
+                 std::runtime_error);
+}
+
+TEST(Options, InputDownloadUrlIsFullMode) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--update-url",
+                       "https://example.com/region-updates/",
+                       "--node-cache", "cache.bin", "--output-dir", "out"},
+                      &opts));
+    EXPECT_FALSE(opts.update_mode);
+}
+
 }  // namespace

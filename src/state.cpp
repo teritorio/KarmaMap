@@ -5,6 +5,9 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -19,6 +22,22 @@ std::string normalize_update_url(const std::string& update_url) {
 
 std::string state_txt_url(const std::string& update_url) {
     return normalize_update_url(update_url) + "state.txt";
+}
+
+std::string diff_url(const std::string& update_url, uint64_t sequence_number) {
+    const std::string base = normalize_update_url(update_url);
+    // N = AAA*1000000 + BBB*1000 + CCC (osmosis replication layout): each
+    // group padded to three digits becomes the URL segment, the last group
+    // being the file name itself.
+    const uint64_t aaa = sequence_number / 1000000;
+    const uint64_t bbb = (sequence_number / 1000) % 1000;
+    const uint64_t ccc = sequence_number % 1000;
+    char buf[16];
+    auto group = [&](uint64_t value) {
+        std::snprintf(buf, sizeof(buf), "%03llu", static_cast<unsigned long long>(value));
+        return std::string(buf, 3);
+    };
+    return base + group(aaa) + "/" + group(bbb) + "/" + group(ccc) + ".osc.gz";
 }
 
 namespace {
@@ -91,6 +110,14 @@ size_t append_body(char* ptr, size_t size, size_t nmemb, void* userdata) {
     return size * nmemb;
 }
 
+// curl write callback: streams the downloaded bytes to a binary ofstream.
+size_t stream_to_file(char* ptr, size_t size, size_t nmemb, void* userdata) {
+    auto* out = static_cast<std::ofstream*>(userdata);
+    out->write(ptr, static_cast<std::streamsize>(size * nmemb));
+    if (!*out) return 0;  // write error: abort the transfer
+    return size * nmemb;
+}
+
 // Appends a hint when the failing request targets the authenticated
 // internal Geofabrik server, explaining how the session cookie is obtained.
 std::string auth_hint(const std::string& url) {
@@ -143,6 +170,58 @@ State fetch(const std::string& update_url, const std::string& cookie_file) {
     }
 
     return parse_state(body, url);
+}
+
+std::string fetch_diff(const std::string& update_url, uint64_t sequence_number,
+                       const std::string& cookie_file, const std::string& dest_path) {
+    if (std::filesystem::exists(dest_path)) return dest_path;  // already downloaded
+
+    const std::string url = diff_url(update_url, sequence_number);
+    const std::filesystem::path dest(dest_path);
+    std::filesystem::create_directories(dest.parent_path());
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        throw std::runtime_error("Failed to initialize curl for " + url);
+    }
+
+    // Download under a temp name and rename into place on success, so a crash
+    // never leaves a truncated file that the reuse check would accept.
+    const std::string tmp_path = dest_path + ".tmp";
+    std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) {
+        curl_easy_cleanup(curl);
+        throw std::runtime_error("Failed to open diff destination " + tmp_path);
+    }
+
+    long status = 0;
+    char errbuf[CURL_ERROR_SIZE] = {0};
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, stream_to_file);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &out);
+    curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
+    curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
+    if (!cookie_file.empty()) {
+        curl_easy_setopt(curl, CURLOPT_COOKIEFILE, cookie_file.c_str());
+    }
+
+    const CURLcode res = curl_easy_perform(curl);
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    curl_easy_cleanup(curl);
+    out.close();
+
+    if (res != CURLE_OK || status != 200) {
+        std::filesystem::remove(tmp_path);  // never leave a partial diff behind
+        const std::string detail =
+            res != CURLE_OK ? (errbuf[0] ? std::string(errbuf) : curl_easy_strerror(res))
+                            : ("HTTP " + std::to_string(status));
+        throw std::runtime_error("Failed to fetch " + url + ": " + detail + auth_hint(url));
+    }
+
+    std::filesystem::rename(tmp_path, dest_path);
+    return dest_path;
 }
 
 }  // namespace replication_state

@@ -7,11 +7,13 @@
 #include <parquet/types.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -22,6 +24,71 @@
 namespace manifest {
 
 namespace {
+
+// Minimal JSON helpers over the manifest text emitted by write_manifest.
+// Keys are matched at token boundaries (the character before the opening
+// quote must not be a word character, underscore or quote), so a quoted
+// value that merely contains the key name cannot shadow the real key. Values
+// are returned long-string first.
+
+bool is_key_boundary(const std::string& text, size_t pos) {
+    if (pos == 0) return true;
+    const unsigned char prev = static_cast<unsigned char>(text[pos - 1]);
+    return !(std::isalnum(prev) || prev == '_' || prev == '"');
+}
+
+std::optional<std::string> json_string_value(const std::string& text, const std::string& key) {
+    const std::string token = "\"" + key + "\"";
+    size_t pos = 0;
+    while ((pos = text.find(token, pos)) != std::string::npos) {
+        if (is_key_boundary(text, pos)) {
+            const size_t colon = text.find(':', pos + token.size());
+            if (colon != std::string::npos) {
+                const size_t start = text.find_first_not_of(" \t\r\n", colon + 1);
+                if (start != std::string::npos && text[start] == '"') {
+                    const size_t quote = text.find('"', start + 1);
+                    if (quote != std::string::npos && quote > start) {
+                        std::string value = text.substr(start + 1, quote - start - 1);
+                        // Undo the escapes write_manifest emits (`\"` and
+                        // `\\`); URLs and timestamps carry no other escapes.
+                        size_t out = 0;
+                        for (size_t i = 0; i < value.size(); ++i) {
+                            if (value[i] == '\\' && i + 1 < value.size() &&
+                                (value[i + 1] == '"' || value[i + 1] == '\\')) {
+                                ++i;
+                            }
+                            value[out++] = value[i];
+                        }
+                        value.resize(out);
+                        return value;
+                    }
+                }
+            }
+        }
+        pos += token.size();
+    }
+    return std::nullopt;
+}
+
+std::optional<uint64_t> json_number_value(const std::string& text, const std::string& key) {
+    const std::string token = "\"" + key + "\"";
+    size_t pos = 0;
+    while ((pos = text.find(token, pos)) != std::string::npos) {
+        if (is_key_boundary(text, pos)) {
+            const size_t colon = text.find(':', pos + token.size());
+            if (colon != std::string::npos) {
+                const size_t start = text.find_first_not_of(" \t\r\n", colon + 1);
+                if (start != std::string::npos && text[start] >= '0' && text[start] <= '9') {
+                    size_t end = start;
+                    while (end < text.size() && text[end] >= '0' && text[end] <= '9') ++end;
+                    return std::stoull(text.substr(start, end - start));
+                }
+            }
+        }
+        pos += token.size();
+    }
+    return std::nullopt;
+}
 
 // Scans dataset_root/year=YYYY and returns the sorted list of "YYYY"
 // partition strings actually present on disk.
@@ -260,6 +327,46 @@ void write_manifest(const std::string& output_dir, int h3_resolution,
     }
     out << "\n  }\n";
     out << "}\n";
+}
+
+std::optional<replication_state::State> read_source(const std::string& output_dir) {
+    std::ifstream in(output_dir + "/manifest.json");
+    if (!in) return std::nullopt;
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    const std::string text = ss.str();
+
+    // Bound the key lookups to the "source" object: write_manifest emits it
+    // with exactly one level of nesting (no objects inside), so its balanced
+    // { } range is easy to carve out.
+    const std::string token = "\"source\"";
+    size_t pos = text.find(token);
+    while (pos != std::string::npos && !is_key_boundary(text, pos)) {
+        pos = text.find(token, pos + token.size());
+    }
+    if (pos == std::string::npos) return std::nullopt;
+
+    const size_t open = text.find('{', pos + token.size());
+    if (open == std::string::npos) return std::nullopt;
+    size_t depth = 1;
+    size_t end = open;
+    while (depth > 0 && ++end < text.size()) {
+        if (text[end] == '{') ++depth;
+        else if (text[end] == '}') --depth;
+    }
+    if (depth != 0) return std::nullopt;
+    const std::string block = text.substr(open, end - open);
+
+    const auto url = json_string_value(block, "url");
+    const auto seq = json_number_value(block, "sequence_number");
+    if (!url || !seq) return std::nullopt;
+
+    replication_state::State state;
+    state.url = replication_state::normalize_update_url(*url);
+    state.sequence_number = *seq;
+    const auto ts = json_string_value(block, "timestamp");
+    state.timestamp = ts.value_or("");
+    return state;
 }
 
 }  // namespace manifest

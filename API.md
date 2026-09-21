@@ -56,7 +56,8 @@ row data exists yet):
 replication provenance: the normalized update URL (trailing `/` guaranteed),
 and the replication `sequence_number` and `timestamp` parsed from its
 `state.txt`. `sequence_number` is a JSON number; `url` and `timestamp` are
-strings, with the osmosis `\:` timestamp escaping preserved.
+strings, with the osmosis `\:` timestamp escaping preserved. An `--update`
+run advances them to the highest applied diff sequence and its timestamp.
 
 `partition_footer_sizes` (one entry per readable `data.parquet` year) and
 `footer_size` (non-partitioned user files) give the byte length of each
@@ -101,6 +102,20 @@ GROUP BY change_date
 ORDER BY change_date
 LIMIT 20;
 ```
+
+## Update mode
+
+An `--update` run downloads osmosis replication diffs (`.osc.gz`, one per
+sequence) and folds them into the existing dataset. Each rewritten year's
+`data.parquet` footer carries a `karmamap_source_seq` key_value_metadata
+entry holding the highest applied sequence number as a string: the merge is
+apply-once, so a partition stamped at or beyond the run's sequence is never
+rewritten again (orphaned per-sequence staging files under that year, plus
+any staging from sequences beyond the run's applied one, are simply
+deleted). The `changes/` staging files from an update run are named
+`nodes.<seq>.parquet`/`ways.<seq>.parquet` (vs. the full-run `nodes.parquet`/
+`ways.parquet`), describing the sequence each delta came from; they exist
+only until the first merge after their fetch.
 
 ## Users part
 

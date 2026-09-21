@@ -128,6 +128,7 @@ karmamap --input <planet.osh.pbf> --node-cache <file> --output-dir <dir> [core o
 | `--indicators-group-rows` | Target rows per Parquet row group of `user_indicators.parquet` (default: `10000`) |
 | `--reputation-group-rows` | Target rows per Parquet row group of `user_reputation.parquet` (default: `1000`) |
 | `--user-indicators` | Also run the user-indicator pass (see [HOW_IT_WORKS.md](HOW_IT_WORKS.md)); independent of passes 1-3 |
+| `--update` | Update mode: instead of an `--input` snapshot, fetch osmosis replication diffs from `--update-url` and apply them to the existing dataset (mutually exclusive with `--input`, incompatible with `--pass`). Bare `--update` catches up to the current `state.txt`; `--update N` or `--update=N` caps the fetch at N diffs. Requires `--update-url`, `--node-cache` (with its `.last` incremental cache) and `--output-dir` |
 
 ### Running
 
@@ -157,6 +158,28 @@ docker compose --profile=build run --rm karmamap karmamap --input /data/region.o
 
 docker compose --profile=build run --rm karmamap karmamap --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/output --pass 3
 ```
+
+#### Updating an existing dataset
+
+Once a dataset was built (and optionally recorded with `--update-url`), an
+update run fetches the replication diffs between the recorded sequence and a
+newer `state.txt` (or a capped number of diffs) from the same update URL and
+folds them in. The update URL is taken from the source block recorded in
+`manifest.json`, so `--update-url` may be omitted; when passed explicitly it
+must match the recorded source URL. The incremental cache
+(`<node-cache>.last`) is the update state that gets read and rebuilt; the full
+history node cache is not touched, so `--node-cache` may be replaced by
+`--incremental-cache`:
+
+```bash
+docker compose --profile=build run --rm karmamap karmamap --update --incremental-cache /data/node_positions.cache.last --output-dir /data/output
+```
+
+Bare `--update` applies every diff up to the current `state.txt`; `--update N`
+(equivalently `--update=N`) stops after N diffs. Each fetched diff (`<seq>.osc.gz`,
+downloaded to `<output-dir>/diffs/`) runs the node and way passes with per-diff
+staging files, so a multi-diff run merges everything into `data.parquet` exactly
+once.
 
 ### Serving the web frontend
 

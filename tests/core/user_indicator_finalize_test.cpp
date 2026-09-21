@@ -259,4 +259,81 @@ TEST(UserIndicatorFinalize, NoStageIsNoOp) {
     EXPECT_FALSE(std::filesystem::exists(indicators));
 }
 
+// Update mode: per-diff stage groups under stage_root/seq_<n>/ fold into the
+// base user_indicators.parquet and user_reputation.parquet exactly once.
+TEST(UserIndicatorFinalize, UpdateMergesDeltasIntoExistingFiles) {
+    TempDir dir;
+    const std::string indicators = dir.join("user_indicators.parquet");
+
+    // Base dataset: one scan/finalize run producing the indicator and
+    // reputation files.
+    const std::string base_stage = dir.join("base_stage");
+    std::filesystem::create_directories(base_stage);
+    write_stage(base_stage + "/stage_00000.parquet",
+                {
+                    {10, "alice", 1000, 5, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0},
+                    {11, "bob", 2000, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                });
+    user_indicators::run_finalize(base_stage, indicators, kDefaultIndicatorsGroupRows,
+                                  kDefaultReputationGroupRows);
+
+    // One update run: sequence 2847600 (nodes+ways) and 2847601 (ways only),
+    // in separate stage groups under stage_root/seq_<n>.
+    const std::string stage_root = dir.join("update_stage");
+    const std::string group_a = stage_root + "/seq_2847600";
+    const std::string group_b = stage_root + "/seq_2847601";
+    std::filesystem::create_directories(group_a);
+    std::filesystem::create_directories(group_b);
+    write_stage(group_a + "/stage.parquet",
+                {
+                    {10, "alice", 1000, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                    {13, "carol", 1001, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                });
+    write_stage(group_b + "/stage.parquet",
+                {
+                    {11, "bob", 2001, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                });
+
+    user_indicators::run_update_finalize(stage_root, indicators,
+                                         kDefaultIndicatorsGroupRows,
+                                         kDefaultReputationGroupRows);
+
+    // Existing (uid,day) rows accumulate; new users are appended.
+    const auto ind = read_indicators(indicators);
+    const std::vector<int64_t> exp_uid = {10, 11, 11, 13};
+    const std::vector<uint16_t> exp_day = {1000, 2000, 2001, 1001};
+    ASSERT_EQ(ind.uid.size(), exp_uid.size());
+    for (size_t i = 0; i < exp_uid.size(); ++i) {
+        EXPECT_EQ(ind.uid[i], exp_uid[i]) << "row " << i;
+        EXPECT_EQ(ind.day[i], exp_day[i]) << "row " << i;
+    }
+    // uid 10 day 1000: 8 from the base run (5 node_created + 3 relation_created)
+    // plus 2 way_created from the diff.
+    EXPECT_EQ(ind.count[0], 10);
+    EXPECT_EQ(ind.count[1], 4);  // uid 11 day 2000 untouched
+    EXPECT_EQ(ind.count[2], 1);  // uid 11 day 2001: 1 relation_created
+    EXPECT_EQ(ind.count[3], 1);  // uid 13 day 1001: 1 node_created
+
+    const auto rep = read_reputation(dir.join("user_reputation.parquet"));
+    ASSERT_EQ(rep.uid.size(), 3);
+    EXPECT_EQ(rep.uid[0], 10);
+    EXPECT_EQ(rep.uid[1], 11);
+    EXPECT_EQ(rep.uid[2], 13);
+    EXPECT_EQ(rep.username[2], "carol");
+    EXPECT_EQ(rep.first_seen_day[2], 1001);
+
+    // Per-run staging is removed once folded in.
+    EXPECT_FALSE(std::filesystem::exists(stage_root));
+}
+
+TEST(UserIndicatorFinalize, UpdateNoStageIsNoOp) {
+    TempDir dir;
+    const std::string indicators = dir.join("user_indicators.parquet");
+
+    EXPECT_NO_THROW(user_indicators::run_update_finalize(
+        dir.join("nope"), indicators, kDefaultIndicatorsGroupRows,
+        kDefaultReputationGroupRows));
+    EXPECT_FALSE(std::filesystem::exists(indicators));
+}
+
 }  // namespace
