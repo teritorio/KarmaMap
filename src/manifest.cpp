@@ -145,6 +145,18 @@ std::string json_string_array(const std::vector<std::string>& values) {
     return out;
 }
 
+// Escapes a string for use inside a JSON double-quoted value (backslash and
+// quote); URL and timestamp provenance fields can carry both.
+std::string json_escape(const std::string& value) {
+    std::string out;
+    out.reserve(value.size());
+    for (char c : value) {
+        if (c == '"' || c == '\\') out += '\\';
+        out += c;
+    }
+    return out;
+}
+
 // Size in bytes of a parquet file's footer metadata, read from the 8 trailing
 // bytes (uint32 little-endian metadata length followed by the "PAR1" magic).
 // Nullopt when the file is missing or not a plain parquet file.
@@ -166,7 +178,8 @@ std::optional<uint32_t> footer_size(const std::string& path) {
 
 }  // namespace
 
-void write_manifest(const std::string& output_dir, int h3_resolution) {
+void write_manifest(const std::string& output_dir, int h3_resolution,
+                    const std::optional<replication_state::State>& source) {
     auto partitions = list_partitions(output_dir + "/changes");
 
     std::ofstream out(output_dir + "/manifest.json");
@@ -182,6 +195,17 @@ void write_manifest(const std::string& output_dir, int h3_resolution) {
 
     out << "{\n";
     out << "  \"h3_resolution\": " << h3_resolution << ",\n";
+
+    // Source provenance from --update-url: the osmosis replication state of
+    // the snapshot (update URL, sequence number, timestamp). Omitted without
+    // the flag.
+    if (source) {
+        out << "  \"source\": {\n";
+        out << "    \"url\": \"" << json_escape(source->url) << "\",\n";
+        out << "    \"sequence_number\": " << source->sequence_number << ",\n";
+        out << "    \"timestamp\": \"" << json_escape(source->timestamp) << "\"\n";
+        out << "  },\n";
+    }
 
     if (bounds) {
         out << "  \"date_range\": { \"min_date\": \"" << date_utils::iso_date(bounds->first)

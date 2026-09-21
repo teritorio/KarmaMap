@@ -15,6 +15,11 @@ void print_usage(const char* argv0) {
         << "  --input                OSM full-history file (.osh.pbf)\n"
         << "  --node-cache           Node position cache file (wiped and rebuilt by pass 1, read by pass 2)\n"
         << "  --output-dir           Output directory for the Parquet datasets\n"
+        << "  --update-url           Osmosis replication update URL (e.g.\n"
+        << "                         https://.../canary-islands-updates/); its\n"
+        << "                         state.txt is fetched for the sequence number\n"
+        << "                         and timestamp, recorded with the URL in\n"
+        << "                         manifest.json as source provenance\n"
         << "  --pass                 1 (nodes only), 2 (ways only, requires an already\n"
         << "                         populated node cache), 3 (merge + sort only,\n"
         << "                         requires passes 1 and 2 to have already run),\n"
@@ -62,6 +67,8 @@ bool parse_args(int argc, char** argv, Options* opts) {
             opts->run_step4 = false;
         } else if (arg == "--output-dir") {
             opts->output_dir = next_value("--output-dir");
+        } else if (arg == "--update-url") {
+            opts->update_url = next_value("--update-url");
         } else if (arg == "--h3-resolution") {
             opts->h3_resolution = std::stoi(next_value("--h3-resolution"));
         } else if (arg == "--way-batch-mb") {

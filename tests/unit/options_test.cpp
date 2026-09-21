@@ -104,6 +104,31 @@ TEST(Options, HelpReturnsFalse) {
     EXPECT_FALSE(parse({"prog", "--help"}, &opts));
 }
 
+TEST(Options, UpdateUrlDefaultEmpty) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
+                       "--output-dir", "out"},
+                      &opts));
+    EXPECT_EQ(opts.update_url, "");
+}
+
+TEST(Options, UpdateUrlParsed) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
+                       "--output-dir", "out", "--update-url",
+                       "https://example.com/region-updates/"},
+                      &opts));
+    EXPECT_EQ(opts.update_url, "https://example.com/region-updates/");
+}
+
+TEST(Options, UpdateUrlMissingValueThrows) {
+    Options opts;
+    EXPECT_THROW(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
+                        "--output-dir", "out", "--update-url"},
+                       &opts),
+                 std::runtime_error);
+}
+
 TEST(Options, RequiredArgumentsMissingThrows) {
     Options opts;
     EXPECT_THROW(parse({"prog", "--input", "in.pbf"}, &opts), std::runtime_error);

@@ -6,14 +6,23 @@
 // dataset, and the exact change_date span (min_date/max_date) of the
 // changes dataset.
 //
+// An optional source provenance block (from --update-url) is emitted as a
+// "source" object holding the normalized update URL, the replication
+// sequence number and timestamp read from its state.txt.
+//
 // Built from a year=YYYY directory scan plus the change_date min/max read
 // from each data.parquet footer - cheap, and correct regardless of which
 // --pass combination produced the files on disk.
 
+#include <optional>
 #include <string>
+
+#include "state.hpp"
 
 namespace manifest {
 
-void write_manifest(const std::string& output_dir, int h3_resolution);
+void write_manifest(const std::string& output_dir, int h3_resolution,
+                    const std::optional<replication_state::State>& source =
+                        std::nullopt);
 
 }  // namespace manifest

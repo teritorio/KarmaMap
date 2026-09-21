@@ -178,6 +178,45 @@ TEST(Manifest, SkipsUserDatasetsWhenAbsent) {
     EXPECT_EQ(json.find("\"user_reputation\""), std::string::npos);
 }
 
+TEST(Manifest, WritesSourceProvenance) {
+    TempDir dir;
+    replication_state::State source;
+    source.url = "https://x/canary-updates/";
+    source.sequence_number = 2847632;
+    source.timestamp = "2019-12-30T09\\:36\\:32Z";
+
+    manifest::write_manifest(dir.path(), 9, source);
+
+    const std::string json = read_file(dir.join("manifest.json"));
+    EXPECT_NE(json.find("\"source\": {\n"
+                        "    \"url\": \"https://x/canary-updates/\",\n"
+                        "    \"sequence_number\": 2847632,\n"
+                        "    \"timestamp\": \"2019-12-30T09\\\\:36\\\\:32Z\"\n"
+                        "  }"),
+              std::string::npos);
+}
+
+TEST(Manifest, OmitsSourceWhenAbsent) {
+    TempDir dir;
+    manifest::write_manifest(dir.path(), 9);
+    const std::string json = read_file(dir.join("manifest.json"));
+    EXPECT_EQ(json.find("\"source\""), std::string::npos);
+}
+
+TEST(Manifest, EscapesSourceJsonQuotes) {
+    TempDir dir;
+    replication_state::State source;
+    source.url = "https://x/update\"stream/";
+    source.sequence_number = 7;
+    source.timestamp = "a\"b";
+
+    manifest::write_manifest(dir.path(), 9, source);
+
+    const std::string json = read_file(dir.join("manifest.json"));
+    EXPECT_NE(json.find("\\\"stream"), std::string::npos);
+    EXPECT_NE(json.find("a\\\"b"), std::string::npos);
+}
+
 TEST(Manifest, MissingOutputDirThrows) {
     TempDir dir;
     EXPECT_THROW(manifest::write_manifest(dir.join("nonexistent"), 9),

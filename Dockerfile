@@ -13,7 +13,7 @@ RUN apt-get update \
     && apt-get update \
     && apt install -y --no-install-recommends \
         libosmium2-dev libprotozero-dev libexpat1-dev \
-        libbz2-dev zlib1g-dev libzstd-dev \
+        libbz2-dev zlib1g-dev libzstd-dev libcurl4-openssl-dev \
         libarrow-dev libarrow-compute-dev libparquet-dev \
         libgtest-dev
 
@@ -40,6 +40,9 @@ RUN mkdir -p /out/lib \
         | xargs -I{} cp -L {} /out/lib/
 
 FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update && apt install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /out/lib/ /usr/local/lib/
 COPY --from=build /out/karmamap /usr/local/bin/karmamap

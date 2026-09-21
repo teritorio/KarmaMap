@@ -99,6 +99,7 @@ karmamap --input <planet.osh.pbf> --node-cache <file> --output-dir <dir> [core o
 | `--input` | OSM full-history file (`.osh.pbf`), required |
 | `--node-cache` | Node position cache file (wiped and rebuilt by pass 1, read by pass 2), required |
 | `--output-dir` | Output directory for the Parquet datasets, required (created if missing) |
+| `--update-url` | Osmosis replication update URL of the input snapshot (e.g. `https://osm-internal.download.geofabrik.de/africa/canary-islands-updates/`); KarmaMap fetches its `state.txt`, parses the replication sequence number and timestamp, and records URL, sequence and timestamp as source provenance in `manifest.json` |
 | `--pass` | `1` (nodes only), `2` (ways only, requires an already populated node cache), `3` (merge + sort only, requires passes 1 and 2 to have already run), `4` (incremental cache only, requires the node cache), or `all` (default) |
 | `--incremental-cache` | Output path of the step-4 cache holding only the last known h3 cell per node (default: `<node-cache>.last`) |
 | `--no-step-4` | Skip step 4 (the incremental cache build); it runs by default after the node pass |
@@ -115,6 +116,14 @@ Place the input file under `DATA_DIR` (default `data/`), then:
 
 ```bash
 docker compose --profile=build run --rm karmamap karmamap --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/output
+```
+
+Record the input snapshot's osmosis replication state by passing its update
+URL (the fetched `state.txt` supplies the sequence number and timestamp,
+stored with the URL in `manifest.json`):
+
+```bash
+docker compose --profile=build run --rm karmamap karmamap --input /data/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/output --update-url https://osm-internal.download.geofabrik.de/africa/canary-islands-updates/
 ```
 
 To resume after an earlier stage, run the passes one at a time (a way-only
@@ -183,7 +192,7 @@ wget -O data/canary-islands-internal.osh.pbf https://osm-internal.download.geofa
 ```
 
 ```bash
-docker compose run --rm karmamap karmamap --user-indicators --input /data/canary-islands-internal.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/output
+docker compose run --rm karmamap karmamap --user-indicators --input /data/canary-islands-internal.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/output --update-url https://osm-internal.download.geofabrik.de/africa/canary-islands-updates/
 ```
 
 Input and Output files size

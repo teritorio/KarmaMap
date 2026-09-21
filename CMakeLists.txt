@@ -53,6 +53,7 @@ endif()
 find_package(Arrow REQUIRED)
 find_package(ArrowCompute REQUIRED)
 find_package(Parquet REQUIRED)
+find_package(CURL REQUIRED)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -76,6 +77,7 @@ add_library(karmamap_core STATIC
   src/options.cpp
   src/parquet_batch_writer.cpp
   src/sort_pass.cpp
+  src/state.cpp
   src/user_indicators.cpp
 )
 
@@ -97,6 +99,7 @@ target_link_libraries(karmamap_core PUBLIC
   EXPAT::EXPAT
   BZip2::BZip2
   ZLIB::ZLIB
+  CURL::libcurl
   ${ZSTD_LIBRARY}
 )
 

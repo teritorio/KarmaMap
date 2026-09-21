@@ -22,6 +22,7 @@ add_executable(unit_tests
   unit/user_indicator_rules_test.cpp
   unit/reputation_test.cpp
   unit/options_test.cpp
+  unit/state_test.cpp
 )
 
 target_compile_features(unit_tests PRIVATE cxx_std_17)

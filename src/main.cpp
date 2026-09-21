@@ -29,6 +29,7 @@
 #include "options.hpp"
 #include "partitioned_parquet_writer.hpp"
 #include "sort_pass.hpp"
+#include "state.hpp"
 #include "user_indicators.hpp"
 #include "way_processor.hpp"
 
@@ -185,6 +186,16 @@ int main(int argc, char** argv) {
     try {
         std::filesystem::create_directories(opts.output_dir);
 
+        std::optional<replication_state::State> source;
+        if (!opts.update_url.empty()) {
+            // Fail fast before the passes run: provenance is fetched and
+            // parsed up front, so a bad update URL aborts immediately.
+            std::cerr << "[source] fetching " << opts.update_url << "state.txt\n";
+            source = replication_state::fetch(opts.update_url);
+            std::cerr << "[source] sequence_number=" << source->sequence_number
+                      << " timestamp=" << source->timestamp << "\n";
+        }
+
         if (opts.run_node_pass) {
             run_node_pass(opts);
         }
@@ -202,7 +213,7 @@ int main(int argc, char** argv) {
         }
 
         std::cerr << "[manifest] writing " << opts.output_dir << "/manifest.json\n";
-        manifest::write_manifest(opts.output_dir, opts.h3_resolution);
+        manifest::write_manifest(opts.output_dir, opts.h3_resolution, source);
 
     } catch (const std::exception& e) {
         std::cerr << "ERROR: " << e.what() << "\n";

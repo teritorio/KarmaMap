@@ -34,6 +34,11 @@ row data exists yet):
 ```json
 {
   "h3_resolution": 9,
+  "source": {
+    "url": "https://osm-internal.download.geofabrik.de/africa/canary-islands-updates/",
+    "sequence_number": 2847632,
+    "timestamp": "2019-12-30T09\\:36\\:32Z"
+  },
   "date_range": { "min_date": "2005-01-01", "max_date": "2026-08-19" },
   "datasets": {
     "changes": {
@@ -46,6 +51,12 @@ row data exists yet):
   }
 }
 ```
+
+`source` (only with `--update-url`) records the input snapshot's osmosis
+replication provenance: the normalized update URL (trailing `/` guaranteed),
+and the replication `sequence_number` and `timestamp` parsed from its
+`state.txt`. `sequence_number` is a JSON number; `url` and `timestamp` are
+strings, with the osmosis `\:` timestamp escaping preserved.
 
 `partition_footer_sizes` (one entry per readable `data.parquet` year) and
 `footer_size` (non-partitioned user files) give the byte length of each
