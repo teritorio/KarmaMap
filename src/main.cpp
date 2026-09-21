@@ -24,6 +24,7 @@
 #include <string>
 
 #include "manifest.hpp"
+#include "geofabrik_cookie.hpp"
 #include "node_cache.hpp"
 #include "node_cache_handler.hpp"
 #include "options.hpp"
@@ -190,8 +191,32 @@ int main(int argc, char** argv) {
         if (!opts.update_url.empty()) {
             // Fail fast before the passes run: provenance is fetched and
             // parsed up front, so a bad update URL aborts immediately.
+            std::string cookie_file;
+            if (geofabrik_cookie::requires_auth(opts.update_url)) {
+                // The internal Geofabrik server sits behind an OSM session
+                // cookie; obtain or refresh the jar before the state fetch.
+                std::string jar =
+                    opts.cookie_path.empty()
+                        ? geofabrik_cookie::default_cookie_path(opts.output_dir)
+                        : opts.cookie_path;
+                if (!geofabrik_cookie::has_credentials() &&
+                    !std::filesystem::exists(jar)) {
+                    throw std::runtime_error(
+                        "The update URL points at the Geofabrik internal "
+                        "server (osm-internal.download.geofabrik.de), which "
+                        "requires an OSM account; set OSM_GEOFABRIK_USER/"
+                        "OSM_GEOFABRIK_PASSWORD in .env (or pass --cookie with "
+                        "an existing jar)");
+                }
+                if (geofabrik_cookie::has_credentials()) {
+                    std::cerr << "[auth] ensuring Geofabrik cookie at " << jar
+                              << "\n";
+                    geofabrik_cookie::ensure_valid_cookie(jar);
+                }
+                cookie_file = jar;
+            }
             std::cerr << "[source] fetching " << opts.update_url << "state.txt\n";
-            source = replication_state::fetch(opts.update_url);
+            source = replication_state::fetch(opts.update_url, cookie_file);
             std::cerr << "[source] sequence_number=" << source->sequence_number
                       << " timestamp=" << source->timestamp << "\n";
         }

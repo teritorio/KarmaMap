@@ -15,6 +15,7 @@ struct Options {
     std::string incremental_cache_path;
     std::string output_dir;
     std::string update_url;
+    std::string cookie_path;  // empty: use <output-dir>/.geofabrik.cookie
     int h3_resolution = 9;
     size_t way_batch_bytes = kDefaultWayBatchBytes;
     int64_t change_group_rows = kDefaultChangeGroupRows;

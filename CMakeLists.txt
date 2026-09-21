@@ -73,6 +73,7 @@ set(ENABLE_DOCS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(h3)
 
 add_library(karmamap_core STATIC
+  src/geofabrik_cookie.cpp
   src/manifest.cpp
   src/options.cpp
   src/parquet_batch_writer.cpp

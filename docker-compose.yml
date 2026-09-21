@@ -11,6 +11,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    environment:
+      # OSM account for osm-internal.download.geofabrik.de; used by
+      # karmamap itself to obtain/refresh the internal session cookie.
+      OSM_GEOFABRIK_USER: ${OSM_GEOFABRIK_USER:-}
+      OSM_GEOFABRIK_PASSWORD: ${OSM_GEOFABRIK_PASSWORD:-}
     volumes:
       - ${DATA_DIR:-./data/}:/data
 

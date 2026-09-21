@@ -129,6 +129,30 @@ TEST(Options, UpdateUrlMissingValueThrows) {
                  std::runtime_error);
 }
 
+TEST(Options, CookieDefaultEmpty) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
+                       "--output-dir", "out"},
+                      &opts));
+    EXPECT_EQ(opts.cookie_path, "");
+}
+
+TEST(Options, CookieParsed) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
+                       "--output-dir", "out", "--cookie", "jar.txt"},
+                      &opts));
+    EXPECT_EQ(opts.cookie_path, "jar.txt");
+}
+
+TEST(Options, CookieMissingValueThrows) {
+    Options opts;
+    EXPECT_THROW(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
+                        "--output-dir", "out", "--cookie"},
+                       &opts),
+                 std::runtime_error);
+}
+
 TEST(Options, RequiredArgumentsMissingThrows) {
     Options opts;
     EXPECT_THROW(parse({"prog", "--input", "in.pbf"}, &opts), std::runtime_error);

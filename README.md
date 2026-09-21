@@ -64,6 +64,24 @@ DATA_DIR=./data/
 
 Without a `.env`, the compose defaults `DATA_DIR=./data/` (mounted at `/data`)
 
+Point `--update-url` (or a later diff-update download) at the Geofabrik
+*internal* server (`osm-internal.download.geofabrik.de`)? Its extracts carry
+user/changeset metadata and full history for OSM contributors only, so it
+sits behind an OSM session cookie. Add the OSM account to the same `.env`:
+
+```
+OSM_GEOFABRIK_USER=my_osm_login
+OSM_GEOFABRIK_PASSWORD=my_osm_password
+```
+
+karmamap performs Geofabrik's OAuth2 cookie dance itself from these
+credentials, caches the session in the Netscape jar
+`<output-dir>/.geofabrik.cookie` (`/data/output/.geofabrik.cookie` in the
+container, so it survives runs), probes `<jar>` acceptance against the
+server's `cookie_status` endpoint and refreshes it when expired. The jar is
+sent on the `state.txt` fetch; the same cookie plumbing is what a later
+diff-update download will reuse.
+
 ### Build
 
 Base image: Debian (`debian:bookworm` build stage,
@@ -100,6 +118,7 @@ karmamap --input <planet.osh.pbf> --node-cache <file> --output-dir <dir> [core o
 | `--node-cache` | Node position cache file (wiped and rebuilt by pass 1, read by pass 2), required |
 | `--output-dir` | Output directory for the Parquet datasets, required (created if missing) |
 | `--update-url` | Osmosis replication update URL of the input snapshot (e.g. `https://osm-internal.download.geofabrik.de/africa/canary-islands-updates/`); KarmaMap fetches its `state.txt`, parses the replication sequence number and timestamp, and records URL, sequence and timestamp as source provenance in `manifest.json` |
+| `--cookie` | Netscape cookie jar for the Geofabrik internal server, default `<output-dir>/.geofabrik.cookie`. Only consulted when `--update-url` points at `osm-internal.download.geofabrik.de`: karmamap obtains/refreshes the jar from the OSM account in `OSM_GEOFABRIK_USER`/`OSM_GEOFABRIK_PASSWORD` (`.env`) and sends it on the `state.txt` fetch |
 | `--pass` | `1` (nodes only), `2` (ways only, requires an already populated node cache), `3` (merge + sort only, requires passes 1 and 2 to have already run), `4` (incremental cache only, requires the node cache), or `all` (default) |
 | `--incremental-cache` | Output path of the step-4 cache holding only the last known h3 cell per node (default: `<node-cache>.last`) |
 | `--no-step-4` | Skip step 4 (the incremental cache build); it runs by default after the node pass |

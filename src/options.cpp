@@ -20,6 +20,12 @@ void print_usage(const char* argv0) {
         << "                         state.txt is fetched for the sequence number\n"
         << "                         and timestamp, recorded with the URL in\n"
         << "                         manifest.json as source provenance\n"
+        << "  --cookie               Netscape cookie jar for the Geofabrik internal\n"
+        << "                         server (osm-internal.download.geofabrik.de);\n"
+        << "                         default: <output-dir>/.geofabrik.cookie. When the\n"
+        << "                         update URL points at the internal host, karmamap\n"
+        << "                         obtains and refreshes the jar itself from the OSM\n"
+        << "                         account in OSM_GEOFABRIK_USER/OSM_GEOFABRIK_PASSWORD\n"
         << "  --pass                 1 (nodes only), 2 (ways only, requires an already\n"
         << "                         populated node cache), 3 (merge + sort only,\n"
         << "                         requires passes 1 and 2 to have already run),\n"
@@ -69,6 +75,8 @@ bool parse_args(int argc, char** argv, Options* opts) {
             opts->output_dir = next_value("--output-dir");
         } else if (arg == "--update-url") {
             opts->update_url = next_value("--update-url");
+        } else if (arg == "--cookie") {
+            opts->cookie_path = next_value("--cookie");
         } else if (arg == "--h3-resolution") {
             opts->h3_resolution = std::stoi(next_value("--h3-resolution"));
         } else if (arg == "--way-batch-mb") {
