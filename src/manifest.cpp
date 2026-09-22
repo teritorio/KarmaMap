@@ -263,9 +263,10 @@ void write_manifest(const std::string& output_dir, int h3_resolution,
     out << "{\n";
     out << "  \"h3_resolution\": " << h3_resolution << ",\n";
 
-    // Source provenance from --update-url: the osmosis replication state of
-    // the snapshot (update URL, sequence number, timestamp). Omitted without
-    // the flag.
+    // Source provenance: the osmosis replication state of the snapshot, always
+    // present after import (sequence and timestamp from the <base>.state.txt
+    // sidecar, url from --update-url or empty without it) and after update
+    // (the applied sequence, with the fetched state.txt timestamp).
     if (source) {
         out << "  \"source\": {\n";
         out << "    \"url\": \"" << json_escape(source->url) << "\",\n";

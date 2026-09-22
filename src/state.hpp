@@ -14,6 +14,11 @@
 // snapshot, which KarmaMap records alongside the update URL as provenance
 // metadata in manifest.json. The update URL is stored (not the state.txt
 // URL): it identifies the diff stream the snapshot came from.
+//
+// At import the state.txt is not fetched: upstream state files are only
+// current-state (too new for an older snapshot), so KarmaMap reads a sidecar
+// <base>.state.txt downloaded manually with wget on the day the osh was
+// fetched. That state describes the osh's own replication state.
 
 #include <cstdint>
 #include <string>
@@ -33,6 +38,13 @@ std::string normalize_update_url(const std::string& update_url);
 // The state.txt URL derived from an update URL (<update_url>/state.txt).
 std::string state_txt_url(const std::string& update_url);
 
+// The sidecar state.txt path expected next to an import snapshot: the input
+// path with a trailing ".pbf" and then ".osh"/".osm" stripped, plus
+// ".state.txt" ("region.osh.pbf" -> "region.state.txt",
+// "region-260919.osm.pbf" -> "region-260919.state.txt", "region.pbf" ->
+// "region.state.txt").
+std::string sidecar_state_path(const std::string& osh_path);
+
 // The osmosis replication diff URL for a sequence: groups of three digits
 // from the right (N = AAA*1000000 + BBB*1000 + CCC) split into the URL
 // directory, padded to three digits, the last group being the file name:
@@ -43,6 +55,12 @@ std::string diff_url(const std::string& update_url, uint64_t sequence_number);
 // Parses osmosis-format state.txt text. Throws std::runtime_error when a
 // field is missing or malformed.
 State parse_state(const std::string& content, const std::string& url);
+
+// Reads and parses a local state.txt file, checking it exists on disk. url is
+// recorded on the returned State (e.g. the update URL it belongs to; for an
+// import sidecar it may be empty when no --update-url is given). Throws
+// std::runtime_error when the file is missing or unparsable.
+State read_state_file(const std::string& path, const std::string& url);
 
 // Fetches <update_url>/state.txt over HTTP(S) and parses it. The returned
 // State.url is the normalized update URL, not the state.txt URL. When

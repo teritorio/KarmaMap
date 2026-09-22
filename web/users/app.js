@@ -209,7 +209,7 @@ async function main() {
 
   const datasets = manifest.datasets ?? {}
   if (!datasets.user_reputation || !datasets.user_indicators) {
-    setStatus('user_reputation/user_indicators not in manifest — rerun the pipeline with --user-indicators.')
+    setStatus('user_reputation/user_indicators not in manifest — the pipeline did not produce the user datasets.')
     return
   }
 

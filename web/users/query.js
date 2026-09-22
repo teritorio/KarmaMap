@@ -1,5 +1,5 @@
-// User queries across the non-partitioned Parquet files written by
-// --user-indicators, served from data/ one directory above the viewers. Username
+// User queries across the non-partitioned Parquet files written by the
+// user-indicators pass, served from data/ one directory above the viewers. Username
 // matching uses a direct exact-username lookup on
 // user_reputation.parquet (the pipeline stamps the current username per uid,
 // and that file is username-sorted with a uid tie-break, so the exact filter

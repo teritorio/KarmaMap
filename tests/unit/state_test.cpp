@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 
@@ -10,6 +12,8 @@ namespace {
 using replication_state::diff_url;
 using replication_state::normalize_update_url;
 using replication_state::parse_state;
+using replication_state::read_state_file;
+using replication_state::sidecar_state_path;
 using replication_state::state_txt_url;
 
 TEST(StateUrl, NormalizeUpdateUrl) {
@@ -42,6 +46,58 @@ TEST(StateUrl, DiffUrlPadsLowSequences) {
 TEST(StateUrl, DiffUrlNormalizesTrailingSlash) {
     EXPECT_EQ(diff_url("https://x/y-updates", 9999999ULL),
               "https://x/y-updates/009/999/999.osc.gz");
+}
+
+TEST(SidecarStatePath, SwapsOshPbfExtension) {
+    EXPECT_EQ(sidecar_state_path("data/region.osh.pbf"),
+              "data/region.state.txt");
+}
+
+TEST(SidecarStatePath, SwapsOsmPbfExtension) {
+    EXPECT_EQ(sidecar_state_path("canary-islands-260919.osm.pbf"),
+              "canary-islands-260919.state.txt");
+}
+
+TEST(SidecarStatePath, SwapsPlainPbfExtension) {
+    EXPECT_EQ(sidecar_state_path("data/region.pbf"), "data/region.state.txt");
+}
+
+TEST(SidecarStatePath, AppendsToExtensionlessPath) {
+    EXPECT_EQ(sidecar_state_path("data/region"), "data/region.state.txt");
+}
+
+TEST(ReadStateFile, ParsesAFileFromDisk) {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / "karmamap_state_test";
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path file = dir / "region.state.txt";
+    {
+        std::ofstream out(file);
+        out << "sequenceNumber=2847632\n"
+            << "timestamp=2019-12-30T09\\:36\\:32Z\n";
+    }
+    const auto state = read_state_file(file.string(), "https://x/y-updates/");
+    std::filesystem::remove_all(dir);
+    EXPECT_EQ(state.sequence_number, 2847632ULL);
+    EXPECT_EQ(state.timestamp, "2019-12-30T09\\:36\\:32Z");
+    EXPECT_EQ(state.url, "https://x/y-updates/");
+}
+
+TEST(ReadStateFile, MissingFileThrows) {
+    EXPECT_THROW(read_state_file("/no/such/state.txt", "u"), std::runtime_error);
+}
+
+TEST(ReadStateFile, MalformedContentThrows) {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / "karmamap_state_test_malformed";
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path file = dir / "region.state.txt";
+    {
+        std::ofstream out(file);
+        out << "not a state file\n";
+    }
+    EXPECT_THROW(read_state_file(file.string(), "u"), std::runtime_error);
+    std::filesystem::remove_all(dir);
 }
 
 TEST(StateParse, ParsesOsmosisFormat) {

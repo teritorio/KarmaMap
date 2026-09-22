@@ -8,7 +8,7 @@ The two access parts:
 
 - **Changes** — `changes/`: yearly partitioned `(h3_cell, change_date,
   count)` change counts (node + way changes merged per cell per day).
-- **Users** (only with `--user-indicators`) — `user_indicators.parquet` and
+- **Users** — `user_indicators.parquet` and
   `user_reputation.parquet`: per-user, per-day activity and reputation.
 
 ## Output layout
@@ -16,8 +16,8 @@ The two access parts:
 ```
 output-dir/
 ├── manifest.json
-├── user_indicators.parquet    # only with --user-indicators
-├── user_reputation.parquet    # only with --user-indicators
+├── user_indicators.parquet
+├── user_reputation.parquet
 └── changes/
     └── year=2025/
         ├── data.parquet      # (h3_cell, change_date, count)
@@ -52,12 +52,14 @@ row data exists yet):
 }
 ```
 
-`source` (only with `--update-url`) records the input snapshot's osmosis
-replication provenance: the normalized update URL (trailing `/` guaranteed),
-and the replication `sequence_number` and `timestamp` parsed from its
-`state.txt`. `sequence_number` is a JSON number; `url` and `timestamp` are
-strings, with the osmosis `\:` timestamp escaping preserved. An `--update`
-run advances them to the highest applied diff sequence and its timestamp.
+`source` records the input snapshot's osmosis replication provenance: the
+normalized update URL (trailing `/` guaranteed; empty when import got no
+`--update-url`), and the replication `sequence_number` and `timestamp` read
+from the snapshot's `<base>.state.txt` sidecar (that day's state, downloaded
+with wget alongside the osh). `sequence_number` is a JSON number; `url` and
+`timestamp` are strings, with the osmosis `\:` timestamp escaping preserved.
+An update run advances them to the highest applied diff sequence and its
+fetched `state.txt` timestamp.
 
 `partition_footer_sizes` (one entry per readable `data.parquet` year) and
 `footer_size` (non-partitioned user files) give the byte length of each
@@ -105,7 +107,7 @@ LIMIT 20;
 
 ## Update mode
 
-An `--update` run downloads osmosis replication diffs (`.osc.gz`, one per
+`karmamap update` downloads osmosis replication diffs (`.osc.gz`, one per
 sequence) and folds them into the existing dataset. Each rewritten year's
 `data.parquet` footer carries a `karmamap_source_seq` key_value_metadata
 entry holding the highest applied sequence number as a string: the merge is
@@ -119,7 +121,7 @@ only until the first merge after their fetch.
 
 ## Users part
 
-Both files exist only when the pipeline ran with `--user-indicators`. They
+Both files are written by every import and update run. They
 are two non-partitioned single files.
 
 - `user_indicators.parquet` — one row per `(uid, change_date)`, sorted by

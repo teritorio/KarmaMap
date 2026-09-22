@@ -1,19 +1,19 @@
 #pragma once
 
 // Update mode: applies osmosis replication diffs (.osc.gz change files) to an
-// existing dataset built by a full --update-url run. The first three passes
-// run in update mode:
+// existing dataset built by "karmamap import" and given its incremental cache
+// by "karmamap prepare-update". The first three passes run in update mode:
 //
 //   update node pass: counts the diff's node changes into nodes.<seq>.parquet
 //     staging and folds created/modified positions into an in-memory overlay
-//     over the flat incremental cache (<incremental-cache>, .last), tracking
-//     deletions separately.
+//     over the flat incremental cache (--node-cache-last, <node-cache>.last),
+//     tracking deletions separately.
 //   update way pass: counts the diff's way changes into ways.<seq>.parquet,
 //     resolving node refs against the overlay (post-update view for visible
 //     ways, pre-update view for deleted ways = their last known geometry).
-//   flat cache rebuild: once per --update run the .last cache is rewritten as
-//     base + overlay minus deletions (the incremental writer's tmp+rename swap
-//     keeps it consistent across crashes).
+//   flat cache rebuild: once per "karmamap update" run the .last cache is
+//     rewritten as base + overlay minus deletions (the incremental writer's
+//     tmp+rename swap keeps it consistent across crashes).
 //
 // Each diff stages its own counts under a suffixed name (nodes.<seq>.parquet /
 // ways.<seq>.parquet); sort_pass::merge_update_partitions folds them into
@@ -38,8 +38,8 @@ namespace update_pass {
 // deleted ways can resolve their pre-update geometry.
 class NodeState {
 public:
-    NodeState(const std::string& incremental_cache_path, int h3_resolution)
-        : base_(incremental_cache_path, h3_resolution), h3_resolution_(h3_resolution) {}
+    NodeState(const std::string& node_cache_last_path, int h3_resolution)
+        : base_(node_cache_last_path, h3_resolution), h3_resolution_(h3_resolution) {}
 
     NodeState(const NodeState&) = delete;
     NodeState& operator=(const NodeState&) = delete;

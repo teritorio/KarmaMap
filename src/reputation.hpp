@@ -1,7 +1,7 @@
 #pragma once
 
 // Exact per-aspect percentile reputation over aligned per-uid totals, used by
-// the --user-indicators finalize to write user_reputation.parquet (one row
+// the indicators finalize to write user_reputation.parquet (one row
 // per user). Pure (no Arrow/osmium): the unit tests stay lean.
 //
 // Each aspect is capped at its paper weight (20/20/12 + 4 per Top12 tag) and

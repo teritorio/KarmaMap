@@ -24,6 +24,23 @@ std::string state_txt_url(const std::string& update_url) {
     return normalize_update_url(update_url) + "state.txt";
 }
 
+std::string sidecar_state_path(const std::string& osh_path) {
+    std::string path = osh_path;
+    auto trim_suffix = [&](const char* suffix) {
+        const size_t n = std::string(suffix).size();
+        if (path.size() >= n && path.compare(path.size() - n, n, suffix) == 0) {
+            path.resize(path.size() - n);
+        }
+    };
+    trim_suffix(".pbf");
+    if (path.size() > 4 && path.compare(path.size() - 4, 4, ".osh") == 0) {
+        path.resize(path.size() - 4);
+    } else if (path.size() > 4 && path.compare(path.size() - 4, 4, ".osm") == 0) {
+        path.resize(path.size() - 4);
+    }
+    return path + ".state.txt";
+}
+
 std::string diff_url(const std::string& update_url, uint64_t sequence_number) {
     const std::string base = normalize_update_url(update_url);
     // N = AAA*1000000 + BBB*1000 + CCC (osmosis replication layout): each
@@ -99,6 +116,20 @@ State parse_state(const std::string& content, const std::string& url) {
                                  " has no timestamp field");
     }
     return state;
+}
+
+State read_state_file(const std::string& path, const std::string& url) {
+    std::ifstream in(path);
+    if (!in) {
+        throw std::runtime_error(
+            "State file " + path +
+            " not found next to the snapshot: import records the osh's own "
+            "replication state, so download its state.txt with wget on the same "
+            "day and give it this name");
+    }
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return parse_state(ss.str(), url);
 }
 
 namespace {

@@ -18,103 +18,128 @@ bool parse(const std::vector<std::string>& args, Options* opts) {
     return parse_args(static_cast<int>(args.size()), argv.data(), opts);
 }
 
-TEST(Options, DefaultsPreserved) {
+TEST(Options, ImportDefaultsPreserved) {
     Options opts;
-    bool ok = parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
-                     "--output-dir", "out"},
-                    &opts);
-    ASSERT_TRUE(ok);
+    ASSERT_TRUE(parse({"prog", "import", "in.pbf", "--node-cache", "cache.bin",
+                       "--output-dir", "out"},
+                      &opts));
+    EXPECT_EQ(opts.stage, Options::Stage::import);
+    EXPECT_EQ(opts.input_path, "in.pbf");
+    EXPECT_EQ(opts.node_cache_path, "cache.bin");
+    EXPECT_EQ(opts.node_cache_last_path, "cache.bin.last");
     EXPECT_EQ(opts.h3_resolution, 9);
     EXPECT_EQ(opts.way_batch_bytes, kDefaultWayBatchBytes);
     EXPECT_EQ(opts.change_group_rows, kDefaultChangeGroupRows);
     EXPECT_EQ(opts.indicators_group_rows, kDefaultIndicatorsGroupRows);
+    EXPECT_EQ(opts.reputation_group_rows, kDefaultReputationGroupRows);
     EXPECT_TRUE(opts.run_node_pass);
     EXPECT_TRUE(opts.run_way_pass);
     EXPECT_TRUE(opts.run_sort_pass);
-    EXPECT_TRUE(opts.run_step4);
-    EXPECT_FALSE(opts.run_user_indicators);
-    EXPECT_EQ(opts.incremental_cache_path, "cache.bin.last");
 }
 
-TEST(Options, UserIndicatorsFlagEnablesPass) {
+TEST(Options, ImportAloneDerivesDefaults) {
     Options opts;
-    bool ok = parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
-                     "--output-dir", "out", "--user-indicators"},
-                    &opts);
-    ASSERT_TRUE(ok);
-    EXPECT_TRUE(opts.run_user_indicators);
+    ASSERT_TRUE(parse({"prog", "import", "in.pbf"}, &opts));
+    EXPECT_EQ(opts.output_dir, "data/output");
+    EXPECT_EQ(opts.node_cache_path, "data/node_positions.cache");
+    EXPECT_EQ(opts.node_cache_last_path, "data/node_positions.cache.last");
+}
+
+TEST(Options, ImportFileAfterFlags) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "import", "--node-cache", "cache.bin", "in.pbf",
+                       "--output-dir", "out"},
+                      &opts));
+    EXPECT_EQ(opts.input_path, "in.pbf");
+}
+
+TEST(Options, ImportMissingInputFileThrows) {
+    Options opts;
+    EXPECT_THROW(parse({"prog", "import"}, &opts), std::runtime_error);
+}
+
+TEST(Options, ImportMissingInputFileBeforeOutputThrows) {
+    Options opts;
+    EXPECT_THROW(parse({"prog", "import", "--output-dir", "out"}, &opts),
+                 std::runtime_error);
+}
+
+TEST(Options, ImportUnexpectedArgumentThrows) {
+    Options opts;
+    EXPECT_THROW(parse({"prog", "import", "in.pbf", "extra"}, &opts),
+                 std::runtime_error);
 }
 
 TEST(Options, PassSelection) {
     Options opts;
-    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
+    ASSERT_TRUE(parse({"prog", "import", "in.pbf", "--node-cache", "cache.bin",
                        "--output-dir", "out", "--pass", "2"},
                       &opts));
     EXPECT_FALSE(opts.run_node_pass);
     EXPECT_TRUE(opts.run_way_pass);
     EXPECT_FALSE(opts.run_sort_pass);
-    EXPECT_FALSE(opts.run_step4);
 }
 
-TEST(Options, PassFourOnly) {
+TEST(Options, PassFourThrows) {
     Options opts;
-    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
-                       "--output-dir", "out", "--pass", "4"},
-                      &opts));
-    EXPECT_FALSE(opts.run_node_pass);
-    EXPECT_FALSE(opts.run_way_pass);
-    EXPECT_FALSE(opts.run_sort_pass);
-    EXPECT_TRUE(opts.run_step4);
+    EXPECT_THROW(parse({"prog", "import", "in.pbf", "--node-cache", "cache.bin",
+                        "--output-dir", "out", "--pass", "4"},
+                       &opts),
+                 std::runtime_error);
 }
 
-TEST(Options, NoStep4Flag) {
+TEST(Options, PassInvalidThrows) {
     Options opts;
-    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
-                       "--output-dir", "out", "--no-step-4"},
-                      &opts));
-    EXPECT_FALSE(opts.run_step4);
+    EXPECT_THROW(parse({"prog", "import", "in.pbf", "--node-cache", "cache.bin",
+                        "--output-dir", "out", "--pass", "nope"},
+                       &opts),
+                 std::runtime_error);
 }
 
-TEST(Options, IncrementalCacheOverride) {
+TEST(Options, MissingWayBatchValueThrows) {
     Options opts;
-    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
-                       "--output-dir", "out", "--incremental-cache", "last.bin"},
-                      &opts));
-    EXPECT_EQ(opts.incremental_cache_path, "last.bin");
-}
-
-TEST(Options, MissingValueThrows) {
-    Options opts;
-    EXPECT_THROW(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
+    EXPECT_THROW(parse({"prog", "import", "in.pbf", "--node-cache", "cache.bin",
                         "--output-dir", "out", "--way-batch-mb"},
+                       &opts),
+                 std::runtime_error);
+}
+
+TEST(Options, WayBatchOutsideRangeThrows) {
+    Options opts;
+    EXPECT_THROW(parse({"prog", "import", "in.pbf", "--way-batch-mb", "1",
+                        "--output-dir", "out"},
                        &opts),
                  std::runtime_error);
 }
 
 TEST(Options, UnknownArgumentThrows) {
     Options opts;
-    EXPECT_THROW(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
+    EXPECT_THROW(parse({"prog", "import", "in.pbf", "--node-cache", "cache.bin",
                         "--output-dir", "out", "--nope"},
                        &opts),
                  std::runtime_error);
 }
 
+TEST(Options, UnknownVerbThrows) {
+    Options opts;
+    EXPECT_THROW(parse({"prog", "sync"}, &opts), std::runtime_error);
+}
+
+TEST(Options, NoCommandThrows) {
+    Options opts;
+    EXPECT_THROW(parse({"prog"}, &opts), std::runtime_error);
+}
+
 TEST(Options, HelpReturnsFalse) {
     Options opts;
     EXPECT_FALSE(parse({"prog", "--help"}, &opts));
+    EXPECT_FALSE(parse({"prog", "-h"}, &opts));
+    EXPECT_FALSE(parse({"prog", "help"}, &opts));
 }
 
-TEST(Options, UpdateUrlDefaultEmpty) {
+TEST(Options, ImportUpdateUrlParsed) {
     Options opts;
-    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
-                       "--output-dir", "out"},
-                      &opts));
-    EXPECT_EQ(opts.update_url, "");
-}
-
-TEST(Options, UpdateUrlParsed) {
-    Options opts;
-    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
+    ASSERT_TRUE(parse({"prog", "import", "in.pbf", "--node-cache", "cache.bin",
                        "--output-dir", "out", "--update-url",
                        "https://example.com/region-updates/"},
                       &opts));
@@ -123,15 +148,32 @@ TEST(Options, UpdateUrlParsed) {
 
 TEST(Options, UpdateUrlMissingValueThrows) {
     Options opts;
-    EXPECT_THROW(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
+    EXPECT_THROW(parse({"prog", "import", "in.pbf", "--node-cache", "cache.bin",
                         "--output-dir", "out", "--update-url"},
                        &opts),
                  std::runtime_error);
 }
 
+TEST(Options, ImportAllowsUpdateUrl) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "import", "in.pbf", "--update-url",
+                       "https://example.com/region-updates/",
+                       "--node-cache", "cache.bin", "--output-dir", "out"},
+                      &opts));
+    EXPECT_EQ(opts.stage, Options::Stage::import);
+}
+
+TEST(Options, NodeCacheLastOverride) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "import", "in.pbf", "--node-cache", "cache.bin",
+                       "--output-dir", "out", "--node-cache-last", "last.bin"},
+                      &opts));
+    EXPECT_EQ(opts.node_cache_last_path, "last.bin");
+}
+
 TEST(Options, CookieDefaultEmpty) {
     Options opts;
-    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
+    ASSERT_TRUE(parse({"prog", "import", "in.pbf", "--node-cache", "cache.bin",
                        "--output-dir", "out"},
                       &opts));
     EXPECT_EQ(opts.cookie_path, "");
@@ -139,7 +181,7 @@ TEST(Options, CookieDefaultEmpty) {
 
 TEST(Options, CookieParsed) {
     Options opts;
-    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
+    ASSERT_TRUE(parse({"prog", "import", "in.pbf", "--node-cache", "cache.bin",
                        "--output-dir", "out", "--cookie", "jar.txt"},
                       &opts));
     EXPECT_EQ(opts.cookie_path, "jar.txt");
@@ -147,194 +189,201 @@ TEST(Options, CookieParsed) {
 
 TEST(Options, CookieMissingValueThrows) {
     Options opts;
-    EXPECT_THROW(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
+    EXPECT_THROW(parse({"prog", "import", "in.pbf", "--node-cache", "cache.bin",
                         "--output-dir", "out", "--cookie"},
                        &opts),
                  std::runtime_error);
 }
 
-TEST(Options, RequiredArgumentsMissingThrows) {
-    Options opts;
-    EXPECT_THROW(parse({"prog", "--input", "in.pbf"}, &opts), std::runtime_error);
-}
-
 TEST(Options, ChangeGroupRowsDefault) {
     Options opts;
-    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
-                       "--output-dir", "out"},
-                      &opts));
+    ASSERT_TRUE(parse({"prog", "import", "in.pbf"}, &opts));
     EXPECT_EQ(opts.change_group_rows, kDefaultChangeGroupRows);
 }
 
 TEST(Options, ChangeGroupRowsValid) {
     Options opts;
-    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
-                       "--output-dir", "out", "--change-group-rows", "123456"},
+    ASSERT_TRUE(parse({"prog", "import", "in.pbf", "--change-group-rows", "123456"},
                       &opts));
     EXPECT_EQ(opts.change_group_rows, 123456);
 }
 
 TEST(Options, ChangeGroupRowsTooSmallThrows) {
     Options opts;
-    EXPECT_THROW(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
-                        "--output-dir", "out", "--change-group-rows", "500"},
+    EXPECT_THROW(parse({"prog", "import", "in.pbf", "--change-group-rows", "500"},
                        &opts),
                  std::runtime_error);
 }
 
 TEST(Options, IndicatorsGroupRowsDefault) {
     Options opts;
-    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
-                       "--output-dir", "out"},
-                      &opts));
+    ASSERT_TRUE(parse({"prog", "import", "in.pbf"}, &opts));
     EXPECT_EQ(opts.indicators_group_rows, kDefaultIndicatorsGroupRows);
 }
 
 TEST(Options, IndicatorsGroupRowsValid) {
     Options opts;
-    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
-                       "--output-dir", "out", "--indicators-group-rows", "1234"},
+    ASSERT_TRUE(parse({"prog", "import", "in.pbf", "--indicators-group-rows", "1234"},
                       &opts));
     EXPECT_EQ(opts.indicators_group_rows, 1234);
 }
 
 TEST(Options, IndicatorsGroupRowsTooSmallThrows) {
     Options opts;
-    EXPECT_THROW(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
-                        "--output-dir", "out", "--indicators-group-rows", "999"},
+    EXPECT_THROW(parse({"prog", "import", "in.pbf", "--indicators-group-rows", "999"},
                        &opts),
                  std::runtime_error);
 }
 
 TEST(Options, ReputationGroupRowsDefault) {
     Options opts;
-    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
-                        "--output-dir", "out"},
-                      &opts));
+    ASSERT_TRUE(parse({"prog", "import", "in.pbf"}, &opts));
     EXPECT_EQ(opts.reputation_group_rows, kDefaultReputationGroupRows);
 }
 
 TEST(Options, ReputationGroupRowsValid) {
     Options opts;
-    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
-                        "--output-dir", "out", "--reputation-group-rows", "1234"},
+    ASSERT_TRUE(parse({"prog", "import", "in.pbf", "--reputation-group-rows", "1234"},
                       &opts));
     EXPECT_EQ(opts.reputation_group_rows, 1234);
 }
 
 TEST(Options, ReputationGroupRowsTooSmallThrows) {
     Options opts;
-    EXPECT_THROW(parse({"prog", "--input", "in.pbf", "--node-cache", "cache.bin",
-                        "--output-dir", "out", "--reputation-group-rows", "999"},
+    EXPECT_THROW(parse({"prog", "import", "in.pbf", "--reputation-group-rows", "999"},
                        &opts),
                  std::runtime_error);
 }
 
 // ---------------------------------------------------------------------------
-// --update
+// prepare-update
 // ---------------------------------------------------------------------------
 
-TEST(Options, UpdateModeWithoutUpdateUrlParses) {
+TEST(Options, PrepareUpdateRequiresUrlThrows) {
     Options opts;
-    ASSERT_TRUE(parse({"prog", "--update", "--node-cache", "cache.bin",
-                       "--output-dir", "out"},
-                      &opts));
-    EXPECT_TRUE(opts.update_mode);
-    EXPECT_TRUE(opts.update_url.empty());  // resolved from manifest.json at runtime
+    EXPECT_THROW(parse({"prog", "prepare-update"}, &opts), std::runtime_error);
 }
 
-TEST(Options, UpdateModeWithIncrementalCacheOnly) {
-    Options opts;  // full history node cache not needed in update mode
-    ASSERT_TRUE(parse({"prog", "--update", "--incremental-cache", "incr.bin",
-                       "--output-dir", "out"},
-                      &opts));
-    EXPECT_TRUE(opts.update_mode);
-    EXPECT_TRUE(opts.node_cache_path.empty());
-    EXPECT_EQ(opts.incremental_cache_path, "incr.bin");
-}
-
-TEST(Options, UpdateModeWithoutCacheThrows) {
+TEST(Options, PrepareUpdateWithUrlParses) {
     Options opts;
-    EXPECT_THROW(parse({"prog", "--update", "--output-dir", "out"}, &opts),
-                 std::runtime_error);
-}
-
-TEST(Options, UpdateModeBare) {
-    Options opts;
-    ASSERT_TRUE(parse({"prog", "--update", "--update-url",
-                       "https://example.com/region-updates/",
-                       "--node-cache", "cache.bin", "--output-dir", "out"},
+    ASSERT_TRUE(parse({"prog", "prepare-update", "--update-url",
+                       "https://example.com/region-updates/", "--node-cache",
+                       "cache.bin", "--output-dir", "out"},
                       &opts));
-    EXPECT_TRUE(opts.update_mode);
-    EXPECT_EQ(opts.max_update_diffs, 0);  // catch up to the current state.txt
-    EXPECT_TRUE(opts.input_path.empty());
-}
-
-TEST(Options, UpdateModeCountSeparateToken) {
-    Options opts;
-    ASSERT_TRUE(parse({"prog", "--update", "5", "--update-url",
-                       "https://example.com/region-updates/",
-                       "--node-cache", "cache.bin", "--output-dir", "out"},
-                      &opts));
-    EXPECT_TRUE(opts.update_mode);
-    EXPECT_EQ(opts.max_update_diffs, 5);
-}
-
-TEST(Options, UpdateModeCountEquals) {
-    Options opts;
-    ASSERT_TRUE(parse({"prog", "--update=3", "--update-url",
-                       "https://example.com/region-updates/",
-                       "--node-cache", "cache.bin", "--output-dir", "out"},
-                      &opts));
-    EXPECT_TRUE(opts.update_mode);
-    EXPECT_EQ(opts.max_update_diffs, 3);
-}
-
-TEST(Options, UpdateModeCountZeroIsBare) {
-    Options opts;
-    ASSERT_TRUE(parse({"prog", "--update", "0", "--update-url",
-                       "https://example.com/region-updates/",
-                       "--node-cache", "cache.bin", "--output-dir", "out"},
-                      &opts));
-    EXPECT_TRUE(opts.update_mode);
+    EXPECT_EQ(opts.stage, Options::Stage::prepare_update);
+    EXPECT_EQ(opts.node_cache_last_path, "cache.bin.last");
     EXPECT_EQ(opts.max_update_diffs, 0);
 }
 
-TEST(Options, UpdateModeInvalidCountThrows) {
+TEST(Options, PrepareUpdateAloneDerivesDefaults) {
     Options opts;
-    EXPECT_THROW(parse({"prog", "--update", "abc", "--update-url",
-                        "https://example.com/region-updates/",
-                        "--node-cache", "cache.bin", "--output-dir", "out"},
-                       &opts),
-                 std::runtime_error);
-}
-
-TEST(Options, UpdateModeWithInputThrows) {
-    Options opts;
-    EXPECT_THROW(parse({"prog", "--input", "in.pbf", "--update", "--update-url",
-                        "https://example.com/region-updates/",
-                        "--node-cache", "cache.bin", "--output-dir", "out"},
-                       &opts),
-                 std::runtime_error);
-}
-
-TEST(Options, UpdateModeWithPassThrows) {
-    Options opts;
-    EXPECT_THROW(parse({"prog", "--update", "--update-url",
-                        "https://example.com/region-updates/",
-                        "--node-cache", "cache.bin", "--output-dir", "out",
-                        "--pass", "2"},
-                       &opts),
-                 std::runtime_error);
-}
-
-TEST(Options, InputDownloadUrlIsFullMode) {
-    Options opts;
-    ASSERT_TRUE(parse({"prog", "--input", "in.pbf", "--update-url",
-                       "https://example.com/region-updates/",
-                       "--node-cache", "cache.bin", "--output-dir", "out"},
+    ASSERT_TRUE(parse({"prog", "prepare-update", "--update-url",
+                       "https://example.com/region-updates/"},
                       &opts));
-    EXPECT_FALSE(opts.update_mode);
+    EXPECT_EQ(opts.output_dir, "data/output");
+    EXPECT_EQ(opts.node_cache_path, "data/node_positions.cache");
+    EXPECT_EQ(opts.node_cache_last_path, "data/node_positions.cache.last");
+}
+
+TEST(Options, PrepareUpdateNodeCacheLastOverride) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "prepare-update", "--update-url",
+                       "https://example.com/region-updates/", "--node-cache-last",
+                       "last.bin", "--output-dir", "out"},
+                      &opts));
+    EXPECT_EQ(opts.node_cache_last_path, "last.bin");
+}
+
+TEST(Options, PrepareUpdateRejectsInputThrows) {
+    Options opts;
+    EXPECT_THROW(parse({"prog", "prepare-update", "--update-url",
+                        "https://example.com/region-updates/", "in.pbf"},
+                       &opts),
+                 std::runtime_error);
+}
+
+TEST(Options, PrepareUpdateRejectsPassThrows) {
+    Options opts;
+    EXPECT_THROW(parse({"prog", "prepare-update", "--update-url",
+                        "https://example.com/region-updates/", "--pass", "2"},
+                       &opts),
+                 std::runtime_error);
+}
+
+TEST(Options, PrepareUpdateRejectsWayBatchThrows) {
+    Options opts;
+    EXPECT_THROW(parse({"prog", "prepare-update", "--update-url",
+                        "https://example.com/region-updates/", "--way-batch-mb", "64"},
+                       &opts),
+                 std::runtime_error);
+}
+
+// ---------------------------------------------------------------------------
+// update
+// ---------------------------------------------------------------------------
+
+TEST(Options, UpdateBareParses) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "update"}, &opts));
+    EXPECT_EQ(opts.stage, Options::Stage::update);
+    EXPECT_TRUE(opts.update_url.empty());  // resolved from manifest.json at runtime
+    EXPECT_EQ(opts.max_update_diffs, 0);   // catch up to the current state.txt
+    EXPECT_TRUE(opts.input_path.empty());
+    EXPECT_EQ(opts.node_cache_last_path, "data/node_positions.cache.last");
+}
+
+TEST(Options, UpdateCountSeparateToken) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "update", "5", "--update-url",
+                       "https://example.com/region-updates/"},
+                      &opts));
+    EXPECT_EQ(opts.max_update_diffs, 5);
+}
+
+TEST(Options, UpdateCountZeroIsBare) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "update", "0", "--update-url",
+                       "https://example.com/region-updates/"},
+                      &opts));
+    EXPECT_EQ(opts.max_update_diffs, 0);
+}
+
+TEST(Options, UpdateInvalidCountThrows) {
+    Options opts;
+    EXPECT_THROW(parse({"prog", "update", "abc", "--update-url",
+                        "https://example.com/region-updates/"},
+                       &opts),
+                 std::runtime_error);
+}
+
+TEST(Options, UpdateNodeCacheLastOverride) {
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "update", "--node-cache-last", "last.bin",
+                       "--output-dir", "out"},
+                      &opts));
+    EXPECT_EQ(opts.node_cache_last_path, "last.bin");
+    EXPECT_EQ(opts.output_dir, "out");
+}
+
+TEST(Options, UpdateRejectsPassThrows) {
+    Options opts;
+    EXPECT_THROW(parse({"prog", "update", "--update-url",
+                        "https://example.com/region-updates/", "--pass", "2"},
+                       &opts),
+                 std::runtime_error);
+}
+
+TEST(Options, UpdateRejectsWayBatchThrows) {
+    Options opts;
+    EXPECT_THROW(parse({"prog", "update", "--way-batch-mb", "64"}, &opts),
+                 std::runtime_error);
+}
+
+TEST(Options, UpdateRejectsNodeCacheThrows) {
+    // The full-history node cache is a pass 1-2 input, not used by update.
+    Options opts;
+    EXPECT_THROW(parse({"prog", "update", "--node-cache", "cache.bin"}, &opts),
+                 std::runtime_error);
 }
 
 }  // namespace

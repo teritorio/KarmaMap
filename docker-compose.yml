@@ -1,7 +1,7 @@
 services:
   # No default command: pass arguments explicitly, e.g.
   #   docker compose run --rm karmamap karmamap \
-  #     --input /data/input/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/output
+  #     import /data/input/region.osh.pbf --node-cache /data/node_positions.cache --output-dir /data/output
   #
   # Host paths are read from .env (copy .env.template to .env to override).
   # They default to ./data/... under the current directory when unset.

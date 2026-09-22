@@ -1,5 +1,6 @@
 #include "options.hpp"
 
+#include <filesystem>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -8,66 +9,70 @@
 
 void print_usage(const char* argv0) {
     std::cerr
-        << "Usage: " << argv0
-        << " --input <planet.osh.pbf> --node-cache <file> --output-dir <dir> "
-           "[core options]\n\n"
-        << "Core options:\n"
-        << "  --input                OSM full-history file (.osh.pbf); mutually\n"
-        << "                         exclusive with --update\n"
-        << "  --update [N]           Update mode (no --input): fetch and apply osmosis\n"
-        << "                         replication diffs to an existing dataset. The\n"
-        << "                         starting sequence is read from manifest.json's\n"
-        << "                         source block, whose URL is the update stream\n"
-        << "                         (overridable with --update-url; an explicit URL\n"
-        << "                         must match the recorded one). Each diff is\n"
-        << "                         downloaded from that URL (3/3/3 osmosis layout,\n"
-        << "                         .osc.gz) and applied by re-running passes 1-3 in\n"
-        << "                         update mode (deltas merged once into the datasets\n"
-        << "                         at the end of the run). N caps the number of\n"
-        << "                         diffs fetched per run (default: catch up to the\n"
-        << "                         current state.txt). The incremental cache to\n"
-        << "                         read/rebuild is --incremental-cache, or derived\n"
-        << "                         from --node-cache (<node-cache>.last); the full\n"
-        << "                         history node cache is not used.\n"
-        << "  --node-cache           Node position cache file (wiped and rebuilt by pass 1, read by pass 2);\n"
-        << "                         with --update only used to derive the incremental cache\n"
-        << "  --output-dir           Output directory for the Parquet datasets\n"
-        << "  --update-url           Osmosis replication update URL (e.g.\n"
-        << "                         https://.../canary-islands-updates/); its\n"
-        << "                         state.txt is fetched for the sequence number\n"
-        << "                         and timestamp, recorded with the URL in\n"
-        << "                         manifest.json as source provenance\n"
-        << "  --cookie               Netscape cookie jar for the Geofabrik internal\n"
-        << "                         server (osm-internal.download.geofabrik.de);\n"
-        << "                         default: <output-dir>/.geofabrik.cookie. When the\n"
-        << "                         update URL points at the internal host, karmamap\n"
-        << "                         obtains and refreshes the jar itself from the OSM\n"
-        << "                         account in OSM_GEOFABRIK_USER/OSM_GEOFABRIK_PASSWORD\n"
-        << "  --pass                 1 (nodes only), 2 (ways only, requires an already\n"
-        << "                         populated node cache), 3 (merge + sort only,\n"
-        << "                         requires passes 1 and 2 to have already run),\n"
-        << "                         4 (incremental cache only, requires the node\n"
-        << "                         cache), or all (default)\n"
-        << "  --no-step-4            Skip step 4 (the incremental cache build); it runs\n"
-        << "                         by default after the node pass\n"
-        << "  --incremental-cache     Output path of the step-4 cache that holds only\n"
-        << "                         the last known h3 cell per node (default:\n"
-        << "                         <node-cache>.last)\n"
-        << "  --way-batch-mb         Way-pass lookup batch budget in MiB (default: 512)\n"
-        << "  --h3-resolution        Resolution of the data cells, 0-13 (default: 9)\n"
-        << "  --change-group-rows    Target rows per Parquet row group of the changes\n"
-        << "                         dataset (default: 10000); smaller row groups keep\n"
-        << "                         h3_cell/change_date min-max compact so range-pruning\n"
-        << "                         clients download only the pages they need\n"
-        << "  --indicators-group-rows Target rows per Parquet row group of\n"
-        << "                          user_indicators.parquet (default: 10000)\n"
-        << "  --reputation-group-rows Target rows per Parquet row group of\n"
-        << "                          user_reputation.parquet (default: 1000)\n"
-        << "  --user-indicators      Additionally score history per user and per UTC day,\n"
-        << "                         writing user_indicators.parquet and\n"
-        << "                         user_reputation.parquet (non-partitioned single\n"
-        << "                         files, independent of passes 1-3); nodes, ways,\n"
-        << "                         relation creations and Top12 tag usage are counted\n";
+        << "Usage: " << argv0 << " <command> [options]\n\n"
+        << "Commands:\n"
+        << "  import <planet.osh.pbf> Build a dataset from an OSM full-history\n"
+        << "                          snapshot (passes 1-3). Reads the state.txt\n"
+        << "                          sidecar next to the snapshot (download it\n"
+        << "                          with wget on the snapshot's day) for its\n"
+        << "                          replication provenance. Never builds the\n"
+        << "                          .last cache; run prepare-update for that.\n"
+        << "  prepare-update          Build the .last incremental cache from the\n"
+        << "                          node cache and record the osmosis replication\n"
+        << "                          stream as source provenance (requires\n"
+        << "                          --update-url, whose state.txt supplies the\n"
+        << "                          starting sequence). No dataset changes.\n"
+        << "  update [N]              Apply osmosis replication diffs (.osc.gz,\n"
+        << "                          3/3/3 layout) to an existing dataset. The\n"
+        << "                          starting sequence is read from manifest.json's\n"
+        << "                          source block, whose URL is the update stream\n"
+        << "                          (overridable with --update-url; an explicit URL\n"
+        << "                          must match the recorded one). N caps the number\n"
+        << "                          of diffs fetched (default: catch up to the\n"
+        << "                          current state.txt). Reads and rebuilds the\n"
+        << "                          --node-cache-last cache; the full history node\n"
+        << "                          cache is not used.\n"
+        << "  help / --help / -h      Show this help.\n\n"
+        << "Options (defaults in [brackets], all optional unless noted):\n"
+        << "  --node-cache <file>       Node position cache (import and\n"
+        << "                            prepare-update). [<output-dir>/../node_positions.cache]\n"
+        << "  --node-cache-last <file>  Last-known-position cache, written by\n"
+        << "                            prepare-update, read/rebuild by update.\n"
+        << "                            [<node-cache>.last]\n"
+        << "  --output-dir <dir>        Output directory for the Parquet datasets.\n"
+        << "                            [data/output]\n"
+        << "  --update-url <url>        Osmosis replication update URL (e.g.\n"
+        << "                            https://.../canary-islands-updates/); its\n"
+        << "                            state.txt is fetched for the sequence number\n"
+        << "                            and timestamp (prepare-update and update;\n"
+        << "                            import reads it from the snapshot's sidecar\n"
+        << "                            state file instead). At import it only\n"
+        << "                            records the update stream URL; required by\n"
+        << "                            prepare-update; optional override in update\n"
+        << "                            (must match the recorded source).\n"
+        << "  --cookie <jar>            Netscape cookie jar for the Geofabrik internal\n"
+        << "                            server (osm-internal.download.geofabrik.de);\n"
+        << "                            default: <output-dir>/.geofabrik.cookie. When the\n"
+        << "                            update URL points at the internal host, karmamap\n"
+        << "                            obtains and refreshes the jar itself from the OSM\n"
+        << "                            account in OSM_GEOFABRIK_USER/OSM_GEOFABRIK_PASSWORD\n"
+        << "  --pass 1|2|3|all          Import only: run only the node (1), way (2) or\n"
+        << "                            merge (3) pass, or all three (default). Use\n"
+        << "                            prepare-update for the incremental cache.\n"
+        << "  --h3-resolution <r>       Resolution of the data cells, 0-13 (default: 9);\n"
+        << "                            must match between import, prepare-update and\n"
+        << "                            update (the caches encode cells at this\n"
+        << "                            resolution)\n"
+        << "  --way-batch-mb <mb>       Import only, way-pass lookup batch budget in MiB\n"
+        << "                            (default: 512)\n"
+        << "  --change-group-rows <n>   Target rows per Parquet row group of the changes\n"
+        << "                            dataset (default: 10000); smaller row groups keep\n"
+        << "                            h3_cell/change_date min-max compact so range-pruning\n"
+        << "                            clients download only the pages they need\n"
+        << "  --indicators-group-rows <n> Target rows per Parquet row group of\n"
+        << "                            user_indicators.parquet (default: 10000)\n"
+        << "  --reputation-group-rows <n> Target rows per Parquet row group of\n"
+        << "                            user_reputation.parquet (default: 1000)\n";
 }
 
 bool parse_args(int argc, char** argv, Options* opts) {
@@ -85,23 +90,56 @@ bool parse_args(int argc, char** argv, Options* opts) {
         return std::stoll(token);
     };
 
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-        auto next_value = [&](const char* flag) -> std::string {
-            if (i + 1 >= argc) {
-                throw std::runtime_error(std::string("Missing value for ") + flag);
-            }
-            return argv[++i];
-        };
+    int i = 1;
+    if (i >= argc) {
+        throw std::runtime_error("no command given; expected import, prepare-update or update");
+    }
+    const std::string verb = argv[i++];
+    if (verb == "help" || verb == "--help" || verb == "-h") {
+        return false;
+    }
+    if (verb == "import") {
+        opts->stage = Options::Stage::import;
+    } else if (verb == "prepare-update") {
+        opts->stage = Options::Stage::prepare_update;
+    } else if (verb == "update") {
+        opts->stage = Options::Stage::update;
+    } else {
+        throw std::runtime_error("unknown command: " + verb +
+                                 " (expected import, prepare-update or update)");
+    }
 
-        if (arg == "--input") {
-            opts->input_path = next_value("--input");
-        } else if (arg == "--node-cache") {
+    bool update_count_given = false;  // update [N] positional
+    auto next_value = [&](const char* flag) -> std::string {
+        if (i + 1 >= argc) {
+            throw std::runtime_error(std::string("Missing value for ") + flag);
+        }
+        return argv[++i];
+    };
+
+    for (; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            return false;
+        }
+        if (arg.empty() || arg[0] != '-') {
+            // Positional arguments: import <file>, update [N].
+            if (opts->stage == Options::Stage::import && opts->input_path.empty()) {
+                opts->input_path = arg;
+            } else if (opts->stage == Options::Stage::update && !update_count_given &&
+                       is_count(arg)) {
+                opts->max_update_diffs = parse_count(arg, "update");
+                update_count_given = true;
+            } else {
+                throw std::runtime_error("unexpected argument: " + arg);
+            }
+            continue;
+        }
+        if (arg == "--node-cache") {
             opts->node_cache_path = next_value("--node-cache");
-        } else if (arg == "--incremental-cache") {
-            opts->incremental_cache_path = next_value("--incremental-cache");
-        } else if (arg == "--no-step-4") {
-            opts->run_step4 = false;
+            opts->node_cache_given = true;
+        } else if (arg == "--node-cache-last") {
+            opts->node_cache_last_path = next_value("--node-cache-last");
         } else if (arg == "--output-dir") {
             opts->output_dir = next_value("--output-dir");
         } else if (arg == "--update-url") {
@@ -116,6 +154,7 @@ bool parse_args(int argc, char** argv, Options* opts) {
                 throw std::runtime_error("--way-batch-mb must be in 16..1048576");
             }
             opts->way_batch_bytes = mb * 1024ULL * 1024ULL;
+            opts->way_batch_mb_given = true;
         } else if (arg == "--change-group-rows") {
             const long long rows = std::stoll(next_value("--change-group-rows"));
             if (rows < 1'000) {
@@ -135,66 +174,67 @@ bool parse_args(int argc, char** argv, Options* opts) {
             }
             opts->reputation_group_rows = rows;
         } else if (arg == "--pass") {
-            std::string v = next_value("--pass");
+            const std::string v = next_value("--pass");
             opts->pass_given = true;
             opts->run_node_pass = (v == "1" || v == "all");
             opts->run_way_pass = (v == "2" || v == "all");
             opts->run_sort_pass = (v == "3" || v == "all");
-            opts->run_step4 = (v == "4" || v == "all");
-            if (v != "1" && v != "2" && v != "3" && v != "4" && v != "all") {
-                throw std::runtime_error("--pass must be 1, 2, 3, 4 or all (got: " + v + ")");
+            if (v != "1" && v != "2" && v != "3" && v != "all") {
+                throw std::runtime_error("--pass must be 1, 2, 3 or all (got: " + v + ")");
             }
-        } else if (arg == "--update") {
-            opts->update_mode = true;
-            // Optional max diff count: --update [N]
-            if (i + 1 < argc && is_count(argv[i + 1])) {
-                opts->max_update_diffs = parse_count(argv[++i], "--update");
-            }
-        } else if (arg.compare(0, 9, "--update=") == 0) {
-            opts->update_mode = true;
-            opts->max_update_diffs = parse_count(arg.substr(9), "--update");
-        } else if (arg == "--user-indicators") {
-            opts->run_user_indicators = true;
-        } else if (arg == "--help" || arg == "-h") {
-            return false;
         } else {
             throw std::runtime_error("Unknown argument: " + arg);
         }
     }
 
-    if (opts->update_mode) {
-        if (!opts->input_path.empty()) {
-            throw std::runtime_error("--input and --update are mutually exclusive");
-        }
-        if (opts->pass_given) {
-            throw std::runtime_error(
-                "--pass is not used with --update: update mode always runs the "
-                "node, way and merge passes and rebuilds the incremental cache");
-        }
-    } else if (opts->input_path.empty()) {
-        throw std::runtime_error("--input is required (or use --update to apply diffs)");
+    if (opts->stage == Options::Stage::import && opts->input_path.empty()) {
+        throw std::runtime_error("karmamap import <planet.osh.pbf>: missing input file");
     }
-    if (opts->output_dir.empty()) {
-        throw std::runtime_error("--output-dir is required");
-    }
-    if (opts->update_mode) {
-        // Update mode only needs the incremental (<node-cache>.last) cache;
-        // the full history node cache is a full-mode input.
-        if (opts->incremental_cache_path.empty()) {
-            if (opts->node_cache_path.empty()) {
+    switch (opts->stage) {
+        case Options::Stage::prepare_update:
+            if (opts->update_url.empty()) {
                 throw std::runtime_error(
-                    "--update needs the incremental cache; pass --node-cache "
-                    "(defaults to <node-cache>.last) or --incremental-cache");
+                    "karmamap prepare-update needs the update stream; pass "
+                    "--update-url <url> (its state.txt supplies the starting "
+                    "sequence)");
             }
-            opts->incremental_cache_path = opts->node_cache_path + ".last";
-        }
-    } else {
-        if (opts->node_cache_path.empty()) {
-            throw std::runtime_error("--node-cache is required");
-        }
-        if (opts->incremental_cache_path.empty()) {
-            opts->incremental_cache_path = opts->node_cache_path + ".last";
-        }
+            if (opts->pass_given) {
+                throw std::runtime_error("--pass is not used with prepare-update");
+            }
+            if (opts->way_batch_mb_given) {
+                throw std::runtime_error("--way-batch-mb is only used by import");
+            }
+            break;
+        case Options::Stage::update:
+            if (opts->pass_given) {
+                throw std::runtime_error(
+                    "--pass is not used with update: update always runs the node, "
+                    "way and merge passes and rebuilds the incremental cache");
+            }
+            if (opts->way_batch_mb_given) {
+                throw std::runtime_error("--way-batch-mb is only used by import");
+            }
+            if (opts->node_cache_given) {
+                throw std::runtime_error(
+                    "--node-cache is not used with update: update reads only the "
+                    "incremental cache (--node-cache-last)");
+            }
+            break;
+        case Options::Stage::import:
+            break;
+    }
+
+    if (opts->output_dir.empty()) {
+        opts->output_dir = "data/output";
+    }
+    if (opts->node_cache_path.empty()) {
+        opts->node_cache_path =
+            (std::filesystem::path(opts->output_dir) / ".." / "node_positions.cache")
+                .lexically_normal()
+                .string();
+    }
+    if (opts->node_cache_last_path.empty()) {
+        opts->node_cache_last_path = opts->node_cache_path + ".last";
     }
     if (opts->h3_resolution < 0 ||
         opts->h3_resolution > h3_utils::kMaxPackedCellResolution) {

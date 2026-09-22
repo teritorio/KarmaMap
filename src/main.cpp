@@ -1,18 +1,21 @@
 // karmamap: daily count of OSM changes per H3 cell.
 //
-// Reads an OSM full-history file (.osh.pbf) and produces one partitioned
-// Parquet dataset under --output-dir:
-//   changes/year=YYYY/data.parquet  (h3_cell, change_date, count)
-//
-// Three stages: node pass (writes the mmap node-position cache + counts
-// nodes into .../nodes.parquet), way pass (resolves node positions by a
-// batched sweep over the cache, counts ways at the distinct cells of their
-// node positions into .../ways.parquet, no segment path tracing), merge
-// pass (merges each year's node and way counts into a single count column
-// of data.parquet, sorted by (h3_cell, change_date) so that Parquet
-// row group min/max statistics become useful for bbox and date-range
-// pruning). Step 4 collapses the node cache into the incremental cache
-// (one record per node, last known h3 cell, no day).
+// Command verbs:
+//   import <planet.osh.pbf>   build a partitioned Parquet dataset under
+//     changes/year=YYYY/data.parquet  (h3_cell, change_date, count)
+//     by running the node pass (writes the mmap node-position cache + counts
+//     nodes into .../nodes.parquet), way pass (resolves node positions by a
+//     batched sweep over the cache, counts ways at the distinct cells of
+//     their node positions into .../ways.parquet), and the merge pass
+//     (merges each year's node and way counts into a single count column of
+//     data.parquet, sorted by (h3_cell, change_date) so that Parquet row
+//     group min/max statistics become useful for bbox and date-range
+//     pruning), plus the per-user/per-day indicator pass.
+//   prepare-update            build the .last incremental cache (one record per
+//     node, last known h3 cell, no day) from the node cache and record the
+//     update stream provenance in manifest.json.
+//   update [N]                advance the dataset along its replication diff
+//     stream (see run_update_mode).
 
 #include <osmium/io/any_input.hpp>
 #include <osmium/visitor.hpp>
@@ -154,13 +157,13 @@ void run_sort_pass(const Options& opts) {
 }
 
 void run_step4_pass(const Options& opts) {
-    std::cerr << "[step 4] incremental cache -> " << opts.incremental_cache_path << "\n";
+    std::cerr << "[step 4] incremental cache -> " << opts.node_cache_last_path << "\n";
 
     // Derived from the node cache: records sorted by (node_id, day) mean the
     // last record per node_id is its last known position, so a straight sweep
     // feeding the collapsing writer drops the day column for free.
     node_cache::Reader history_reader(opts.node_cache_path, opts.h3_resolution);
-    node_cache::incremental::Writer cache_writer(opts.incremental_cache_path,
+    node_cache::incremental::Writer cache_writer(opts.node_cache_last_path,
                                                  opts.h3_resolution);
 
     auto start = std::chrono::steady_clock::now();
@@ -196,9 +199,9 @@ void run_user_indicator_pass(const Options& opts) {
 }
 
 // Update mode: advances an existing dataset along its replication diff stream
-// (see options.cpp --update). Starting from the sequence recorded in
-// manifest.json's source block, every diff up to the target (the current
-// state.txt, capped by --update [N]) is downloaded to <output-dir>/diffs and
+// (see options.cpp, the "update" command). Starting from the sequence recorded
+// in manifest.json's source block, every diff up to the target (the current
+// state.txt, capped by "update [N]") is downloaded to <output-dir>/diffs and
 // applied by the update node and way passes into per-sequence staging
 // partitions (nodes.<seq>.parquet / ways.<seq>.parquet). Once after all diffs
 // the flat incremental cache is rebuilt (base + overlay minus deletions) and
@@ -214,15 +217,16 @@ std::optional<replication_state::State> run_update_mode(
         manifest::read_source(opts.output_dir);
     if (!dataset_source) {
         throw std::runtime_error(
-            "--update needs the sequence the dataset is at, but no source "
-            "provenance block exists in " +
+            "karmamap update needs the sequence the dataset is at, but no "
+            "source provenance block exists in " +
             opts.output_dir +
-            "/manifest.json; build the dataset first with --input --update-url");
+            "/manifest.json; build the dataset first with 'karmamap import "
+            "<file> --update-url <url>'");
     }
     if (replication_state::normalize_update_url(opts.update_url) != dataset_source->url) {
         throw std::runtime_error("--update-url " + opts.update_url +
                                  " does not match the dataset's source " + dataset_source->url +
-                                 "; --update only advances a dataset along its "
+                                 "; update only advances a dataset along its "
                                  "originating diff stream");
     }
 
@@ -241,26 +245,25 @@ std::optional<replication_state::State> run_update_mode(
 
     const std::string changes_root = opts.output_dir + "/changes";
     if (!std::filesystem::is_directory(changes_root)) {
-        throw std::runtime_error("--update needs an existing dataset, but " +
+        throw std::runtime_error("karmamap update needs an existing dataset, but " +
                                  changes_root + " was not found");
     }
-    if (!std::filesystem::exists(opts.incremental_cache_path)) {
-        throw std::runtime_error("--update needs the incremental cache " +
-                                 opts.incremental_cache_path +
-                                 "; build the dataset first with --input (--pass all)");
+    if (!std::filesystem::exists(opts.node_cache_last_path)) {
+        throw std::runtime_error("karmamap update needs the incremental cache " +
+                                 opts.node_cache_last_path +
+                                 "; build it first with 'karmamap prepare-update "
+                                 "--update-url <url>'");
     }
 
     std::cerr << "[update] applying sequences " << first << ".." << target << "\n";
 
-    update_pass::NodeState node_state(opts.incremental_cache_path, opts.h3_resolution);
+    update_pass::NodeState node_state(opts.node_cache_last_path, opts.h3_resolution);
     const std::string diffs_dir = opts.output_dir + "/diffs";
     const std::string indicator_stage_root =
         opts.output_dir + "/user_indicator_update_stage";
-    if (opts.run_user_indicators) {
-        // Stage groups from a crashed earlier run may cover sequences this run
-        // does not re-scan; drop them so finalize only folds what was applied.
-        std::filesystem::remove_all(indicator_stage_root);
-    }
+    // Stage groups from a crashed earlier run may cover sequences this run
+    // does not re-scan; drop them so finalize only folds what was applied.
+    std::filesystem::remove_all(indicator_stage_root);
     uint64_t applied = base_seq;
     for (uint64_t seq = first; seq <= target; ++seq) {
         const std::string diff_path = replication_state::fetch_diff(
@@ -268,28 +271,25 @@ std::optional<replication_state::State> run_update_mode(
         update_pass::run_node_update(diff_path, changes_root, seq, opts.h3_resolution,
                                      &node_state);
         update_pass::run_way_update(diff_path, changes_root, seq, node_state);
-        if (opts.run_user_indicators) {
-            user_indicators::run_scan_diff(
-                diff_path, indicator_stage_root + "/seq_" + std::to_string(seq));
-        }
+        user_indicators::run_scan_diff(
+            diff_path, indicator_stage_root + "/seq_" + std::to_string(seq));
         applied = seq;
     }
 
-    std::cerr << "[update] rebuilding incremental cache " << opts.incremental_cache_path << "\n";
-    node_state.rebuild(opts.incremental_cache_path, opts.h3_resolution);
+    std::cerr << "[update] rebuilding incremental cache " << opts.node_cache_last_path
+              << "\n";
+    node_state.rebuild(opts.node_cache_last_path, opts.h3_resolution);
 
     std::cerr << "[update] merging staging partitions into " << changes_root << "\n";
     sort_pass::merge_update_partitions(changes_root, opts.change_group_rows, applied);
 
-    if (opts.run_user_indicators) {
-        user_indicators::run_update_finalize(indicator_stage_root,
-                                             opts.output_dir + "/user_indicators.parquet",
-                                             opts.indicators_group_rows,
-                                             opts.reputation_group_rows);
-    }
+    user_indicators::run_update_finalize(indicator_stage_root,
+                                         opts.output_dir + "/user_indicators.parquet",
+                                         opts.indicators_group_rows,
+                                         opts.reputation_group_rows);
 
     // Provenance now reflects the applied state: the sequence is the last
-    // applied diff (indexed by --update [N]), the timestamp is the fetched
+    // applied diff (indexed by "update N"), the timestamp is the fetched
     // state.txt's (the newest applied day's).
     replication_state::State new_source = current;
     new_source.sequence_number = applied;
@@ -315,25 +315,37 @@ int main(int argc, char** argv) {
     try {
         std::filesystem::create_directories(opts.output_dir);
 
-        // Source provenance. Fail fast before the passes run: the state.txt
-        // is fetched and parsed up front, so a bad update URL aborts
-        // immediately. Unless --update-url is given, update mode derives the
-        // update stream from the dataset's recorded source URL in
-        // manifest.json (the URL its data was built from).
+        // Source provenance. Fail fast before the passes run: import requires
+        // the sidecar <base>.state.txt next to the osh (downloaded manually
+        // with wget on the snapshot's day) and records its sequence and
+        // timestamp; prepare-update and update fetch the live state.txt up
+        // front, so a bad update URL aborts immediately. Unless --update-url
+        // is given, update derives the update stream from the dataset's
+        // recorded source URL in manifest.json (the URL its data was built
+        // from).
         std::optional<replication_state::State> source;
-        if (opts.update_mode && opts.update_url.empty()) {
+        if (opts.stage == Options::Stage::update && opts.update_url.empty()) {
             const std::optional<replication_state::State> dataset_source =
                 manifest::read_source(opts.output_dir);
             if (!dataset_source || dataset_source->url.empty()) {
                 throw std::runtime_error(
-                    "--update needs the dataset's update stream, but " +
+                    "karmamap update needs the dataset's update stream, but " +
                     opts.output_dir +
                     "/manifest.json carries no source URL; rebuild the dataset "
-                    "with --update-url, or pass --update-url");
+                    "with 'karmamap import <file> --update-url <url>', or pass "
+                    "--update-url");
             }
             opts.update_url = dataset_source->url;
         }
-        if (!opts.update_url.empty()) {
+        if (opts.stage == Options::Stage::import) {
+            const std::string state_path =
+                replication_state::sidecar_state_path(opts.input_path);
+            std::cerr << "[source] reading " << state_path << "\n";
+            source = replication_state::read_state_file(
+                state_path, replication_state::normalize_update_url(opts.update_url));
+            std::cerr << "[source] sequence_number=" << source->sequence_number
+                      << " timestamp=" << source->timestamp << "\n";
+        } else if (!opts.update_url.empty()) {
             const std::string cookie_file = resolve_update_cookie(opts);
             std::cerr << "[source] fetching " << opts.update_url << "state.txt\n";
             source = replication_state::fetch(opts.update_url, cookie_file);
@@ -341,24 +353,25 @@ int main(int argc, char** argv) {
                       << " timestamp=" << source->timestamp << "\n";
         }
 
-        if (opts.update_mode) {
-            source = run_update_mode(opts, *source);
-        } else {
-            if (opts.run_node_pass) {
-                run_node_pass(opts);
-            }
-            if (opts.run_way_pass) {
-                run_way_pass(opts);
-            }
-            if (opts.run_sort_pass) {
-                run_sort_pass(opts);
-            }
-            if (opts.run_step4) {
+        switch (opts.stage) {
+            case Options::Stage::prepare_update:
                 run_step4_pass(opts);
-            }
-            if (opts.run_user_indicators) {
+                break;
+            case Options::Stage::update:
+                source = run_update_mode(opts, *source);
+                break;
+            case Options::Stage::import:
+                if (opts.run_node_pass) {
+                    run_node_pass(opts);
+                }
+                if (opts.run_way_pass) {
+                    run_way_pass(opts);
+                }
+                if (opts.run_sort_pass) {
+                    run_sort_pass(opts);
+                }
                 run_user_indicator_pass(opts);
-            }
+                break;
         }
 
         std::cerr << "[manifest] writing " << opts.output_dir << "/manifest.json\n";

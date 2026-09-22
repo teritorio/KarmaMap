@@ -447,7 +447,7 @@ void run_scan(const std::string& input_path, const std::string& stage_dir) {
 void run_finalize(const std::string& stage_dir, const std::string& indicators_path,
                   int64_t indicators_group_rows, int64_t reputation_group_rows) {
     // Registers Arrow's compute kernels (sort_indices, take), required even
-    // when --user-indicators runs without any of passes 1-3.
+    // when the finalize runs without any of passes 1-3 / a diff scan.
     auto init_status = arrow::compute::Initialize();
     if (!init_status.ok()) {
         throw std::runtime_error("Failed to initialize Arrow compute: " +
@@ -481,7 +481,7 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
     for (size_t f = 0; f < column_lists.size(); ++f) {
         if (column_lists[f].empty()) {
             throw std::runtime_error("Stage column '" + schema->field(f)->name() +
-                                     "' is missing; rerun --user-indicators to "
+                                     "' is missing; rerun import (or update) to "
                                      "regenerate the stage files");
         }
         if (column_lists[f].size() == 1) {

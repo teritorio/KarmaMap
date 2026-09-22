@@ -235,7 +235,7 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
 // (uid, change_date) deltas are summed into user_indicators.parquet, and
 // user_reputation.parquet is recomputed from the existing per-uid totals plus
 // the diff totals (so newly appeared contributors join the ranking). Called
-// once per --update run. The existing files must carry the schemas written by
+// once per update run. The existing files must carry the schemas written by
 // run_finalize (full-run datasets) or a previous update finalize.
 void run_update_finalize(const std::string& stage_root, const std::string& indicators_path,
                          int64_t indicators_group_rows, int64_t reputation_group_rows);

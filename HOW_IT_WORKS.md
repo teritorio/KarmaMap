@@ -6,7 +6,8 @@ data contract — layout, schemas, encodings — lives in [API.md](API.md).
 
 ## The passes
 
-A single binary, `karmamap`, runs four stages by default:
+A single binary, `karmamap`, with four pipeline stages — passes 1-3 run
+under `karmamap import`, step 4 under `karmamap prepare-update`:
 
 1. Node pass: builds the mmap node cache `(node_id, day) -> position` and
    counts node changes into `changes/year=YYYY/nodes.parquet`.
@@ -22,10 +23,17 @@ A single binary, `karmamap`, runs four stages by default:
    re-merging never zeroes it.
 4. Step 4 (incremental cache): collapses the node cache into a second cache
    holding only the last known h3 cell per node (day dropped), written to
-   `<node-cache>.last` by default (see "Incremental cache" below).
+   `<node-cache>.last` by default (see "Incremental cache" below). Step 4 is
+   not part of import: run `karmamap prepare-update` for it.
 
-Passes 1-3 and step 4 are independent of the optional user-indicator pass
-(see below).
+Passes 1-3 and the user-indicator pass run as part of `karmamap import`
+(step 4 lives in `karmamap prepare-update`; see below).
+
+Import records the snapshot's osmosis replication provenance in
+`manifest.json` from a `<base>.state.txt` sidecar next to the osh, downloaded
+manually with wget on the snapshot's day: upstream `state.txt` is always the
+current state and would be too new for an older snapshot. `prepare-update`
+and `update` instead fetch the live `state.txt` from the update URL.
 
 ### Incremental runs
 
@@ -45,7 +53,7 @@ alone. The manifest is rebuilt at the end of every run.
 | Deleted way with a previously known geometry | Counted on the last known geometry |
 | Deleted way with no previously known geometry | Skipped |
 | Visible way with no nodes | Skipped |
-| Relations | Out of scope for the change-counting passes; the `--user-indicators` pass counts relation created/modified/deleted in a day's activity (relations feed the reputation only via creations) |
+| Relations | Out of scope for the change-counting passes; the user-indicators pass counts relation created/modified/deleted in a day's activity (relations feed the reputation only via creations) |
 | Node cells of a way | Each distinct node cell counted once per way version |
 | Time zone | Strict UTC |
 | Source file ordering | Assumed sorted by `(id, version)` ascending, as documented for OSM full-history files |
@@ -118,8 +126,9 @@ Because the record layout differs from the node cache, blocks are never
 reused across runs: the writer appends fresh blocks to `<path>.tmp` and swaps
 it over the final path with a rename once the header and directory are
 finalized, so a crash leaves either the old cache or only the tmp file,
-never a torn cache. The `--incremental-cache` flag sets the output path
-(default `<node-cache>.last`); `--no-step-4` skips the build.
+never a torn cache. The `--node-cache-last` flag sets the output path
+(default `<node-cache>.last`); the build is the whole of
+`karmamap prepare-update`, import never runs it.
 
 A reader (`node_cache::incremental::Reader`) mmaps the file and looks up a
 node's last known cell via the block-directory binary search plus a linear
@@ -127,23 +136,25 @@ scan (returning 0 for nodes absent from the cache).
 
 ## Update mode
 
-With `--update` (instead of `--input`), the binary applies osmosis
-replication diffs to an existing dataset whose `manifest.json` recorded an
-`--update-url`. The update stream is that recorded source URL unless
-`--update-url` is given explicitly (which must then match). The starting
+`karmamap update` applies osmosis replication diffs to an existing dataset
+whose `manifest.json` recorded an update URL (an `--update-url` passed to
+`karmamap import`, or the one required by `karmamap prepare-update`). The
+update stream is that recorded source URL unless `--update-url` is given
+explicitly (which must then match), and update runs against the `.last`
+incremental cache built by `prepare-update`. The starting
 sequence is the recorded source sequence; each
 `.osc.gz` diff (URL `AAA/BBB/CCC.osc.gz`, where N = AAA*1000000 + BBB*1000 +
 CCC from the 3/3/3 split of the sequence) is downloaded to `<output-dir>/diffs/` — a file
 already present is reused, a partial download is removed on failure — and
-applied. Bare `--update` fetches every diff up to the current `state.txt`;
-`--update N` stops after N.
+applied. Bare `update` (or `update 0`) fetches every diff up to the current
+`state.txt`; `update N` stops after N.
 
 Each diff invokes update-mode passes 1 and 2:
 
 - **Update node pass**: counts the diff's node changes into
   `changes/year=YYYY/nodes.<seq>.parquet` and folds created/modified
   positions into an in-memory overlay over the flat incremental cache
-  (`<incremental-cache>`, default `<node-cache>.last`), tracking deletions
+  (`--node-cache-last`, default `<node-cache>.last`), tracking deletions
   separately.
 - **Update way pass**: counts the diff's way changes into
   `changes/year=YYYY/ways.<seq>.parquet`, resolving node refs against the
@@ -167,7 +178,7 @@ later than the applied one (a crashed run that fetched further than a capped
 rerun applies) is dropped rather than folded. Years holding no staging are
 never rewritten.
 
-With `--user-indicators`, each diff additionally runs the user-indicator scan
+Each update diff additionally runs the user-indicator scan
 into `user_indicator_update_stage/seq_<n>/`; one finalize pass folds the
 per-`(uid, change_date)` activity deltas and per-uid counter totals into
 `user_indicators.parquet` (in place, sorted) and rebuilds
@@ -177,7 +188,7 @@ and its timestamp once per run.
 
 ## User-indicator pass
 
-The optional `--user-indicators` pass scores history **per user and per UTC
+The user-indicators pass scores history **per user and per UTC
 day** with cheap OSMPatrol-style heuristics. It is a single streaming scan
 over the node and way history plus relation creations (no changeset metadata
 is needed) and one in-memory finalize. OSM full history is
