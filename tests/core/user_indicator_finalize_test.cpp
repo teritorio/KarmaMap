@@ -4,13 +4,17 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "options.hpp"
 #include "test_helpers.hpp"
 #include "user_indicators.hpp"
+#include "vandalism.hpp"
+#include "vandalism_store.hpp"
 
 namespace {
 
@@ -134,6 +138,7 @@ struct IndicatorRows {
     std::vector<int64_t> uid;
     std::vector<uint16_t> day;
     std::vector<uint32_t> count;
+    std::vector<uint8_t> flag;
 };
 
 IndicatorRows read_indicators(const std::string& path) {
@@ -141,17 +146,20 @@ IndicatorRows read_indicators(const std::string& path) {
     EXPECT_TRUE(combined_result.ok()) << combined_result.status();
     if (!combined_result.ok()) return {};
     const auto& t = *combined_result;
-    // uid, change_date and the day's total activity count: the six node/way
-    // change counters plus the three relation counters.
-    EXPECT_EQ(t->num_columns(), 3);
+    // uid, change_date, the day's total activity count (the six node/way
+    // change counters plus the three relation counters), and the vandalism
+    // filter-2 flag.
+    EXPECT_EQ(t->num_columns(), 4);
     IndicatorRows out;
     const auto* uid = static_cast<const arrow::Int64Array*>(t->column(0)->chunk(0).get());
     const auto* day = static_cast<const arrow::UInt16Array*>(t->column(1)->chunk(0).get());
     const auto* count = static_cast<const arrow::UInt32Array*>(t->column(2)->chunk(0).get());
+    const auto* flag = static_cast<const arrow::UInt8Array*>(t->column(3)->chunk(0).get());
     for (int64_t i = 0; i < t->num_rows(); ++i) {
         out.uid.push_back(uid->Value(i));
         out.day.push_back(day->Value(i));
         out.count.push_back(count->Value(i));
+        out.flag.push_back(flag->Value(i));
     }
     return out;
 }
@@ -191,7 +199,7 @@ TEST(UserIndicatorFinalize, ConcatenatesSortsAndDerives) {
     write_stage(stage + "/stage_00000.parquet",
                 {
                     {11, "bob", 2000, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-                    {10, "alice", 1005, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                    {10, "alice", 1005, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
                     {10, "alice", 1000, 5, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0},
                 });
     // Second file: exercises multi-file concatenation.
@@ -223,6 +231,11 @@ TEST(UserIndicatorFinalize, ConcatenatesSortsAndDerives) {
     EXPECT_EQ(ind.count[2], 2);  // uid 10 day 1050: 2 way_created
     EXPECT_EQ(ind.count[3], 4);  // uid 11 day 2000: 4 node_modified
     EXPECT_EQ(ind.count[4], 1);  // uid 12 day 3000: 1 node_created
+    // Import fills the vandalism flag with 0: the object hours precede the
+    // replication stream's minute buckets, so no flag can be attributed yet.
+    for (size_t i = 0; i < ind.flag.size(); ++i) {
+        EXPECT_EQ(ind.flag[i], 0) << "row " << i;
+    }
 
     const auto rep = read_reputation(dir.join("user_reputation.parquet"));
     // One row per uid, its current username (uid 10's "alice".."alice_alias"
@@ -296,7 +309,8 @@ TEST(UserIndicatorFinalize, UpdateMergesDeltasIntoExistingFiles) {
 
     user_indicators::run_update_finalize(stage_root, indicators,
                                          kDefaultIndicatorsGroupRows,
-                                         kDefaultReputationGroupRows);
+                                         kDefaultReputationGroupRows,
+                                         dir.join("vandalism_minutes.bin"), {});
 
     // Existing (uid,day) rows accumulate; new users are appended.
     const auto ind = read_indicators(indicators);
@@ -313,6 +327,10 @@ TEST(UserIndicatorFinalize, UpdateMergesDeltasIntoExistingFiles) {
     EXPECT_EQ(ind.count[1], 4);  // uid 11 day 2000 untouched
     EXPECT_EQ(ind.count[2], 1);  // uid 11 day 2001: 1 relation_created
     EXPECT_EQ(ind.count[3], 1);  // uid 13 day 1001: 1 node_created
+    // No minute store existed, so nothing is flagged.
+    for (size_t i = 0; i < ind.flag.size(); ++i) {
+        EXPECT_EQ(ind.flag[i], 0) << "row " << i;
+    }
 
     const auto rep = read_reputation(dir.join("user_reputation.parquet"));
     ASSERT_EQ(rep.uid.size(), 3);
@@ -332,8 +350,143 @@ TEST(UserIndicatorFinalize, UpdateNoStageIsNoOp) {
 
     EXPECT_NO_THROW(user_indicators::run_update_finalize(
         dir.join("nope"), indicators, kDefaultIndicatorsGroupRows,
-        kDefaultReputationGroupRows));
+        kDefaultReputationGroupRows, dir.join("vandalism_minutes.bin"), {}));
     EXPECT_FALSE(std::filesystem::exists(indicators));
+}
+
+// The vandalism filter-2 flag: with a persisted minute store present, the
+// update finalize marks exactly the (uid, day) pairs that hold a minute whose
+// trailing one-hour span exceeds the threshold.
+TEST(UserIndicatorFinalize, UpdateFlagsVandalismDaysFromMinuteStore) {
+    TempDir dir;
+    const std::string indicators = dir.join("user_indicators.parquet");
+
+    // Base dataset from import (day 1000 for uid 10, day 2000 for uid 11).
+    const std::string base_stage = dir.join("base_stage");
+    std::filesystem::create_directories(base_stage);
+    write_stage(base_stage + "/stage_00000.parquet",
+                {
+                    {10, "alice", 1000, 5, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0},
+                    {11, "bob", 2000, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                });
+    user_indicators::run_finalize(base_stage, indicators, kDefaultIndicatorsGroupRows,
+                                  kDefaultReputationGroupRows);
+
+    // Minute store whose (uid, minute) -> count flags:
+    //   uid 10 day 1000: minute 1440*1000+30 carries 501 edits -> flagged.
+    //   uid 11 day 2000: minute 1440*2000+500 carries 40 edits -> not flagged.
+    //   uid 13 day 1001: minute 1440*1001+0 carries 600 edits -> flagged, and
+    //   uid 13 appears in this run's diffs.
+    const std::string minutes = dir.join("vandalism_minutes.bin");
+    {
+        vandalism_store::Writer w(minutes);
+        w.add(10, 1440u * 1000u + 30, 501);
+        w.add(11, 1440u * 2000u + 500, 40);
+        w.add(13, 1440u * 1001u, 600);
+        w.finish();
+    }
+
+    // One update run adding uid 13 on its first day.
+    const std::string stage_root = dir.join("update_stage");
+    std::filesystem::create_directories(stage_root + "/seq_2847600");
+    write_stage(stage_root + "/seq_2847600/stage.parquet",
+                {
+                    {13, "carol", 1001, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                });
+
+    user_indicators::run_update_finalize(stage_root, indicators,
+                                         kDefaultIndicatorsGroupRows,
+                                         kDefaultReputationGroupRows, minutes, {});
+
+    const auto ind = read_indicators(indicators);
+    // Rows sorted by (uid, change_date): uid 10 day 1000, uid 11 day 2000,
+    // uid 13 day 1001.
+    ASSERT_EQ(ind.uid.size(), 3);
+    EXPECT_EQ(ind.uid[0], 10);
+    EXPECT_EQ(ind.day[0], 1000);
+    EXPECT_EQ(ind.flag[0], vandalism::kFlagFilter2);  // 501 > 500 in one hour
+    EXPECT_EQ(ind.uid[1], 11);
+    EXPECT_EQ(ind.day[1], 2000);
+    EXPECT_EQ(ind.flag[1], 0);  // 40 < 500
+    EXPECT_EQ(ind.uid[2], 13);
+    EXPECT_EQ(ind.day[2], 1001);
+    EXPECT_EQ(ind.flag[2], vandalism::kFlagFilter2);  // 600 > 500
+}
+
+// The combined vandalism flag: base flags are carried forward, this run's
+// filter-2 bits come from the minute store and filter-3 bits from the moves
+// folding, so a day flagged by both screens carries 0x03.
+TEST(UserIndicatorFinalize, UpdateFlagsCombineCarriedAndMoveDays) {
+    TempDir dir;
+    const std::string indicators = dir.join("user_indicators.parquet");
+
+    // Base dataset from import for uid 10 day 1000 and uid 11 day 2000.
+    const std::string base_stage = dir.join("base_stage");
+    std::filesystem::create_directories(base_stage);
+    write_stage(base_stage + "/stage_00000.parquet",
+                {
+                    {10, "alice", 1000, 5, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0},
+                    {11, "bob", 2000, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                });
+    user_indicators::run_finalize(base_stage, indicators, kDefaultIndicatorsGroupRows,
+                                  kDefaultReputationGroupRows);
+
+    const std::string minutes = dir.join("vandalism_minutes.bin");
+    {
+        vandalism_store::Writer w(minutes);
+        w.add(10, 1440u * 1000u + 30, 501);
+        w.finish();
+    }
+
+    const std::string stage_root = dir.join("stage");
+    const auto update_with = [&](const std::string& seq_hex, const std::string& username,
+                                 uint16_t day,
+                                 const std::map<std::pair<int64_t, uint16_t>, uint8_t>& move_flags,
+                                 uint64_t seq) {
+        const std::string stage_root = dir.join("seq_" + seq_hex);
+        std::filesystem::create_directories(stage_root + "/seq_" + std::to_string(seq));
+        write_stage(stage_root + "/seq_" + std::to_string(seq) + "/stage.parquet",
+                    {
+                        {90, username, day, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                    });
+        user_indicators::run_update_finalize(stage_root, indicators,
+                                             kDefaultIndicatorsGroupRows,
+                                             kDefaultReputationGroupRows, minutes,
+                                             move_flags);
+    };
+
+    // Run 1: uid 90 day 3000 staged; only the minute store carries the
+    // filter-2 flag for uid 10 day 1000.
+    update_with("1", "zoe", 3000, {}, 2847600);
+    const auto ind1 = read_indicators(indicators);
+    // (uid, day) sorted: uid 10 day 1000, uid 11 day 2000, uid 90 day 3000.
+    ASSERT_EQ(ind1.uid.size(), 3);
+    EXPECT_EQ(ind1.day[0], 1000);
+    EXPECT_EQ(ind1.flag[0], vandalism::kFlagFilter2);
+    EXPECT_EQ(ind1.flag[1], 0);
+    EXPECT_EQ(ind1.flag[2], 0);
+
+    // Run 2: uid 90 day 3001 staged; move-flagged existing days uid 10 day
+    // 1000 (which already carries the filter-2 bit) and uid 11 day 2000.
+    update_with("2", "zoe", 3001,
+                std::map<std::pair<int64_t, uint16_t>, uint8_t>{
+                    {{10, 1000}, vandalism::kFlagFilter3},
+                    {{11, 2000}, vandalism::kFlagFilter3},
+                },
+                2847601);
+
+    const auto ind = read_indicators(indicators);
+    //   uid 10 day 1000: filter 2 carried + filter 3 added -> 0x03.
+    //   uid 11 day 2000: move-flagged only -> 0x02.
+    //   uid 90 days 3000/3001: neither screen -> 0.
+    ASSERT_EQ(ind.uid.size(), 4);
+    EXPECT_EQ(ind.day[0], 1000);
+    EXPECT_EQ(ind.flag[0], vandalism::kFlagFilter2 | vandalism::kFlagFilter3);
+    EXPECT_EQ(ind.uid[1], 11);
+    EXPECT_EQ(ind.day[1], 2000);
+    EXPECT_EQ(ind.flag[1], vandalism::kFlagFilter3);
+    EXPECT_EQ(ind.flag[2], 0);
+    EXPECT_EQ(ind.flag[3], 0);
 }
 
 }  // namespace

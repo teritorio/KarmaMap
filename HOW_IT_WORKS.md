@@ -160,7 +160,10 @@ Each diff invokes update-mode passes 1 and 2:
   `changes/year=YYYY/ways.<seq>.parquet`, resolving node refs against the
   overlay — post-update view for visible ways (overlay else base, deleted
   resolves to nothing), pre-update view for deleted ways (overlay else base
-  = their last known geometry).
+  = their last known geometry). Like the import way pass, refs are resolved
+  in batches (bounded by `--way-batch-mb`'s default) with one forward-only
+  sweep over the base cache per batch instead of a random lookup per ref,
+  so a diff's way pass decompresses only the cache blocks its refs touch.
 
 Once per run the `.last` incremental cache is rebuilt as base + overlay minus
 deletions (the incremental writer's tmp+rename swap keeps it consistent), and
@@ -186,6 +189,29 @@ per-`(uid, change_date)` activity deltas and per-uid counter totals into
 manifest's source block is updated to reflect the highest applied sequence
 and its timestamp once per run.
 
+The vandalism engine (OSMPatrol filters 2 and 3, see
+`docs/osmpatrol-neis-2012.md`) runs in the same loop. Every diff is scanned
+into per-`(uid, minute)` modified+deleted buckets under
+`vandalism_update_stage/counts/seq_<n>/`, and modified nodes with a known
+prior position are recorded by the update node pass into
+`vandalism_update_stage/moves/seq_<n>/`. The finalize three-step ordering is
+load-bearing:
+
+1. `fold_minute_counts` merges the run's staged buckets into the persisted
+   binary store `vandalism_minutes.bin` (`vandalism_store.hpp`), summing
+   equal `(uid, minute)` keys — the store is the merge base for the next run
+   and is stamped with the applied sequence so a rerun is a no-op.
+2. `user_indicators::run_update_finalize` reads it through
+   `vandalism::flagged_days` plus this run's `vandalism::flagged_move_days`
+   and recomputes the `vandalism_flag` column of `user_indicators.parquet`
+   (base flags carried forward, ORed with this run's filter-2 and filter-3
+   bits).
+3. `vandalism::flagged_move_days` folds the staged node moves (> 500 m) into
+   those same per-day bits (filter 3); its stage is transient and removed, so
+   every finalize is idempotent. `vandalism_minutes.bin` likewise folds
+   minutes (filter 2). There is no persisted move dataset — both filters land
+   only in `user_indicators.parquet`'s `vandalism_flag` bits.
+
 ## User-indicator pass
 
 The user-indicators pass scores history **per user and per UTC
@@ -200,6 +226,52 @@ by `(uid, change_date)`, derives the reputation rows, and removes.
 user, so it grows with new users, not new edits, and can be rebuilt from the
 per-user totals without re-reading history. The non-partitioned single files
 keep the `uid` join cheap and the numerics-only indicators file small.
+
+## Vandalism pass
+
+The vandalism engine (OSMPatrol filters 2 and 3 of Neis, Goetz & Zipf 2012)
+watches the diff stream, not the full history — it runs `update`-only. The
+2021 replication diff scan (`vandalism::run_scan_diff`) reuses the
+user-indicator classification (visible version 1 = created, later = modified,
+invisible = deleted) and counts **modified + deleted** objects per
+`(uid, minute)` into `vandalism_update_stage/counts/seq_<n>/` (UTC minutes
+since the epoch; creates are ignored).
+
+The minute buckets are persisted as the binary block store
+`vandalism_minutes.bin` next to the stage root (see `vandalism_store.hpp` for
+the on-disk format: one 16-byte record per `(uid, minute)`, sorted, keyed as
+the update finalize's merge base). `fold_minute_counts` reads the store plus
+the run's staged buckets, sums equal `(uid, minute)` keys (so a minute that
+gains edits in an incoming diff amends its record), rewrites the store with a
+tmp+rename swap and stamps its header with the applied sequence. A rerun of
+an already-folded sequence (crash between the rename and stage cleanup) is
+skipped.
+
+`vandalism::flagged_days` reads the store back into
+`(uid, day) -> flag`: each uid's contiguous minute series is run through
+`hour_spans`, the trailing 60-minute window (the minute's count plus the
+previous 59), and any day holding a minute whose span is strictly above 500
+is flagged (`day = minute / 1440`, so a burst crossing midnight still lands
+on the day of its peak minute). The user-indicators update finalize merges
+those flags into `user_indicators.parquet`'s `vandalism_flag` column for the
+whole history. Import writes the column as 0: the full-history scan precedes
+the replication stream, so no minute buckets exist for it.
+
+Filter 3 records modified-node moves (> 500 m) as the same updates apply:
+the update node pass already tracks each node's last known H3 cell
+(`node_cache::incremental` base plus this run's overlay), and it hands every
+detected move beyond the 500 m screen to `vandalism::NodeMoveSink`, which
+stages `(uid, minute)` rows under
+`vandalism_update_stage/moves/seq_<n>/` (rows that do not clear the screen
+are dropped before staging). `flagged_move_days` folds them straight into
+this run's `(uid, day) -> filter-3 bit` flags used by the user-indicators
+finalize and removes the stage root, so there is **no persisted move
+dataset** — filter 3 survives only as the carried/ORed day bit in
+`user_indicators.parquet`. The distance is measured from the prior cell
+center to the new point, within one res-9 cell radius (~175 m) of the true
+prior: fine for the 500 m screen, not for the paper's finer 11 m
+edit-analysis flag. Filter 1 (new users / reputation < 5%) is left to a
+`user_reputation.parquet` join at query time.
 
 ## Web viewer queries
 

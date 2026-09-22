@@ -81,6 +81,7 @@ add_library(karmamap_core STATIC
   src/state.cpp
   src/update.cpp
   src/user_indicators.cpp
+  src/vandalism.cpp
 )
 
 target_include_directories(karmamap_core PUBLIC src)

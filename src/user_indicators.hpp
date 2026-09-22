@@ -3,13 +3,21 @@
 // User-indicator computation: an optional, H3-independent mode that scores
 // the OSM full history per contributing user and per UTC day. Two outputs:
 //
-//   user_indicators.parquet  per (uid, change_date) activity counter
+//   user_indicators.parquet  per (uid, change_date) activity counter plus the
+//                            vandalism flag bits:
 //                            (uid, change_date, count = the six node/way
 //                            change counters + relation_created +
-//                            relation_modified + relation_deleted; the
-//                            per-day tag_* counters are aggregated in
-//                            finalize and surface only as reputation
-//                            totals below)
+//                            relation_modified + relation_deleted;
+//                            vandalism_flag = bits of the day's vandalism
+//                            screens — bit 0 (kFlagFilter2): any of the
+//                            day's minutes had > 500 modified+deleted
+//                            objects in a one-hour window; bit 1
+//                            (kFlagFilter3): a modified node was moved
+//                            > 500 m that day. Filled from the persisted
+//                            minute store and the run's move stages by the
+//                            update finalize, 0 on import. The per-day
+//                            tag_* counters are aggregated in finalize and
+//                            surface only as reputation totals below)
 //   user_reputation.parquet  per-uid reputation + full indicator totals
 //                            (uid, username, first_seen_day, reputation,
 //                             21 counter totals, per-aspect pct;
@@ -45,9 +53,11 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 
 namespace user_indicators {
 
@@ -234,10 +244,19 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
 // stage_root/seq_<n>/stage_*.parquet) into the existing datasets: the per
 // (uid, change_date) deltas are summed into user_indicators.parquet, and
 // user_reputation.parquet is recomputed from the existing per-uid totals plus
-// the diff totals (so newly appeared contributors join the ranking). Called
-// once per update run. The existing files must carry the schemas written by
-// run_finalize (full-run datasets) or a previous update finalize.
+// the diff totals (so newly appeared contributors join the ranking). The
+// vandalism_flag bits are rebuilt over the whole history: bit 0
+// (kFlagFilter2) from the persisted minute store at `minutes_path`
+// (vandalism::flagged_days), bit 1 (kFlagFilter3) from `move_flags`, the
+// run's (uid, change_date) -> kFlagFilter3 set produced by
+// vandalism::flagged_move_days, which the caller must have folded first. The
+// existing file's flags are carried forward and then ORed, so import (all 0)
+// plus one update per day yields the monotonic bits. Called once per update
+// run. The existing files must carry the schemas written by run_finalize
+// (full-run datasets) or a previous update finalize.
 void run_update_finalize(const std::string& stage_root, const std::string& indicators_path,
-                         int64_t indicators_group_rows, int64_t reputation_group_rows);
+                         int64_t indicators_group_rows, int64_t reputation_group_rows,
+                         const std::string& minutes_path,
+                         const std::map<std::pair<int64_t, uint16_t>, uint8_t>& move_flags);
 
 }  // namespace user_indicators

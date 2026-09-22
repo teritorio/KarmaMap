@@ -243,6 +243,25 @@ TEST(NodeState, CreatedNodeOverlaysBase) {
     EXPECT_EQ(state.overlay_size(), 2);
 }
 
+// Vandalism filter 3 must read a modified node's prior cell BEFORE
+// set_position folds the new one into the overlay; this pins the ordering the
+// update node handler relies on.
+TEST(NodeState, PreBeforeSetPositionSeesOldCell) {
+    TempDir dir;
+    const std::string path = dir.join("incr.bin");
+    {
+        node_cache::incremental::Writer w(path, 9);
+        w.add(10, cell(0xAAAA));
+        w.finish();
+    }
+    update_pass::NodeState state(path, 9);
+    const uint64_t before = state.pre(10);  // must be the old cell
+    state.set_position(10, cell(0xBBBB));
+    EXPECT_EQ(before, cell(0xAAAA));
+    EXPECT_EQ(state.pre(10), cell(0xBBBB));  // after: overlay wins
+    EXPECT_EQ(state.post(10), cell(0xBBBB));
+}
+
 TEST(NodeState, DeletedNodePreKeepsLastCellPostIsZero) {
     TempDir dir;
     const std::string path = dir.join("incr.bin");

@@ -10,6 +10,10 @@ The two access parts:
   count)` change counts (node + way changes merged per cell per day).
 - **Users** — `user_indicators.parquet` and
   `user_reputation.parquet`: per-user, per-day activity and reputation.
+- **Vandalism** — `vandalism_minutes.bin` (binary, not Parquet): the
+  update-only OSMPatrol filter-2 source; filter-3 fold stages are transient.
+  The per-day flags (bits for filters 2 and 3) land in
+  `user_indicators.parquet`.
 
 ## Output layout
 
@@ -18,6 +22,7 @@ output-dir/
 ├── manifest.json
 ├── user_indicators.parquet
 ├── user_reputation.parquet
+├── vandalism_minutes.bin     # update-only; binary block store
 └── changes/
     └── year=2025/
         ├── data.parquet      # (h3_cell, change_date, count)
@@ -132,6 +137,7 @@ are two non-partitioned single files.
   | `uid` | `int64` | OSM user id |
   | `change_date` | `uint16` | UTC day (same encoding as `changes/`) |
   | `count` | `uint32` | Total activity that day: the six node/way change counters plus the three relation counters (created, modified, deleted) |
+  | `vandalism_flag` | `uint8` | Per-day OSMPatrol flag: bit 0 (`0x01`) = any of the day's minutes had > 500 modified+deleted objects within a one-hour window; bit 1 (`0x02`) = a modified node moved more than 500 m that day. Recomputed/carried by every update finalize from `vandalism_minutes.bin` plus the run's move-flagged days; 0 on import |
 
   The per-day `tag_*` counters are aggregated during finalize and only their
   per-user sums are written (in `user_reputation.parquet`), so they never
@@ -202,3 +208,35 @@ JOIN read_parquet('output-dir/user_indicators.parquet') i USING (uid)
 ORDER BY edits DESC
 LIMIT 20;
 ```
+
+## Vandalism part
+
+The vandalism outputs are update-only: they cover the period after the
+recorded replication sequence and are absent after a pure import. They
+implement the OSMPatrol filters 2 (`> 500 modified/deleted in one hour`) and 3
+(node moved beyond 500 m); filter 1 (new users / reputation < 5%) is joined
+from `user_reputation.parquet` at query time. Both filters fold into the
+per-day `vandalism_flag` bits of `user_indicators.parquet`; filter 2 draws on
+one binary store and filter 3's move staging is transient.
+
+- `vandalism_minutes.bin` — the **binary** per-`(uid, minute)` modified+
+  deleted counts behind the filter-2 flag (bit 0 of `vandalism_flag`); it
+  replaces the minute-bucket Parquet table of earlier builds and is not part
+  of `manifest.json` or the Parquet contract. Format (see
+  `src/vandalism_store.hpp`): a 40-byte header (magic `VMIN`, version, record
+  size, record/block counts, the `karmamap_source_seq`-equivalent
+  applied-sequence stamp), followed by ZSTD blocks of `2^18` 16-byte records
+  `(uid, minute, count)` and a per-block directory of `(first_uid, compressed
+  size)`. `uid` is big-endian with the sign bit flipped,
+  `minute`/`count` big-endian, all strictly ascending and unique per
+  `(uid, minute)`. Each finalize run merges its staged buckets into this store
+  and stamps it, so it is the flag's complete source of truth.
+
+- Filter 3 stages the run's detected node moves (`> 500` m, as `(uid, minute)`
+  rows, gated by the sink) under the update stage root. `flagged_move_days`
+  folds them into `(uid, day) -> bit-1` flags for `user_indicators.parquet`
+  and removes the root; the base file's flags are carried forward and ORed, so
+  the combination is monotonic across reruns. The distance is measured from
+  the old H3 cell center to the new point: off by up to one res-9 cell radius
+  (~175 m), fine for the 500 m screen, not for the finer 11 m edit-analysis
+  flag.

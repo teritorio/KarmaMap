@@ -31,6 +31,7 @@
 #include "arrow_table_io.hpp"
 #include "h3_utils.hpp"
 #include "reputation.hpp"
+#include "vandalism.hpp"
 
 namespace user_indicators {
 
@@ -514,6 +515,7 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
     arrow::Int64Builder ind_uid_builder;
     arrow::UInt16Builder ind_day_builder;
     arrow::UInt32Builder ind_count_builder;
+    arrow::UInt8Builder ind_flag_builder;
 
     const int64_t n = combined->num_rows();
     for (int64_t i = 0; i < n; ++i) {
@@ -532,19 +534,26 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
         append_checked(ind_uid_builder, uid);
         append_checked(ind_day_builder, day);
         append_checked(ind_count_builder, count);
+        // Import scans the full history, whose object hours precede the
+        // replication stream's minute buckets; keep the column for schema
+        // uniformity and let update runs fill it from the persisted store.
+        append_checked(ind_flag_builder, 0);
     }
 
-    std::shared_ptr<arrow::Array> ind_uid, ind_day, ind_count;
+    std::shared_ptr<arrow::Array> ind_uid, ind_day, ind_count, ind_flag;
     finish_checked(ind_uid_builder, &ind_uid);
     finish_checked(ind_day_builder, &ind_day);
     finish_checked(ind_count_builder, &ind_count);
+    finish_checked(ind_flag_builder, &ind_flag);
 
     std::vector<std::shared_ptr<arrow::Field>> indicator_fields = {
         arrow::field("uid", arrow::int64(), false),
         arrow::field("change_date", arrow::uint16(), false),
         arrow::field("count", arrow::uint32(), false),
+        arrow::field("vandalism_flag", arrow::uint8(), false),
     };
-    std::vector<std::shared_ptr<arrow::Array>> indicator_columns = {ind_uid, ind_day, ind_count};
+    std::vector<std::shared_ptr<arrow::Array>> indicator_columns = {
+        ind_uid, ind_day, ind_count, ind_flag};
     auto indicator_schema = arrow::schema(indicator_fields);
     // The indicator rows were appended in (uid, change_date) order while
     // walking the sorted combined table, so no re-sort is needed.
@@ -637,7 +646,9 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir) {
 }
 
 void run_update_finalize(const std::string& stage_root, const std::string& indicators_path,
-                         int64_t indicators_group_rows, int64_t reputation_group_rows) {
+                         int64_t indicators_group_rows, int64_t reputation_group_rows,
+                         const std::string& minutes_path,
+                         const std::map<std::pair<int64_t, uint16_t>, uint8_t>& move_flags) {
     // Registers Arrow's compute kernels (sort_indices, take).
     auto init_status = arrow::compute::Initialize();
     if (!init_status.ok()) {
@@ -709,8 +720,10 @@ void run_update_finalize(const std::string& stage_root, const std::string& indic
     }
 
     // User indicators: base file plus deltas, summed per (uid, change_date)
-    // and written sorted, once.
+    // and written sorted, once. The vandalism flags are monotonic bits carried
+    // forward from the base rows and ORed with this run's screens.
     std::map<std::pair<int64_t, uint16_t>, uint32_t> merged_counts;
+    std::map<std::pair<int64_t, uint16_t>, uint8_t> merged_flags;
     if (std::filesystem::exists(indicators_path)) {
         auto base_result = arrow_table_io::read_table(indicators_path)->CombineChunks();
         if (!base_result.ok()) {
@@ -721,30 +734,48 @@ void run_update_finalize(const std::string& stage_root, const std::string& indic
         const auto* b_uids = typed_column<arrow::Int64Array>(base_table, "uid");
         const auto* b_days = typed_column<arrow::UInt16Array>(base_table, "change_date");
         const auto* b_counts = typed_column<arrow::UInt32Array>(base_table, "count");
+        const auto* b_flags = typed_column<arrow::UInt8Array>(base_table, "vandalism_flag");
         for (int64_t i = 0; i < base_table->num_rows(); ++i) {
             merged_counts[{b_uids->Value(i), b_days->Value(i)}] += b_counts->Value(i);
+            merged_flags[{b_uids->Value(i), b_days->Value(i)}] |= b_flags->Value(i);
         }
     }
     for (const auto& [key, count] : delta_counts) merged_counts[key] += count;
 
+    // Rebuild the whole-history flags from the persisted sources: bit 0 from
+    // the minute store, bit 1 from the run's folded move-flagged days. Every
+    // flagged_days value already carries kFlagFilter2 and every move_flags
+    // entry kFlagFilter3, so ORing them into the carried-forward base bits
+    // yields the combined per-day field.
+    for (const auto& [key, value] : vandalism::flagged_days(minutes_path)) {
+        merged_flags[key] |= value;
+    }
+    for (const auto& [key, value] : move_flags) {
+        merged_flags[key] |= value;
+    }
+
     arrow::Int64Builder ind_uid_builder;
     arrow::UInt16Builder ind_day_builder;
     arrow::UInt32Builder ind_count_builder;
+    arrow::UInt8Builder ind_flag_builder;
     for (const auto& [key, count] : merged_counts) {
         append_checked(ind_uid_builder, key.first);
         append_checked(ind_day_builder, key.second);
         append_checked(ind_count_builder, count);
+        append_checked(ind_flag_builder, merged_flags[key]);
     }
-    std::shared_ptr<arrow::Array> ind_uid, ind_day, ind_count;
+    std::shared_ptr<arrow::Array> ind_uid, ind_day, ind_count, ind_flag;
     finish_checked(ind_uid_builder, &ind_uid);
     finish_checked(ind_day_builder, &ind_day);
     finish_checked(ind_count_builder, &ind_count);
+    finish_checked(ind_flag_builder, &ind_flag);
     // The merged map iterates in (uid, change_date) order, so no re-sort.
     auto indicator_table = arrow::Table::Make(
         arrow::schema({arrow::field("uid", arrow::int64(), false),
                        arrow::field("change_date", arrow::uint16(), false),
-                       arrow::field("count", arrow::uint32(), false)}),
-        {ind_uid, ind_day, ind_count});
+                       arrow::field("count", arrow::uint32(), false),
+                       arrow::field("vandalism_flag", arrow::uint8(), false)}),
+        {ind_uid, ind_day, ind_count, ind_flag});
 
     const std::string indicators_tmp = indicators_path + ".tmp";
     // The viewer filters on uid; only that column keeps row-group min/max

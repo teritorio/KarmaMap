@@ -21,7 +21,14 @@ reputation scoring follows [Neis, Goetz & Zipf, *ISPRS Int. J. Geo-Inf.*
 - `changes/` — `(h3_cell, change_date, count)` counts (node + way changes
   merged per cell per day), partitioned by calendar year.
 - `user_indicators.parquet` and `user_reputation.parquet` — per-user, per-day
-  activity and reputation, built by every run.
+  activity and reputation, built by every run; the indicator file also
+  carries the per-day vandalism filter-2 flag (a `vandalism_flag` column).
+- Vandalism outputs of every `update` run: `vandalism_minutes.bin` (the
+  persisted per-`(uid, minute)` modified+deleted bucket store behind the
+  flag) and the bit-coded per-day `vandalism_flag` in
+  `user_indicators.parquet` (bit 0 = filter 2, bit 1 = filter-3 node moves
+  over 500 m; there is no persisted node-moves dataset — both filters
+  survive only as carried day bits).
 
 ![Changes H3](changes-h3.webp)
 

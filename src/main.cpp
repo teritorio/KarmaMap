@@ -24,9 +24,11 @@
 #include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <map>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #include "manifest.hpp"
 #include "geofabrik_cookie.hpp"
@@ -38,6 +40,7 @@
 #include "state.hpp"
 #include "update.hpp"
 #include "user_indicators.hpp"
+#include "vandalism.hpp"
 #include "way_processor.hpp"
 
 namespace {
@@ -174,6 +177,14 @@ void run_step4_pass(const Options& opts) {
     const uint64_t records = cache_writer.records();
     cache_writer.finish();
 
+    // The history cache was only an intermediate from which the incremental
+    // cache was collapsed; it is never read again (import wipes it, update and
+    // later prepare-update runs use the .last cache). Free its space once the
+    // new cache is final, unless the two paths coincide by user error.
+    if (opts.node_cache_path != opts.node_cache_last_path) {
+        std::filesystem::remove(opts.node_cache_path);
+    }
+
     auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                        std::chrono::steady_clock::now() - start)
                        .count();
@@ -261,18 +272,28 @@ std::optional<replication_state::State> run_update_mode(
     const std::string diffs_dir = opts.output_dir + "/diffs";
     const std::string indicator_stage_root =
         opts.output_dir + "/user_indicator_update_stage";
+    const std::string vandalism_stage_root = opts.output_dir + "/vandalism_update_stage";
     // Stage groups from a crashed earlier run may cover sequences this run
     // does not re-scan; drop them so finalize only folds what was applied.
     std::filesystem::remove_all(indicator_stage_root);
+    std::filesystem::remove_all(vandalism_stage_root);
+    // Filter 2 stages go under vandalism_update_stage/counts/seq_<n>; the
+    // move sink stages filter 3 under vandalism_update_stage/moves/seq_<n>.
+    vandalism::NodeMoveSink move_sink(vandalism_stage_root + "/moves");
     uint64_t applied = base_seq;
     for (uint64_t seq = first; seq <= target; ++seq) {
         const std::string diff_path = replication_state::fetch_diff(
             current.url, seq, cookie, diffs_dir + "/" + std::to_string(seq) + ".osc.gz");
+        move_sink.start_seq(seq);
         update_pass::run_node_update(diff_path, changes_root, seq, opts.h3_resolution,
-                                     &node_state);
-        update_pass::run_way_update(diff_path, changes_root, seq, node_state);
+                                     &node_state, &move_sink);
+        update_pass::run_way_update(diff_path, changes_root, seq, node_state,
+                                    opts.way_batch_bytes);
         user_indicators::run_scan_diff(
             diff_path, indicator_stage_root + "/seq_" + std::to_string(seq));
+        vandalism::run_scan_diff(
+            diff_path, vandalism_stage_root + "/counts/seq_" + std::to_string(seq));
+        move_sink.finish_seq();
         applied = seq;
     }
 
@@ -283,10 +304,21 @@ std::optional<replication_state::State> run_update_mode(
     std::cerr << "[update] merging staging partitions into " << changes_root << "\n";
     sort_pass::merge_update_partitions(changes_root, opts.change_group_rows, applied);
 
+    // Filter 2: fold this run's staged minute buckets into the persisted
+    // binary minute store first, so the daily vandalism flag written below
+    // already reflects every diff of this run. Filter 3 (any node moved
+    // > 500 m) folds into per-day flags the same way, and both staging roots
+    // are consumed here.
+    const std::string minutes_path = opts.output_dir + "/vandalism_minutes.bin";
+    vandalism::fold_minute_counts(vandalism_stage_root + "/counts", minutes_path, applied);
+    const std::map<std::pair<int64_t, uint16_t>, uint8_t> move_flags =
+        vandalism::flagged_move_days(vandalism_stage_root);
+
     user_indicators::run_update_finalize(indicator_stage_root,
                                          opts.output_dir + "/user_indicators.parquet",
                                          opts.indicators_group_rows,
-                                         opts.reputation_group_rows);
+                                         opts.reputation_group_rows, minutes_path,
+                                         move_flags);
 
     // Provenance now reflects the applied state: the sequence is the last
     // applied diff (indexed by "update N"), the timestamp is the fetched

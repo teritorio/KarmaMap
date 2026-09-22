@@ -23,8 +23,11 @@ class NodeUpdateHandler : public osmium::handler::Handler {
 public:
     NodeUpdateHandler(NodeState* state,
                       parquet_out::PartitionedParquetWriter* parquet_writer,
-                      int h3_resolution)
-        : state_(state), parquet_writer_(parquet_writer), h3_resolution_(h3_resolution) {}
+                      int h3_resolution, vandalism::NodeMoveSink* moves)
+        : state_(state),
+          parquet_writer_(parquet_writer),
+          h3_resolution_(h3_resolution),
+          moves_(moves) {}
 
     void node(const osmium::Node& n) {
         touched_++;  // INSTR
@@ -35,6 +38,16 @@ public:
             const double lat = n.location().lat();
             const double lon = n.location().lon();
             const uint64_t cell = h3_utils::location_to_cell(lat, lon, h3_resolution_);
+
+            // Vandalism filter 3: a modification (version > 1) with a known
+            // prior cell is a candidate move. Capture the pre-update cell
+            // BEFORE set_position folds the new one into the overlay.
+            if (moves_ && n.visible() && n.version() > 1) {
+                const uint64_t prev = state_->pre(n.id());
+                if (prev != 0) {
+                    moves_->record(n.uid(), ts, prev, lat, lon);
+                }
+            }
 
             state_->set_position(n.id(), cell);
             parquet_writer_->increment(cell, day);
@@ -59,6 +72,7 @@ private:
     NodeState* state_;
     parquet_out::PartitionedParquetWriter* parquet_writer_;
     int h3_resolution_;
+    vandalism::NodeMoveSink* moves_;
 
     // INSTR: diagnostic counters.
     uint64_t touched_ = 0;
@@ -66,11 +80,18 @@ private:
     uint64_t deleted_ = 0;
 };
 
+// Resolves way node refs in batches: refs are accumulated until the batch
+// exceeds `way_batch_bytes`, then resolved with a single forward sweep over
+// the base cache (prefetch_base) instead of a random lookup per ref. A way
+// never spans two batches, so counting stays identical to the streaming pass.
 class WayUpdateHandler : public osmium::handler::Handler {
 public:
     WayUpdateHandler(const NodeState* state,
-                     parquet_out::PartitionedParquetWriter* parquet_writer)
-        : state_(state), parquet_writer_(parquet_writer) {}
+                     parquet_out::PartitionedParquetWriter* parquet_writer,
+                     size_t way_batch_bytes)
+        : state_(state),
+          parquet_writer_(parquet_writer),
+          batch_max_refs_(std::max<size_t>(1, way_batch_bytes / sizeof(int64_t))) {}
 
     void way(const osmium::Way& w) {
         touched_++;  // INSTR
@@ -82,40 +103,86 @@ public:
         }
         // Visible ways resolve against the post-update view; deleted ways
         // against the pre-update view (their last known geometry).
-        const bool pre = !w.visible();
-        std::vector<uint64_t> cells;
+        way_days_.push_back(day);
+        way_visible_.push_back(w.visible() ? 1u : 0u);
+        ref_starts_.push_back(refs_.size());
         for (const auto& nr : w.nodes()) {
-            const uint64_t cell = pre ? state_->pre(nr.ref()) : state_->post(nr.ref());
-            if (cell != 0) cells.push_back(cell);
+            refs_.push_back(nr.ref());
         }
-        if (cells.empty()) {
-            return;
-        }
-        std::sort(cells.begin(), cells.end());
-        cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
-        for (uint64_t cell : cells) {
-            parquet_writer_->increment(cell, day);
-            points_++;  // INSTR
+        if (refs_.size() >= batch_max_refs_) {
+            flush_batch();
         }
     }
+
+    void finish() { flush_batch(); }
 
     // INSTR
     uint64_t touched() const { return touched_; }
     uint64_t points() const { return points_; }
+    uint64_t batches() const { return batches_; }
+    uint64_t scanned() const { return scanned_; }
 
 private:
+    void flush_batch() {
+        if (refs_.empty()) {
+            return;
+        }
+
+        std::vector<int64_t> nodes = refs_;
+        std::sort(nodes.begin(), nodes.end());
+        nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
+        scanned_ += state_->prefetch_base(nodes);
+
+        for (size_t s = 0; s < way_days_.size(); ++s) {
+            const size_t begin = ref_starts_[s];
+            const size_t end = (s + 1 < ref_starts_.size()) ? ref_starts_[s + 1] : refs_.size();
+            const bool pre = way_visible_[s] == 0;
+
+            std::vector<uint64_t> cells;
+            cells.reserve(end - begin);
+            for (size_t i = begin; i < end; ++i) {
+                const uint64_t cell = pre ? state_->pre(refs_[i]) : state_->post(refs_[i]);
+                if (cell != 0) cells.push_back(cell);
+            }
+            if (cells.empty()) {
+                continue;
+            }
+            std::sort(cells.begin(), cells.end());
+            cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
+            for (uint64_t cell : cells) {
+                parquet_writer_->increment(cell, way_days_[s]);
+                points_++;  // INSTR
+            }
+        }
+
+        way_days_.clear();
+        way_visible_.clear();
+        ref_starts_.clear();
+        refs_.clear();
+        batches_++;  // INSTR
+    }
+
     const NodeState* state_;
     parquet_out::PartitionedParquetWriter* parquet_writer_;
+    size_t batch_max_refs_;
+
+    std::vector<uint16_t> way_days_;
+    std::vector<uint8_t> way_visible_;
+    std::vector<size_t> ref_starts_;
+    std::vector<int64_t> refs_;
 
     // INSTR: diagnostic counters.
     uint64_t touched_ = 0;
     uint64_t points_ = 0;
+    uint64_t batches_ = 0;
+    uint64_t scanned_ = 0;
 };
 
 }  // namespace
 
 void run_node_update(const std::string& diff_path, const std::string& changes_root,
-                     uint64_t seq, int h3_resolution, NodeState* state) {
+                     uint64_t seq, int h3_resolution, NodeState* state,
+                     vandalism::NodeMoveSink* moves) {
     std::cerr << "[update node pass] " << diff_path << "\n";
     const auto t0 = std::chrono::steady_clock::now();  // INSTR
 
@@ -123,7 +190,7 @@ void run_node_update(const std::string& diff_path, const std::string& changes_ro
                                                  "nodes." + std::to_string(seq) + ".parquet");
     osmium::io::File input_file(diff_path);
     osmium::io::Reader reader(input_file, osmium::osm_entity_bits::node);
-    NodeUpdateHandler handler(state, &writer, h3_resolution);
+    NodeUpdateHandler handler(state, &writer, h3_resolution, moves);
 
     while (osmium::memory::Buffer buffer = reader.read()) {
         osmium::apply(buffer, handler);
@@ -142,7 +209,7 @@ void run_node_update(const std::string& diff_path, const std::string& changes_ro
 }
 
 void run_way_update(const std::string& diff_path, const std::string& changes_root,
-                    uint64_t seq, const NodeState& state) {
+                    uint64_t seq, const NodeState& state, size_t way_batch_bytes) {
     std::cerr << "[update way pass] " << diff_path << "\n";
     const auto t0 = std::chrono::steady_clock::now();  // INSTR
 
@@ -150,19 +217,21 @@ void run_way_update(const std::string& diff_path, const std::string& changes_roo
                                                  "ways." + std::to_string(seq) + ".parquet");
     osmium::io::File input_file(diff_path);
     osmium::io::Reader reader(input_file, osmium::osm_entity_bits::way);
-    WayUpdateHandler handler(&state, &writer);
+    WayUpdateHandler handler(&state, &writer, way_batch_bytes);
 
     while (osmium::memory::Buffer buffer = reader.read()) {
         osmium::apply(buffer, handler);
     }
     reader.close();
+    handler.finish();
     writer.finish();
 
     const double elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                   std::chrono::steady_clock::now() - t0)
                                   .count();  // INSTR
     std::cerr << "[update way pass] touched=" << handler.touched()
-              << " points=" << handler.points() << " (" << elapsed_ms << "ms)\n";
+              << " points=" << handler.points() << " batches=" << handler.batches()
+              << " scanned=" << handler.scanned() << " (" << elapsed_ms << "ms)\n";
 }
 
 }  // namespace update_pass
