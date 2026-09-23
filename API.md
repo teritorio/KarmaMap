@@ -113,7 +113,8 @@ LIMIT 20;
 ## Update mode
 
 `karmamap update` downloads osmosis replication diffs (`.osc.gz`, one per
-sequence) and folds them into the existing dataset. Each rewritten year's
+sequence), folds them into the existing dataset, and removes each diff file
+once its passes succeeded. Each rewritten year's
 `data.parquet` footer carries a `karmamap_source_seq` key_value_metadata
 entry holding the highest applied sequence number as a string: the merge is
 apply-once, so a partition stamped at or beyond the run's sequence is never

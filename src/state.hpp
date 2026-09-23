@@ -23,6 +23,7 @@
 // update is the one stage that fetches the live state.txt.
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace replication_state {
@@ -53,6 +54,11 @@ std::string sidecar_state_path(const std::string& osh_path);
 //   diff_url("https://x/y-updates/", 2847632) ==
 //     "https://x/y-updates/002/847/632.osc.gz"
 std::string diff_url(const std::string& update_url, uint64_t sequence_number);
+
+// Parses a local replication diff file name ("<seq>.osc.gz", as stored under
+// <output-dir>/diffs) into its sequence; nullopt for any other name there
+// (e.g. a stray ".osc.gz.tmp" temp from an interrupted download).
+std::optional<uint64_t> diff_file_sequence(const std::string& name);
 
 // Parses osmosis-format state.txt text. Throws std::runtime_error when a
 // field is missing or malformed.

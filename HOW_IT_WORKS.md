@@ -148,7 +148,10 @@ sequence is the recorded source sequence; each
 `.osc.gz` diff (URL `AAA/BBB/CCC.osc.gz`, where N = AAA*1000000 + BBB*1000 +
 CCC from the 3/3/3 split of the sequence) is downloaded to `<output-dir>/diffs/` — a file
 already present is reused, a partial download is removed on failure — and
-applied. Bare `update` (or `update 0`) fetches every diff up to the current
+applied. Once every pass over a diff succeeded its file is removed, so
+`<output-dir>/diffs/` only ever holds in-flight diffs; diffs committed by
+earlier runs are purged at update start. Bare `update` (or `update 0`) fetches
+every diff up to the current
 `state.txt`; `update N` stops after N.
 
 Each diff invokes update-mode passes 1 and 2:

@@ -48,6 +48,31 @@ TEST(StateUrl, DiffUrlNormalizesTrailingSlash) {
               "https://x/y-updates/009/999/999.osc.gz");
 }
 
+TEST(DiffFileName, ParsesSequence) {
+    EXPECT_EQ(replication_state::diff_file_sequence("2847632.osc.gz").value(),
+              2847632ULL);
+    EXPECT_EQ(replication_state::diff_file_sequence("000000042.osc.gz").value(),
+              42ULL);
+}
+
+TEST(DiffFileName, NulloptForOscGzOnlyName) {
+    EXPECT_FALSE(replication_state::diff_file_sequence(".osc.gz").has_value());
+}
+
+TEST(DiffFileName, NulloptForTempFile) {
+    EXPECT_FALSE(replication_state::diff_file_sequence("42.osc.gz.tmp").has_value());
+}
+
+TEST(DiffFileName, NulloptForNonNumericStem) {
+    EXPECT_FALSE(replication_state::diff_file_sequence("abc.osc.gz").has_value());
+    EXPECT_FALSE(replication_state::diff_file_sequence("42a.osc.gz").has_value());
+    EXPECT_FALSE(replication_state::diff_file_sequence("-42.osc.gz").has_value());
+}
+
+TEST(DiffFileName, NulloptForUnrelatedName) {
+    EXPECT_FALSE(replication_state::diff_file_sequence("notes.pdf").has_value());
+}
+
 TEST(SidecarStatePath, SwapsOshPbfExtension) {
     EXPECT_EQ(sidecar_state_path("data/region.osh.pbf"),
               "data/region.state.txt");

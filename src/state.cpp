@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -55,6 +56,22 @@ std::string diff_url(const std::string& update_url, uint64_t sequence_number) {
         return std::string(buf, 3);
     };
     return base + group(aaa) + "/" + group(bbb) + "/" + group(ccc) + ".osc.gz";
+}
+
+std::optional<uint64_t> diff_file_sequence(const std::string& name) {
+    const std::string suffix = ".osc.gz";
+    if (name.size() <= suffix.size() ||
+        name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) {
+        return std::nullopt;
+    }
+    const std::string digits = name.substr(0, name.size() - suffix.size());
+    if (digits.empty()) return std::nullopt;
+    uint64_t seq = 0;
+    for (char c : digits) {
+        if (!std::isdigit(static_cast<unsigned char>(c))) return std::nullopt;
+        seq = seq * 10 + static_cast<uint64_t>(c - '0');
+    }
+    return seq;
 }
 
 namespace {

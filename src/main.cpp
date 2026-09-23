@@ -29,6 +29,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <utility>
 
 #include "manifest.hpp"
@@ -50,6 +51,18 @@ namespace {
 // year=YYYY partition files behind. No-op if absent.
 void reset_dataset_root(const std::string& root) {
     std::filesystem::remove_all(root);
+}
+
+// Deletes a freshly applied diff file. The removal is the last step of a
+// sequence: a failure here aborts the run loudly instead of continuing into
+// the merge while believing the file was consumed.
+void remove_applied_diff(const std::string& path) {
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    if (ec) {
+        throw std::runtime_error("Failed to remove applied diff " + path + ": " +
+                                 ec.message());
+    }
 }
 
 // The cookie jar used for the update stream, or "" when the update URL does
@@ -215,11 +228,14 @@ void run_users_history_pass(const Options& opts) {
 // in manifest.json's source block, every diff up to the target (the current
 // state.txt, capped by "update [N]") is downloaded to <output-dir>/diffs and
 // applied by the update node and way passes into per-sequence staging
-// partitions (nodes.<seq>.parquet / ways.<seq>.parquet). Once after all diffs
-// the flat incremental cache is rebuilt (base + overlay minus deletions) and
-// the staging partitions are merged into data.parquet, so N diffs never
-// rewrite the dataset N times. Returns the provenance to write to manifest
-// (the applied sequence, with the fetched state.txt timestamp).
+// partitions (nodes.<seq>.parquet / ways.<seq>.parquet). Diffs already
+// committed by earlier runs (at or below the recorded base sequence) are
+// purged on start, and each freshly downloaded diff is removed once every
+// pass over it succeeded. Once after all diffs the flat incremental cache is
+// rebuilt (base + overlay minus deletions) and the staging partitions are
+// merged into data.parquet, so N diffs never rewrite the dataset N times.
+// Returns the provenance to write to manifest (the applied sequence, with
+// the fetched state.txt timestamp).
 std::optional<replication_state::State> run_update_mode(
     const Options& opts, const replication_state::State& current) {
     std::cerr << "[update] fetching diff stream state below " << current.url << "\n";
@@ -249,6 +265,27 @@ std::optional<replication_state::State> run_update_mode(
             ? std::min(current.sequence_number,
                        base_seq + static_cast<uint64_t>(opts.max_update_diffs))
             : current.sequence_number;
+    // Purge diffs already committed by earlier runs: the manifest's recorded
+    // sequence only advances after the merge, so any <seq>.osc.gz at or below
+    // it was fully applied and this run never re-fetches it. Best-effort: a
+    // leftover here is an inert download cache, so a removal failure warns
+    // instead of aborting the update.
+    const std::string diffs_dir = opts.output_dir + "/diffs";
+    if (std::filesystem::is_directory(diffs_dir)) {
+        for (const auto& entry : std::filesystem::directory_iterator(diffs_dir)) {
+            if (!entry.is_regular_file()) continue;
+            const auto seq =
+                replication_state::diff_file_sequence(entry.path().filename().string());
+            if (!seq || *seq > base_seq) continue;
+            const std::string path = entry.path().string();
+            std::error_code ec;
+            std::filesystem::remove(path, ec);
+            if (ec) {
+                std::cerr << "[update] warning: failed to purge committed diff "
+                          << path << ": " << ec.message() << "\n";
+            }
+        }
+    }
     if (first > target) {
         std::cerr << "[update] already at sequence " << base_seq
                   << " (state.txt=" << current.sequence_number << "); nothing to apply\n";
@@ -270,7 +307,6 @@ std::optional<replication_state::State> run_update_mode(
     std::cerr << "[update] applying sequences " << first << ".." << target << "\n";
 
     update_pass::NodeState node_state(opts.node_cache_last_path, opts.h3_resolution);
-    const std::string diffs_dir = opts.output_dir + "/diffs";
     const std::string history_stage_root =
         opts.output_dir + "/users_history_update_stage";
     const std::string vandalism_stage_root = opts.output_dir + "/vandalism_update_stage";
@@ -295,6 +331,10 @@ std::optional<replication_state::State> run_update_mode(
         vandalism::run_scan_diff(
             diff_path, vandalism_stage_root + "/counts/seq_" + std::to_string(seq));
         move_sink.finish_seq();
+        // `diff_path` is provably applied only now that every pass over it
+        // succeeded; a throw anywhere above leaves the file for fetch_diff to
+        // reuse on a re-run.
+        remove_applied_diff(diff_path);
         applied = seq;
     }
 

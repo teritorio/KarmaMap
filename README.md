@@ -211,7 +211,8 @@ Bare `update` applies every diff up to the current `state.txt`; `update N`
 stops after N diffs. Each fetched diff (`<seq>.osc.gz`,
 downloaded to `<output-dir>/diffs/`) runs the node and way passes with per-diff
 staging files, so a multi-diff run merges everything into `data.parquet` exactly
-once.
+once. A diff file is removed once its passes succeeded, so the `diffs/` dir does
+not accumulate; diffs already committed by earlier runs are purged on start.
 
 ### Serving the web frontend
 
