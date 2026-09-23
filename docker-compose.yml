@@ -33,7 +33,7 @@ services:
     image: caddy:2
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - ${DATA_DIR:-./data/}output:/srv/output:ro
+      - ${DATA_DIR:-./data/}output:/srv/data:ro
       - ./web:/srv/web:ro
     ports:
       - "8080:8080"

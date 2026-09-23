@@ -2,16 +2,11 @@
 	root * /srv/web
 
 	handle_path /data/* {
-		root * /srv/output
+		root * /srv/data
 		header Access-Control-Allow-Origin "*"
 		header Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
 		header Access-Control-Allow-Headers "Range"
 		header Access-Control-Expose-Headers "Content-Range, Content-Length, Accept-Ranges"
-		file_server
-	}
-
-	handle /users/* {
-		try_files {path} /users/index.html
 		file_server
 	}
 
