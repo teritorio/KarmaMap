@@ -204,8 +204,9 @@ load-bearing:
 2. `users_history::run_update_finalize` reads it through
    `vandalism::flagged_days` plus this run's `vandalism::flagged_move_days`
    and recomputes the `vandalism_flag` column of `users_history.parquet`
-   (base flags carried forward, ORed with this run's filter-2 and filter-3
-   bits).
+   (bits 0/1 base flags carried forward, ORed with this run's filter-2 and
+   filter-3 bits; bit 2, the reputation-based filter 1, is recomputed fresh —
+   see the users-history pass below).
 3. `vandalism::flagged_move_days` folds the staged node moves (> 500 m) into
    those same per-day bits (filter 3); its stage is transient and removed, so
    every finalize is idempotent. `vandalism_minutes.bin` likewise folds
@@ -226,6 +227,17 @@ by `(uid, change_date)`, derives the reputation rows, and removes.
 user, so it grows with new users, not new edits, and can be rebuilt from the
 per-user totals without re-reading history. The non-partitioned single files
 keep the `uid` join cheap and the numerics-only history file small.
+
+The `vandalism_flag` of each history row is a bit field. Bits 0 and 1
+(`kFlagFilter2`, `kFlagFilter3`) stay 0 on import and are monotonically ORed
+by every update finalize from the persisted minute store and the run's
+move-flagged days. Bit 2 (`kFlagFilter1`, the paper's "new users or
+reputation < 5%" filter) differs: import fills it too, and every finalize
+masks it out of the base rows and re-ORs it from the freshly ranked
+reputation, so a contributor who climbs above the threshold loses the bit
+again. Both finalizes derive it from the same `reputation::Result` written to
+`user_reputation.parquet`; a contributor who created nothing ranks 0, which
+covers the "new users" half of the screen without a separate rule.
 
 ## Vandalism pass
 
@@ -270,8 +282,10 @@ dataset** — filter 3 survives only as the carried/ORed day bit in
 `users_history.parquet`. The distance is measured from the prior cell
 center to the new point, within one res-9 cell radius (~175 m) of the true
 prior: fine for the 500 m screen, not for the paper's finer 11 m
-edit-analysis flag. Filter 1 (new users / reputation < 5%) is left to a
-`user_reputation.parquet` join at query time.
+edit-analysis flag. Filter 1 (new users / reputation < 5%) is a reputation
+bit (`kFlagFilter1`) recomputed into every history row by the users-history
+finalize from `user_reputation.parquet`'s ranking, instead of a diff-based
+screen.
 
 ## Web viewer queries
 

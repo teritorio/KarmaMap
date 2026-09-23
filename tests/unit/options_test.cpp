@@ -9,6 +9,20 @@
 
 namespace {
 
+// Sets/unsets an env var for the test's scope, so a failing ASSERT midway
+// cannot leak it into later tests.
+class ScopedEnv {
+public:
+    ScopedEnv(const char* var, const char* val) : var_(var) {
+        if (val) setenv(var, val, 1);
+        else unsetenv(var);
+    }
+    ~ScopedEnv() { unsetenv(var_); }
+
+private:
+    const char* var_;
+};
+
 // Builds a C-style argv from strings and runs parse_args.
 bool parse(const std::vector<std::string>& args, Options* opts) {
     std::vector<char*> argv;
@@ -38,11 +52,29 @@ TEST(Options, ImportDefaultsPreserved) {
 }
 
 TEST(Options, ImportAloneDerivesDefaults) {
+    ScopedEnv data_dir("DATA_DIR", nullptr);
     Options opts;
     ASSERT_TRUE(parse({"prog", "import", "in.pbf"}, &opts));
     EXPECT_EQ(opts.output_dir, "data/output");
     EXPECT_EQ(opts.node_cache_path, "data/node_positions.cache");
     EXPECT_EQ(opts.node_cache_last_path, "data/node_positions.cache.last");
+}
+
+TEST(Options, DataDirEnvSetsDefaultOutputDir) {
+    ScopedEnv data_dir("DATA_DIR", "/data");
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "import", "in.pbf"}, &opts));
+    EXPECT_EQ(opts.output_dir, "/data/output");
+    EXPECT_EQ(opts.node_cache_path, "/data/node_positions.cache");
+    EXPECT_EQ(opts.node_cache_last_path, "/data/node_positions.cache.last");
+}
+
+TEST(Options, DataDirEnvWithTrailingSlash) {
+    ScopedEnv data_dir("DATA_DIR", "/data/");
+    Options opts;
+    ASSERT_TRUE(parse({"prog", "import", "in.pbf"}, &opts));
+    EXPECT_EQ(opts.output_dir, "/data/output");
+    EXPECT_EQ(opts.node_cache_path, "/data/node_positions.cache");
 }
 
 TEST(Options, ImportFileAfterFlags) {
@@ -276,6 +308,7 @@ TEST(Options, PrepareUpdateWithUrlParses) {
 }
 
 TEST(Options, PrepareUpdateAloneDerivesDefaults) {
+    ScopedEnv data_dir("DATA_DIR", nullptr);
     Options opts;
     ASSERT_TRUE(parse({"prog", "prepare-update", "--update-url",
                        "https://example.com/region-updates/"},
@@ -323,6 +356,7 @@ TEST(Options, PrepareUpdateRejectsWayBatchThrows) {
 // ---------------------------------------------------------------------------
 
 TEST(Options, UpdateBareParses) {
+    ScopedEnv data_dir("DATA_DIR", nullptr);
     Options opts;
     ASSERT_TRUE(parse({"prog", "update"}, &opts));
     EXPECT_EQ(opts.stage, Options::Stage::update);

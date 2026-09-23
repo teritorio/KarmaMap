@@ -13,9 +13,13 @@
 //                            day's minutes had > 500 modified+deleted
 //                            objects in a one-hour window; bit 1
 //                            (kFlagFilter3): a modified node was moved
-//                            > 500 m that day. Filled from the persisted
-//                            minute store and the run's move stages by the
-//                            update finalize, 0 on import. The per-day
+//                            > 500 m that day; bit 2 (kFlagFilter1): the
+//                            day's user has reputation below 5% ("new users
+//                            or low reputation"). Bits 0/1 are filled from
+//                            the persisted minute store and the run's move
+//                            stages by the update finalize, 0 on import;
+//                            bit 2 is derived from the current reputation on
+//                            every import and update finalize. The per-day
 //                            tag_* counters are aggregated in finalize and
 //                            surface only as reputation totals below)
 //   user_reputation.parquet  per-uid reputation + full history totals
@@ -245,15 +249,19 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
 // (uid, change_date) deltas are summed into users_history.parquet, and
 // user_reputation.parquet is recomputed from the existing per-uid totals plus
 // the diff totals (so newly appeared contributors join the ranking). The
-// vandalism_flag bits are rebuilt over the whole history: bit 0
-// (kFlagFilter2) from the persisted minute store at `minutes_path`
-// (vandalism::flagged_days), bit 1 (kFlagFilter3) from `move_flags`, the
-// run's (uid, change_date) -> kFlagFilter3 set produced by
-// vandalism::flagged_move_days, which the caller must have folded first. The
-// existing file's flags are carried forward and then ORed, so import (all 0)
-// plus one update per day yields the monotonic bits. Called once per update
-// run. The existing files must carry the schemas written by run_finalize
-// (full-run datasets) or a previous update finalize.
+// vandalism_flag bits are rebuilt over the whole history: bit 0 (kFlagFilter2)
+// from the persisted minute store at `minutes_path` (vandalism::flagged_days),
+// bit 1 (kFlagFilter3) from `move_flags`, the run's (uid, change_date) ->
+// kFlagFilter3 set produced by vandalism::flagged_move_days, which the caller
+// must have folded first. Those bits are monotonic: the existing file's bits
+// are carried forward and ORed (import writes all 0, then one update per day
+// accumulates them). Bit 2 (kFlagFilter1) is the exception: it is recomputed
+// every finalize from the current reputation and ORed per row, with the base
+// rows' bit masked out first, so a contributor whose reputation rises above
+// the threshold loses the bit again while the historical filter-2/3 bits
+// persist. Called once per update run. The existing files must carry the
+// schemas written by run_finalize (full-run datasets) or a previous update
+// finalize.
 void run_update_finalize(const std::string& stage_root, const std::string& history_path,
                          int64_t users_history_group_rows, int64_t reputation_group_rows,
                          const std::string& minutes_path,

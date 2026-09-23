@@ -22,13 +22,15 @@ reputation scoring follows [Neis, Goetz & Zipf, *ISPRS Int. J. Geo-Inf.*
   merged per cell per day), partitioned by calendar year.
 - `users_history.parquet` and `user_reputation.parquet` — per-user, per-day
   activity and reputation, built by every run; the history file also
-  carries the per-day vandalism filter-2 flag (a `vandalism_flag` column).
+  carries the per-day vandalism flags of all three OSMPatrol screens (a
+  `vandalism_flag` column).
 - Vandalism outputs of every `update` run: `vandalism_minutes.bin` (the
   persisted per-`(uid, minute)` modified+deleted bucket store behind the
   flag) and the bit-coded per-day `vandalism_flag` in
   `users_history.parquet` (bit 0 = filter 2, bit 1 = filter-3 node moves
-  over 500 m; there is no persisted node-moves dataset — both filters
-  survive only as carried day bits).
+  over 500 m, bit 2 = filter 1, a reputation below 5%; filters 2/3 have no
+  persisted node-moves dataset — they survive only as carried day bits,
+  while bit 2 is recomputed from the current reputation on every run).
 
 ![Changes H3](changes-h3.webp)
 
@@ -57,8 +59,9 @@ Host paths are read from a `.env` file (see `.env.template`) and used by
 `karmamap` service — the input file and the `--node-cache` and `--output-dir`
 paths are absolute under it — and the `caddy` service serves the
 `${DATA_DIR}output` subdirectory read-only at `/data/`. `--output-dir`
-must therefore be `/data/output`: the `DATA_DIR` root itself is never
-served, so pointing it elsewhere leaves nothing for the web frontend.
+defaults to `$DATA_DIR/output` (`data/output` when run bare on the host;
+`/data/output` in the container, since compose passes `DATA_DIR=/data`), so
+pointing it elsewhere leaves nothing for the web frontend.
 
 ```bash
 cp .env.template .env
@@ -146,7 +149,7 @@ defaults (`data/output`, `<output-dir>/../node_positions.cache` =
 |---|---|
 | `--node-cache <file>` | Node position cache file (import/prepare-update): wiped and rebuilt by pass 1, read by pass 2 and by prepare-update. Default `<output-dir>/../node_positions.cache`. Not used by update |
 | `--node-cache-last <file>` | Incremental cache holding only the last known h3 cell per node — written by prepare-update, read and rebuilt by update. Default `<node-cache>.last` |
-| `--output-dir <dir>` | Output directory for the Parquet datasets (created if missing), default `data/output` |
+| `--output-dir <dir>` | Output directory for the Parquet datasets (created if missing), default `$DATA_DIR/output` — `data/output` bare metal, `/data/output` in the container (`DATA_DIR=/data`) |
 | `--update-url <url>` | Osmosis replication update URL (e.g. `https://osm-internal.download.geofabrik.de/africa/canary-islands-updates/`); required by prepare-update, optional override in update (must match the recorded source). At import it only records the update stream URL in `manifest.json`: the sequence number and timestamp come from the snapshot's `<base>.state.txt` sidecar (wget the state.txt on the osh's day). prepare-update and update instead fetch the live `state.txt` from this URL |
 | `--cookie <jar>` | Netscape cookie jar for the Geofabrik internal server, default `<output-dir>/.geofabrik.cookie`. Only consulted when `--update-url` points at `osm-internal.download.geofabrik.de`: karmamap obtains/refreshes the jar from the OSM account in `OSM_GEOFABRIK_USER`/`OSM_GEOFABRIK_PASSWORD` (`.env`) and sends it on the `state.txt` fetch |
 | `--pass 1\|2\|3\|all` | Import only: `1` (nodes only), `2` (ways only, requires an already populated node cache), `3` (merge + sort only, requires passes 1 and 2 to have already run), or `all` (default) |

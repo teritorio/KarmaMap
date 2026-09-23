@@ -1,5 +1,6 @@
 #include "options.hpp"
 
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
@@ -40,7 +41,7 @@ void print_usage(const char* argv0) {
         << "                            prepare-update, read/rebuild by update.\n"
         << "                            [<node-cache>.last]\n"
         << "  --output-dir <dir>        Output directory for the Parquet datasets.\n"
-        << "                            [data/output]\n"
+        << "                            [$DATA_DIR/output, default data/output]\n"
         << "  --update-url <url>        Osmosis replication update URL (e.g.\n"
         << "                            https://.../canary-islands-updates/); its\n"
         << "                            state.txt is fetched for the sequence number\n"
@@ -226,7 +227,14 @@ bool parse_args(int argc, char** argv, Options* opts) {
     }
 
     if (opts->output_dir.empty()) {
-        opts->output_dir = "data/output";
+        // Default <output-dir> is $DATA_DIR/output (relative to the working
+        // directory); docker-compose sets DATA_DIR=/data so container runs
+        // default to /data/output instead of /data/data/output.
+        std::string base = "data";
+        if (const char* data_dir = std::getenv("DATA_DIR")) {
+            if (data_dir[0] != '\0') base = data_dir;
+        }
+        opts->output_dir = (std::filesystem::path(base) / "output").string();
     }
     if (opts->node_cache_path.empty()) {
         opts->node_cache_path =

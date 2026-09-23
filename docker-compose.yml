@@ -12,6 +12,10 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
+      # The karmamap container mount point of DATA_DIR (the volume always
+      # mounts at /data): its default --output-dir is $DATA_DIR/output,
+      # i.e. /data/output.
+      DATA_DIR: /data
       # OSM account for osm-internal.download.geofabrik.de; used by
       # karmamap itself to obtain/refresh the internal session cookie.
       OSM_GEOFABRIK_USER: ${OSM_GEOFABRIK_USER:-}

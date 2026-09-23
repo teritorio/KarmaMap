@@ -137,7 +137,7 @@ are two non-partitioned single files.
   | `uid` | `int64` | OSM user id |
   | `change_date` | `uint16` | UTC day (same encoding as `changes/`) |
   | `count` | `uint32` | Total activity that day: the six node/way change counters plus the three relation counters (created, modified, deleted) |
-  | `vandalism_flag` | `uint8` | Per-day OSMPatrol flag: bit 0 (`0x01`) = any of the day's minutes had > 500 modified+deleted objects within a one-hour window; bit 1 (`0x02`) = a modified node moved more than 500 m that day. Recomputed/carried by every update finalize from `vandalism_minutes.bin` plus the run's move-flagged days; 0 on import |
+  | `vandalism_flag` | `uint8` | Per-day OSMPatrol flag: bit 0 (`0x01`) = any of the day's minutes had > 500 modified+deleted objects within a one-hour window; bit 1 (`0x02`) = a modified node moved more than 500 m that day; bit 2 (`0x04`) = the day's user has reputation < 5% (filter 1, "new users or low reputation"; a contributor who created nothing ranks 0). Bits 0/1 are monotonic: carried by the base rows and ORed by every update finalize from `vandalism_minutes.bin` plus the run's move-flagged days, 0 on import. Bit 2 is recomputed from the current reputation on every import and update finalize (masked out of the base rows then re-ORed), so it does not accumulate |
 
   The per-day `tag_*` counters are aggregated during finalize and only their
   per-user sums are written (in `user_reputation.parquet`), so they never
@@ -214,10 +214,11 @@ LIMIT 20;
 The vandalism outputs are update-only: they cover the period after the
 recorded replication sequence and are absent after a pure import. They
 implement the OSMPatrol filters 2 (`> 500 modified/deleted in one hour`) and 3
-(node moved beyond 500 m); filter 1 (new users / reputation < 5%) is joined
-from `user_reputation.parquet` at query time. Both filters fold into the
-per-day `vandalism_flag` bits of `users_history.parquet`; filter 2 draws on
-one binary store and filter 3's move staging is transient.
+(node moved beyond 500 m); filter 1 (new users / reputation < 5%) is computed
+by the users-history finalize into every history row (bit 2 of
+`vandalism_flag`). Filters 2/3 fold into the per-day `vandalism_flag` bits of
+`users_history.parquet`; filter 2 draws on one binary store and filter 3's
+move staging is transient.
 
 - `vandalism_minutes.bin` — the **binary** per-`(uid, minute)` modified+
   deleted counts behind the filter-2 flag (bit 0 of `vandalism_flag`); it

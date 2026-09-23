@@ -292,11 +292,14 @@ constexpr auto counter_index = [](std::string_view name) -> size_t {
 // whole contributor population by reputation::compute. The dataset-wide
 // active/max stats land in the Parquet footer key_value_metadata; sorting is
 // by (username, uid) so an exact username filter prunes to matching pages.
-void build_reputation_table(const std::vector<int64_t>& rep_uids,
-                            const std::vector<std::string>& rep_usernames,
-                            const std::vector<uint16_t>& rep_first_seen,
-                            const std::array<std::vector<uint64_t>, kCounterCount>& counter_sums,
-                            const std::string& history_path, int64_t reputation_group_rows) {
+// Returns the reputation::Result, reused by the callers for the filter-1 flag
+// so the ranking is computed exactly once per finalize.
+reputation::Result build_reputation_table(
+    const std::vector<int64_t>& rep_uids,
+    const std::vector<std::string>& rep_usernames,
+    const std::vector<uint16_t>& rep_first_seen,
+    const std::array<std::vector<uint64_t>, kCounterCount>& counter_sums,
+    const std::string& history_path, int64_t reputation_group_rows) {
     std::array<size_t, kRepAspectCount> rep_counter_idx = {
         counter_index("node_created"), counter_index("way_created"),
         counter_index("relation_created")};
@@ -408,6 +411,7 @@ void build_reputation_table(const std::vector<int64_t>& rep_uids,
     arrow_table_io::write_table(reputation_tmp, rep_table, rep_meta, reputation_group_rows,
                                 {"username", "uid"});
     std::filesystem::rename(reputation_tmp, reputation_path);
+    return rep;
 }
 
 }  // namespace
@@ -510,66 +514,11 @@ void run_finalize(const std::string& stage_dir, const std::string& history_path,
         counter_arrays[i] = combined->column(3 + static_cast<int>(i))->chunk(0);
     }
 
-    // One derived pass over the (uid, change_date)-sorted rows computes the
-    // history rows.
-    arrow::Int64Builder ind_uid_builder;
-    arrow::UInt16Builder ind_day_builder;
-    arrow::UInt32Builder ind_count_builder;
-    arrow::UInt8Builder ind_flag_builder;
-
-    const int64_t n = combined->num_rows();
-    for (int64_t i = 0; i < n; ++i) {
-        const int64_t uid = uid_array->Value(i);
-
-        const uint16_t day = day_array->Value(i);
-        DayRow day_row;
-        for (size_t c = 0; c < kCounterCount; ++c) {
-            const auto* arr = static_cast<const arrow::UInt32Array*>(counter_arrays[c].get());
-            day_row.*kCounters[c].member = arr->Value(i);
-        }
-
-        uint32_t count = 0;
-        for (size_t c = 0; c < kLiveCounterCount; ++c) count += day_row.*kCounters[c].member;
-
-        append_checked(ind_uid_builder, uid);
-        append_checked(ind_day_builder, day);
-        append_checked(ind_count_builder, count);
-        // Import scans the full history, whose object hours precede the
-        // replication stream's minute buckets; keep the column for schema
-        // uniformity and let update runs fill it from the persisted store.
-        append_checked(ind_flag_builder, 0);
-    }
-
-    std::shared_ptr<arrow::Array> ind_uid, ind_day, ind_count, ind_flag;
-    finish_checked(ind_uid_builder, &ind_uid);
-    finish_checked(ind_day_builder, &ind_day);
-    finish_checked(ind_count_builder, &ind_count);
-    finish_checked(ind_flag_builder, &ind_flag);
-
-    std::vector<std::shared_ptr<arrow::Field>> history_fields = {
-        arrow::field("uid", arrow::int64(), false),
-        arrow::field("change_date", arrow::uint16(), false),
-        arrow::field("count", arrow::uint32(), false),
-        arrow::field("vandalism_flag", arrow::uint8(), false),
-    };
-    std::vector<std::shared_ptr<arrow::Array>> history_columns = {
-        ind_uid, ind_day, ind_count, ind_flag};
-    auto history_schema = arrow::schema(history_fields);
-    // The history rows were appended in (uid, change_date) order while
-    // walking the sorted combined table, so no re-sort is needed.
-    auto history_table = arrow::Table::Make(history_schema, history_columns);
-
-    const std::string history_tmp = history_path + ".tmp";
-    // The viewer filters on uid; only that column keeps row-group min/max
-    // statistics in the footer.
-    arrow_table_io::write_table(history_tmp, history_table, users_history_group_rows,
-                                {"uid"});
-    std::filesystem::rename(history_tmp, history_path);
-
     // Per-uid sums of all 21 history counters, in the (uid) order of the
-    // sorted history table. The aspect mapping lives in
-    // build_reputation_table; storing every counter total (not just the
-    // reputation aspects) keeps the per-user totals complete in this file.
+    // sorted history table — an index-aligned walk over the combined rows that
+    // both feeds the reputation and the filter-1 flag. The aspect mapping
+    // lives in build_reputation_table; storing every counter total (not just
+    // the reputation aspects) keeps the per-user totals complete in this file.
     std::vector<int64_t> rep_uids;
     std::vector<std::string> rep_usernames;
     std::vector<uint16_t> rep_first_seen;
@@ -580,7 +529,7 @@ void run_finalize(const std::string& stage_dir, const std::string& history_path,
         bool in = false;
         uint16_t group_first_seen = 0;
         std::string group_username;
-        const auto* uid_arr = static_cast<const arrow::Int64Array*>(ind_uid.get());
+        const auto* uid_arr = static_cast<const arrow::Int64Array*>(uid_array);
         const auto flush = [&]() {
             if (!in) return;
             rep_uids.push_back(cur);
@@ -614,8 +563,78 @@ void run_finalize(const std::string& stage_dir, const std::string& history_path,
         flush();
     }
 
-    build_reputation_table(rep_uids, rep_usernames, rep_first_seen, counter_sums,
-                           history_path, reputation_group_rows);
+    // Filter 1 (paper sec. 5): every (uid, change_date) row of a contributor
+    // whose reputation is below kFilter1ReputationThreshold carries
+    // kFlagFilter1. The bit derives from the same reputation::Result that
+    // writes user_reputation.parquet; a contributor who created nothing has
+    // reputation 0, which covers the paper's "new users" half of the screen.
+    const reputation::Result rep = build_reputation_table(
+        rep_uids, rep_usernames, rep_first_seen, counter_sums, history_path,
+        reputation_group_rows);
+    std::unordered_map<int64_t, uint8_t> filter1_uid;
+    for (size_t i = 0; i < rep_uids.size() && i < rep.reputation.size(); ++i) {
+        if (rep.reputation[i] < vandalism::kFilter1ReputationThreshold) {
+            filter1_uid[rep_uids[i]] = vandalism::kFlagFilter1;
+        }
+    }
+
+    // One derived pass over the (uid, change_date)-sorted rows computes the
+    // history rows.
+    arrow::Int64Builder ind_uid_builder;
+    arrow::UInt16Builder ind_day_builder;
+    arrow::UInt32Builder ind_count_builder;
+    arrow::UInt8Builder ind_flag_builder;
+
+    const int64_t n = combined->num_rows();
+    for (int64_t i = 0; i < n; ++i) {
+        const int64_t uid = uid_array->Value(i);
+
+        const uint16_t day = day_array->Value(i);
+        DayRow day_row;
+        for (size_t c = 0; c < kCounterCount; ++c) {
+            const auto* arr = static_cast<const arrow::UInt32Array*>(counter_arrays[c].get());
+            day_row.*kCounters[c].member = arr->Value(i);
+        }
+
+        uint32_t count = 0;
+        for (size_t c = 0; c < kLiveCounterCount; ++c) count += day_row.*kCounters[c].member;
+
+        append_checked(ind_uid_builder, uid);
+        append_checked(ind_day_builder, day);
+        append_checked(ind_count_builder, count);
+        // Import's history rows carry the reputation-based filter-1 bit only:
+        // the object hours precede the replication stream's minute buckets, so
+        // the filter-2/3 bits that the update finalize fills from the
+        // persisted store stay 0 here.
+        const auto it = filter1_uid.find(uid);
+        append_checked(ind_flag_builder, it != filter1_uid.end() ? it->second : 0);
+    }
+
+    std::shared_ptr<arrow::Array> ind_uid, ind_day, ind_count, ind_flag;
+    finish_checked(ind_uid_builder, &ind_uid);
+    finish_checked(ind_day_builder, &ind_day);
+    finish_checked(ind_count_builder, &ind_count);
+    finish_checked(ind_flag_builder, &ind_flag);
+
+    std::vector<std::shared_ptr<arrow::Field>> history_fields = {
+        arrow::field("uid", arrow::int64(), false),
+        arrow::field("change_date", arrow::uint16(), false),
+        arrow::field("count", arrow::uint32(), false),
+        arrow::field("vandalism_flag", arrow::uint8(), false),
+    };
+    std::vector<std::shared_ptr<arrow::Array>> history_columns = {
+        ind_uid, ind_day, ind_count, ind_flag};
+    auto history_schema = arrow::schema(history_fields);
+    // The history rows were appended in (uid, change_date) order while
+    // walking the sorted combined table, so no re-sort is needed.
+    auto history_table = arrow::Table::Make(history_schema, history_columns);
+
+    const std::string history_tmp = history_path + ".tmp";
+    // The viewer filters on uid; only that column keeps row-group min/max
+    // statistics in the footer.
+    arrow_table_io::write_table(history_tmp, history_table, users_history_group_rows,
+                                {"uid"});
+    std::filesystem::rename(history_tmp, history_path);
 
     std::filesystem::remove_all(stage_dir);
 
@@ -719,74 +738,11 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
         if (it == delta_first_seen.end() || day < it->second) delta_first_seen[uid] = day;
     }
 
-    // Users history: base file plus deltas, summed per (uid, change_date)
-    // and written sorted, once. The vandalism flags are monotonic bits carried
-    // forward from the base rows and ORed with this run's screens.
-    std::map<std::pair<int64_t, uint16_t>, uint32_t> merged_counts;
-    std::map<std::pair<int64_t, uint16_t>, uint8_t> merged_flags;
-    if (std::filesystem::exists(history_path)) {
-        auto base_result = arrow_table_io::read_table(history_path)->CombineChunks();
-        if (!base_result.ok()) {
-            throw std::runtime_error("CombineChunks failed on " + history_path + ": " +
-                                     base_result.status().ToString());
-        }
-        const std::shared_ptr<arrow::Table> base_table = *base_result;
-        const auto* b_uids = typed_column<arrow::Int64Array>(base_table, "uid");
-        const auto* b_days = typed_column<arrow::UInt16Array>(base_table, "change_date");
-        const auto* b_counts = typed_column<arrow::UInt32Array>(base_table, "count");
-        const auto* b_flags = typed_column<arrow::UInt8Array>(base_table, "vandalism_flag");
-        for (int64_t i = 0; i < base_table->num_rows(); ++i) {
-            merged_counts[{b_uids->Value(i), b_days->Value(i)}] += b_counts->Value(i);
-            merged_flags[{b_uids->Value(i), b_days->Value(i)}] |= b_flags->Value(i);
-        }
-    }
-    for (const auto& [key, count] : delta_counts) merged_counts[key] += count;
-
-    // Rebuild the whole-history flags from the persisted sources: bit 0 from
-    // the minute store, bit 1 from the run's folded move-flagged days. Every
-    // flagged_days value already carries kFlagFilter2 and every move_flags
-    // entry kFlagFilter3, so ORing them into the carried-forward base bits
-    // yields the combined per-day field.
-    for (const auto& [key, value] : vandalism::flagged_days(minutes_path)) {
-        merged_flags[key] |= value;
-    }
-    for (const auto& [key, value] : move_flags) {
-        merged_flags[key] |= value;
-    }
-
-    arrow::Int64Builder ind_uid_builder;
-    arrow::UInt16Builder ind_day_builder;
-    arrow::UInt32Builder ind_count_builder;
-    arrow::UInt8Builder ind_flag_builder;
-    for (const auto& [key, count] : merged_counts) {
-        append_checked(ind_uid_builder, key.first);
-        append_checked(ind_day_builder, key.second);
-        append_checked(ind_count_builder, count);
-        append_checked(ind_flag_builder, merged_flags[key]);
-    }
-    std::shared_ptr<arrow::Array> ind_uid, ind_day, ind_count, ind_flag;
-    finish_checked(ind_uid_builder, &ind_uid);
-    finish_checked(ind_day_builder, &ind_day);
-    finish_checked(ind_count_builder, &ind_count);
-    finish_checked(ind_flag_builder, &ind_flag);
-    // The merged map iterates in (uid, change_date) order, so no re-sort.
-    auto history_table = arrow::Table::Make(
-        arrow::schema({arrow::field("uid", arrow::int64(), false),
-                       arrow::field("change_date", arrow::uint16(), false),
-                       arrow::field("count", arrow::uint32(), false),
-                       arrow::field("vandalism_flag", arrow::uint8(), false)}),
-        {ind_uid, ind_day, ind_count, ind_flag});
-
-    const std::string history_tmp = history_path + ".tmp";
-    // The viewer filters on uid; only that column keeps row-group min/max
-    // statistics in the footer.
-    arrow_table_io::write_table(history_tmp, history_table, users_history_group_rows,
-                                {"uid"});
-    std::filesystem::rename(history_tmp, history_path);
-
     // Reputation: the existing per-uid totals (whose new first-seen day and
     // username, if touched by the diffs, are merged in) plus the diff totals,
-    // then ranked exactly over the whole population again.
+    // then ranked exactly over the whole population again. The ranking is
+    // computed here, before the history write, because it also yields the
+    // filter-1 flag set that every history row below is screened against.
     const std::filesystem::path history_parent =
         std::filesystem::path(history_path).parent_path();
     const std::string reputation_path =
@@ -821,6 +777,7 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
         }
         have_base_rep = true;
     }
+    std::unordered_map<int64_t, uint8_t> filter1_uid;
     if (have_base_rep || !delta_totals.empty()) {
         for (const auto& [uid, sum] : delta_totals) {
             auto it = uid_index.find(uid);
@@ -840,9 +797,93 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
                 for (size_t c = 0; c < kCounterCount; ++c) counter_sums[c].push_back(sum[c]);
             }
         }
-        build_reputation_table(rep_uids, rep_usernames, rep_first_seen, counter_sums,
-                               history_path, reputation_group_rows);
+        const reputation::Result rep = build_reputation_table(
+            rep_uids, rep_usernames, rep_first_seen, counter_sums, history_path,
+            reputation_group_rows);
+        for (size_t i = 0; i < rep_uids.size() && i < rep.reputation.size(); ++i) {
+            if (rep.reputation[i] < vandalism::kFilter1ReputationThreshold) {
+                filter1_uid[rep_uids[i]] = vandalism::kFlagFilter1;
+            }
+        }
     }
+
+    // Users history: base file plus deltas, summed per (uid, change_date)
+    // and written sorted, once. The filter-2 and filter-3 bits are monotonic
+    // ORs (base-carried, the minute store, and this run's move flags), but the
+    // filter-1 bit is recomputed here from the current reputation: the base
+    // rows have it masked out and the fresh set is ORed in per row below, so a
+    // contributor whose reputation rises above the threshold loses the bit
+    // again, while the historical filter-2/3 bits persist.
+    std::map<std::pair<int64_t, uint16_t>, uint32_t> merged_counts;
+    std::map<std::pair<int64_t, uint16_t>, uint8_t> merged_flags;
+    if (std::filesystem::exists(history_path)) {
+        auto base_result = arrow_table_io::read_table(history_path)->CombineChunks();
+        if (!base_result.ok()) {
+            throw std::runtime_error("CombineChunks failed on " + history_path + ": " +
+                                     base_result.status().ToString());
+        }
+        const std::shared_ptr<arrow::Table> base_table = *base_result;
+        const auto* b_uids = typed_column<arrow::Int64Array>(base_table, "uid");
+        const auto* b_days = typed_column<arrow::UInt16Array>(base_table, "change_date");
+        const auto* b_counts = typed_column<arrow::UInt32Array>(base_table, "count");
+        const auto* b_flags = typed_column<arrow::UInt8Array>(base_table, "vandalism_flag");
+        for (int64_t i = 0; i < base_table->num_rows(); ++i) {
+            merged_counts[{b_uids->Value(i), b_days->Value(i)}] += b_counts->Value(i);
+            // Mask the base rows' filter-1 bit only when the fresh set below
+            // is authoritative (user_reputation.parquet present, i.e. it
+            // covers every base uid). With the reputation file absent the
+            // fresh set covers just this run's deltas; carry the stale bits
+            // rather than silently lose them.
+            const uint8_t b = b_flags->Value(i);
+            merged_flags[{b_uids->Value(i), b_days->Value(i)}] |=
+                have_base_rep ? static_cast<uint8_t>(b & ~vandalism::kFlagFilter1) : b;
+        }
+    }
+    for (const auto& [key, count] : delta_counts) merged_counts[key] += count;
+
+    // Rebuild the whole-history flags from the persisted sources: bit 0 from
+    // the minute store, bit 1 from the run's folded move-flagged days. Every
+    // flagged_days value already carries kFlagFilter2 and every move_flags
+    // entry kFlagFilter3, so ORing them into the carried-forward base bits
+    // yields the combined per-day field.
+    for (const auto& [key, value] : vandalism::flagged_days(minutes_path)) {
+        merged_flags[key] |= value;
+    }
+    for (const auto& [key, value] : move_flags) {
+        merged_flags[key] |= value;
+    }
+
+    arrow::Int64Builder ind_uid_builder;
+    arrow::UInt16Builder ind_day_builder;
+    arrow::UInt32Builder ind_count_builder;
+    arrow::UInt8Builder ind_flag_builder;
+    for (const auto& [key, count] : merged_counts) {
+        append_checked(ind_uid_builder, key.first);
+        append_checked(ind_day_builder, key.second);
+        append_checked(ind_count_builder, count);
+        const auto it = filter1_uid.find(key.first);
+        append_checked(ind_flag_builder,
+                       merged_flags[key] | (it != filter1_uid.end() ? it->second : 0));
+    }
+    std::shared_ptr<arrow::Array> ind_uid, ind_day, ind_count, ind_flag;
+    finish_checked(ind_uid_builder, &ind_uid);
+    finish_checked(ind_day_builder, &ind_day);
+    finish_checked(ind_count_builder, &ind_count);
+    finish_checked(ind_flag_builder, &ind_flag);
+    // The merged map iterates in (uid, change_date) order, so no re-sort.
+    auto history_table = arrow::Table::Make(
+        arrow::schema({arrow::field("uid", arrow::int64(), false),
+                       arrow::field("change_date", arrow::uint16(), false),
+                       arrow::field("count", arrow::uint32(), false),
+                       arrow::field("vandalism_flag", arrow::uint8(), false)}),
+        {ind_uid, ind_day, ind_count, ind_flag});
+
+    const std::string history_tmp = history_path + ".tmp";
+    // The viewer filters on uid; only that column keeps row-group min/max
+    // statistics in the footer.
+    arrow_table_io::write_table(history_tmp, history_table, users_history_group_rows,
+                                {"uid"});
+    std::filesystem::rename(history_tmp, history_path);
 
     std::filesystem::remove_all(stage_root);
 

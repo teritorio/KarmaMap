@@ -1,8 +1,7 @@
 #pragma once
 
-// Vandalism history computed from the osmosis replication diffs applied by
-// "karmamap update", following two of the OSMPatrol filters of Neis, Goetz &
-// Zipf (2012) — see docs/osmpatrol-neis-2012.md. Both filters collapse into
+// Vandalism history following the OSMPatrol filters of Neis, Goetz & Zipf
+// (2012) — see docs/osmpatrol-neis-2012.md. All three filters collapse into
 // the per-day `vandalism_flag` bits field of users_history.parquet:
 //
 //   bit 0 (kFlagFilter2)  a day minute's trailing 60-minute modified+deleted
@@ -10,6 +9,11 @@
 //                         or deleted more than 500 objects within one hour")
 //   bit 1 (kFlagFilter3)  any modified node moved more than kFilter3Threshold
 //                         metres that day
+//   bit 2 (kFlagFilter1)  the editing user's reputation is below
+//                         kFilter1ReputationThreshold (paper: "Show all edits
+//                         of new users and/or users with a very low reputation
+//                         (<5%)"). "New users" are covered implicitly: a
+//                         contributor who created nothing has reputation 0.
 //
 //   vandalism_minutes.bin per-(uid, minute) count of modified+deleted objects
 //                         over the whole update period, persisted as a binary
@@ -25,14 +29,22 @@
 // idempotent: the store header carries the applied replication sequence, and
 // fold_minute_counts() skips a sequence that is already folded.
 //
-// Both flags are loaded at ingest: flagged_days() recomputes the whole-history
-// bit-0 set from the persisted store and the finalize ORs it with the carried
-// base bits, so a day's flag is monotonic (an update rerun re-setting an
-// already-set bit is harmless; no move store is kept — every modified node's
-// distance is thresholded and discarded).
+// Filters 2 and 3 are loaded at ingest: flagged_days() recomputes the
+// whole-history bit-0 set from the persisted store and the finalize ORs it
+// with the carried base bits, so a day's flag is monotonic (an update rerun
+// re-setting an already-set bit is harmless; no move store is kept — every
+// modified node's distance is thresholded and discarded). Both only cover the
+// period after the recorded replication sequence (the diffs applied by update
+// runs); import writes them as 0.
 //
-// Filter 1 (new users / reputation < 5%) is not extracted here: it joins
-// user_reputation.parquet at query time.
+// Bit 2 is unlike the other two: it is not monotonic and not diff-based. It is
+// derived from the user's current reputation (below
+// kFilter1ReputationThreshold), which every finalize recomputes over the
+// whole history, so import fills it too and an update run whose merge raises a
+// user above the threshold clears the bit again (the update finalize masks the
+// carried bit-2 out before ORing the fresh set). The users-history finalize
+// builds the bit from the same reputation::Result that writes
+// user_reputation.parquet.
 //
 // Filter 3's prior position is the center of the node's last known H3 cell
 // (NodeState overlay from an earlier diff of the run, else the flat
@@ -41,9 +53,6 @@
 // equals |old cell center -> new point| and differs from the true
 // |old point -> new point| move by up to one cell radius — adequate for the
 // 500 m screen, not for the paper's finer 11 m edit-analysis flag.
-//
-// The flags only cover the period after the recorded replication sequence
-// (the diffs applied by update runs); import writes them as 0.
 
 #include <cstdint>
 #include <map>
@@ -62,9 +71,15 @@ inline constexpr uint32_t kFilter2Threshold = 500;
 // Filter 3 flag threshold: "nodes moved more than 500 metres" (paper sec. 5).
 inline constexpr double kFilter3Threshold = 500.0;
 
+// Filter 1 flag threshold: "users with a very low reputation (<5%)" (paper
+// sec. 5). Reputation is stored as a 0-100 uint8, so a value below 5 triggers
+// the bit.
+inline constexpr uint8_t kFilter1ReputationThreshold = 5;
+
 // Bits of the users_history.parquet vandalism_flag column.
 inline constexpr uint8_t kFlagFilter2 = 0x01;
 inline constexpr uint8_t kFlagFilter3 = 0x02;
+inline constexpr uint8_t kFlagFilter1 = 0x04;
 
 // Trailing window width in minutes (inclusive of the current minute).
 inline constexpr uint32_t kHourSpanMinutes = 60;
