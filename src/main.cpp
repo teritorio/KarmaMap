@@ -334,9 +334,9 @@ std::optional<replication_state::State> run_update_mode(
         vandalism::run_scan_diff(
             diff_path, vandalism_stage_root + "/counts/seq_" + std::to_string(seq));
         move_sink.finish_seq();
-        // `diff_path` is provably applied only now that every pass over it
-        // succeeded; a throw anywhere above leaves the file for fetch_diff to
-        // reuse on a re-run.
+        // `diff_path` is provably applied after every pass over it succeeded;
+        // a throw anywhere above leaves the file for fetch_diff to reuse on a
+        // re-run.
         remove_applied_diff(diff_path);
         applied = seq;
     }
@@ -364,9 +364,9 @@ std::optional<replication_state::State> run_update_mode(
                                        opts.reputation_group_rows, minutes_path,
                                        move_flags);
 
-    // Provenance now reflects the applied state: the sequence is the last
-    // applied diff (indexed by "update N"), the timestamp is the fetched
-    // state.txt's (the newest applied day's).
+    // Provenance records the applied state: the sequence is the last applied
+    // diff (indexed by "update N"), the timestamp is the fetched state.txt's
+    // (the newest applied day's).
     replication_state::State new_source = current;
     new_source.sequence_number = applied;
     return new_source;

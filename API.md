@@ -227,9 +227,8 @@ by the users-history finalize into every history row (bit 2 of
 move staging is transient.
 
 - `vandalism_minutes.bin` — the **binary** per-`(uid, minute)` modified+
-  deleted counts behind the filter-2 flag (bit 0 of `vandalism_flag`); it
-  replaces the minute-bucket Parquet table of earlier builds and is not part
-  of `manifest.json` or the Parquet contract. Format (see
+  deleted counts behind the filter-2 flag (bit 0 of `vandalism_flag`); it is a
+  binary store, not part of `manifest.json` or the Parquet contract. Format (see
   `src/vandalism_store.hpp`): a 40-byte header (magic `VMIN`, version, record
   size, record/block counts, the `karmamap_source_seq`-equivalent
   applied-sequence stamp), followed by ZSTD blocks of `2^18` 16-byte records

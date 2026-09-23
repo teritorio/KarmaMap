@@ -88,8 +88,7 @@ credentials, caches the session in the Netscape jar
 `<node-cache-parent>/.geofabrik.cookie` (`/data/.geofabrik.cookie` in the
 container, so it survives runs), probes `<jar>` acceptance against the
 server's `cookie_status` endpoint and refreshes it when expired. The jar is
-sent on the `state.txt` fetch; the same cookie plumbing is what a later
-diff-update download will reuse.
+sent on the `state.txt` fetch and every diff download.
 
 ### Build
 

@@ -249,7 +249,7 @@ covers the "new users" half of the screen without a separate rule.
 
 The vandalism engine (OSMPatrol filters 2 and 3 of Neis, Goetz & Zipf 2012)
 watches the diff stream, not the full history — it runs `update`-only. The
-2021 replication diff scan (`vandalism::run_scan_diff`) reuses the
+diff scan (`vandalism::run_scan_diff`) reuses the
 users-history classification (visible version 1 = created, later = modified,
 invisible = deleted) and counts **modified + deleted** objects per
 `(uid, minute)` into `vandalism_update_stage/counts/seq_<n>/` (UTC minutes
