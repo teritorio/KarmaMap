@@ -131,9 +131,8 @@ Three verbs, one per stage:
   provenance. It never builds the incremental cache; run `prepare-update`
   for that.
 - **prepare-update** builds the `.last` incremental cache from the node cache
-  and records the update stream provenance in `manifest.json`. It needs
-  `--update-url`: the fetched `state.txt` supplies the starting replication
-  sequence. No dataset changes.
+  and records the update stream URL in `manifest.json`. It needs `--update-url`
+  (stored as the source URL; the recorded sequence and timestamp are kept.
 - **update** advances an existing dataset along its replication diff stream
   (see below). An optional `N` caps the number of diffs fetched (bare `update`
   or `update 0` catch up to the current `state.txt`).
@@ -150,7 +149,7 @@ defaults (`data/output`, `<output-dir>/../node_positions.cache` =
 | `--node-cache <file>` | Node position cache file (import/prepare-update): wiped and rebuilt by pass 1, read by pass 2 and by prepare-update. Default `<output-dir>/../node_positions.cache`. Not used by update |
 | `--node-cache-last <file>` | Incremental cache holding only the last known h3 cell per node — written by prepare-update, read and rebuilt by update. Default `<node-cache>.last` |
 | `--output-dir <dir>` | Output directory for the Parquet datasets (created if missing), default `$DATA_DIR/output` — `data/output` bare metal, `/data/output` in the container (`DATA_DIR=/data`) |
-| `--update-url <url>` | Osmosis replication update URL (e.g. `https://osm-internal.download.geofabrik.de/africa/canary-islands-updates/`); required by prepare-update, optional override in update (must match the recorded source). At import it only records the update stream URL in `manifest.json`: the sequence number and timestamp come from the snapshot's `<base>.state.txt` sidecar (wget the state.txt on the osh's day). prepare-update and update instead fetch the live `state.txt` from this URL |
+| `--update-url <url>` | Osmosis replication update URL (e.g. `https://osm-internal.download.geofabrik.de/africa/canary-islands-updates/`); required by prepare-update, optional override in update (must match the recorded source). At import it records the update stream URL in `manifest.json`.
 | `--cookie <jar>` | Netscape cookie jar for the Geofabrik internal server, default `<output-dir>/.geofabrik.cookie`. Only consulted when `--update-url` points at `osm-internal.download.geofabrik.de`: karmamap obtains/refreshes the jar from the OSM account in `OSM_GEOFABRIK_USER`/`OSM_GEOFABRIK_PASSWORD` (`.env`) and sends it on the `state.txt` fetch |
 | `--pass 1\|2\|3\|all` | Import only: `1` (nodes only), `2` (ways only, requires an already populated node cache), `3` (merge + sort only, requires passes 1 and 2 to have already run), or `all` (default) |
 | `--way-batch-mb <mb>` | Import only, way-pass lookup batch budget in MiB (default: `512`) |
@@ -187,8 +186,7 @@ docker compose --profile=build run --rm karmamap karmamap import /data/region.os
 
 #### Updating an existing dataset
 
-Prepare the incremental cache for updates and (re)record the update stream
-from prepare-update's `--update-url`:
+Prepare the incremental cache for updates and record the update stream URL:
 
 ```bash
 docker compose --profile=build run --rm karmamap karmamap prepare-update --update-url https://osm-internal.download.geofabrik.de/africa/canary-islands-updates/
@@ -197,7 +195,9 @@ docker compose --profile=build run --rm karmamap karmamap prepare-update --updat
 Once a dataset was imported (and its update stream recorded, either at import
 with `--update-url` or by `prepare-update`), an update run fetches the
 replication diffs between the recorded sequence and a newer `state.txt` (or a
-capped number of diffs) from the same update URL and folds them in. The update
+capped number of diffs) from the same update URL and folds them in. Before the
+first update the recorded sequence is the snapshot's own day (from its sidecar
+state.txt); afterwards it is the last applied diff. The update
 URL is taken from the source block recorded in `manifest.json`, so `--update-url`
 may be omitted; when passed explicitly it must match the recorded source URL.
 The incremental cache (`--node-cache-last`, `<node-cache>.last`) is the update

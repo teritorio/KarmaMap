@@ -18,7 +18,9 @@
 // At import the state.txt is not fetched: upstream state files are only
 // current-state (too new for an older snapshot), so KarmaMap reads a sidecar
 // <base>.state.txt downloaded manually with wget on the day the osh was
-// fetched. That state describes the osh's own replication state.
+// fetched. That state describes the osh's own replication state, and is the
+// provenance prepare-update preserves while recording only the update URL;
+// update is the one stage that fetches the live state.txt.
 
 #include <cstdint>
 #include <string>

@@ -63,8 +63,8 @@ normalized update URL (trailing `/` guaranteed; empty when import got no
 from the snapshot's `<base>.state.txt` sidecar (that day's state, downloaded
 with wget alongside the osh). `sequence_number` is a JSON number; `url` and
 `timestamp` are strings, with the osmosis `\:` timestamp escaping preserved.
-An update run advances them to the highest applied diff sequence and its
-fetched `state.txt` timestamp.
+`prepare-update` rewrites only the URL (keeping the recorded sequence and
+timestamp, and requiring an already recorded URL to match).
 
 `partition_footer_sizes` (one entry per readable `data.parquet` year) and
 `footer_size` (non-partitioned user files) give the byte length of each

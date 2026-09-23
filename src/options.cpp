@@ -19,10 +19,8 @@ void print_usage(const char* argv0) {
         << "                          replication provenance. Never builds the\n"
         << "                          .last cache; run prepare-update for that.\n"
         << "  prepare-update          Build the .last incremental cache from the\n"
-        << "                          node cache and record the osmosis replication\n"
-        << "                          stream as source provenance (requires\n"
-        << "                          --update-url, whose state.txt supplies the\n"
-        << "                          starting sequence). No dataset changes.\n"
+        << "                          node cache and record the update stream URL\n"
+        << "                          in manifest.json. No dataset changes.\n"
         << "  update [N]              Apply osmosis replication diffs (.osc.gz,\n"
         << "                          3/3/3 layout) to an existing dataset. The\n"
         << "                          starting sequence is read from manifest.json's\n"
@@ -43,20 +41,17 @@ void print_usage(const char* argv0) {
         << "  --output-dir <dir>        Output directory for the Parquet datasets.\n"
         << "                            [$DATA_DIR/output, default data/output]\n"
         << "  --update-url <url>        Osmosis replication update URL (e.g.\n"
-        << "                            https://.../canary-islands-updates/); its\n"
-        << "                            state.txt is fetched for the sequence number\n"
-        << "                            and timestamp (prepare-update and update;\n"
-        << "                            import reads it from the snapshot's sidecar\n"
-        << "                            state file instead). At import it only\n"
-        << "                            records the update stream URL; required by\n"
-        << "                            prepare-update; optional override in update\n"
-        << "                            (must match the recorded source).\n"
+        << "                            https://.../canary-islands-updates/). At\n"
+        << "                            import it only records the update stream URL\n"
+        << "                            (sequence and timestamp come from the\n"
+        << "                            snapshot's sidecar state file).\n"
         << "  --cookie <jar>            Netscape cookie jar for the Geofabrik internal\n"
         << "                            server (osm-internal.download.geofabrik.de);\n"
         << "                            default: <output-dir>/.geofabrik.cookie. When the\n"
         << "                            update URL points at the internal host, karmamap\n"
         << "                            obtains and refreshes the jar itself from the OSM\n"
         << "                            account in OSM_GEOFABRIK_USER/OSM_GEOFABRIK_PASSWORD\n"
+        << "                            and sends it on update's state.txt fetch\n"
         << "  --pass 1|2|3|all          Import only: run only the node (1), way (2) or\n"
         << "                            merge (3) pass, or all three (default). Use\n"
         << "                            prepare-update for the incremental cache.\n"
@@ -196,9 +191,9 @@ bool parse_args(int argc, char** argv, Options* opts) {
         case Options::Stage::prepare_update:
             if (opts->update_url.empty()) {
                 throw std::runtime_error(
-                    "karmamap prepare-update needs the update stream; pass "
-                    "--update-url <url> (its state.txt supplies the starting "
-                    "sequence)");
+                    "karmamap prepare-update needs the update stream URL; pass "
+                    "--update-url <url> (it is recorded in manifest.json, keeping "
+                    "the recorded sequence and timestamp)");
             }
             if (opts->pass_given) {
                 throw std::runtime_error("--pass is not used with prepare-update");

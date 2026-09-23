@@ -11,6 +11,9 @@
 // always written after import (sequence/timestamp from the snapshot's
 // <base>.state.txt sidecar, url from --update-url or empty without it) and
 // after update (the applied sequence, with the fetched state.txt timestamp).
+// prepare-update rewrites it keeping the recorded sequence and timestamp and
+// only recording the --update-url (an already recorded URL must match; it
+// never fetches state.txt).
 //
 // Built from a year=YYYY directory scan plus the change_date min/max read
 // from each data.parquet footer - cheap, and correct regardless of which

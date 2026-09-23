@@ -13,7 +13,8 @@
 //     pruning), plus the per-user/per-day history pass.
 //   prepare-update            build the .last incremental cache (one record per
 //     node, last known h3 cell, no day) from the node cache and record the
-//     update stream provenance in manifest.json.
+//     update stream URL in manifest.json (the recorded sequence and timestamp
+//     are kept; no state.txt is fetched).
 //   update [N]                advance the dataset along its replication diff
 //     stream (see run_update_mode).
 
@@ -350,11 +351,14 @@ int main(int argc, char** argv) {
         // Source provenance. Fail fast before the passes run: import requires
         // the sidecar <base>.state.txt next to the osh (downloaded manually
         // with wget on the snapshot's day) and records its sequence and
-        // timestamp; prepare-update and update fetch the live state.txt up
-        // front, so a bad update URL aborts immediately. Unless --update-url
-        // is given, update derives the update stream from the dataset's
-        // recorded source URL in manifest.json (the URL its data was built
-        // from).
+        // timestamp; update fetches the live state.txt up front, so a bad
+        // update URL aborts immediately. prepare-update never fetches: it
+        // reads the source block recorded in manifest.json and only overwrites
+        // the URL with --update-url (rejecting a mismatch with a URL that is
+        // already recorded), keeping the recorded sequence and timestamp.
+        // Unless --update-url is given, update derives the update stream from
+        // the dataset's recorded source URL in manifest.json (the URL its data
+        // was built from).
         std::optional<replication_state::State> source;
         if (opts.stage == Options::Stage::update && opts.update_url.empty()) {
             const std::optional<replication_state::State> dataset_source =
@@ -377,12 +381,38 @@ int main(int argc, char** argv) {
                 state_path, replication_state::normalize_update_url(opts.update_url));
             std::cerr << "[source] sequence_number=" << source->sequence_number
                       << " timestamp=" << source->timestamp << "\n";
-        } else if (!opts.update_url.empty()) {
+        } else if (opts.stage == Options::Stage::update) {
             const std::string cookie_file = resolve_update_cookie(opts);
             std::cerr << "[source] fetching " << opts.update_url << "state.txt\n";
             source = replication_state::fetch(opts.update_url, cookie_file);
             std::cerr << "[source] sequence_number=" << source->sequence_number
                       << " timestamp=" << source->timestamp << "\n";
+        } else if (opts.stage == Options::Stage::prepare_update) {
+            const std::optional<replication_state::State> recorded =
+                manifest::read_source(opts.output_dir);
+            if (!recorded) {
+                throw std::runtime_error(
+                    "karmamap prepare-update needs the dataset's source "
+                    "provenance, but " +
+                    opts.output_dir +
+                    "/manifest.json carries no source block; run 'karmamap "
+                    "import' first");
+            }
+            const std::string normalized =
+                replication_state::normalize_update_url(opts.update_url);
+            if (!recorded->url.empty() && recorded->url != normalized) {
+                throw std::runtime_error(
+                    "--update-url " + opts.update_url +
+                    " does not match the dataset's recorded source " +
+                    recorded->url +
+                    "; re-import with --update-url to switch streams");
+            }
+            replication_state::State preserved = *recorded;
+            preserved.url = normalized;
+            std::cerr << "[source] recording " << preserved.url
+                      << " (sequence " << preserved.sequence_number
+                      << " and timestamp from manifest.json; no state.txt fetch)\n";
+            source = preserved;
         }
 
         switch (opts.stage) {

@@ -267,6 +267,8 @@ void write_manifest(const std::string& output_dir, int h3_resolution,
     // present after import (sequence and timestamp from the <base>.state.txt
     // sidecar, url from --update-url or empty without it) and after update
     // (the applied sequence, with the fetched state.txt timestamp).
+    // prepare-update hands over the currently recorded state with only the URL
+    // replaced, so its run never overwrites the recorded sequence/timestamp.
     if (source) {
         out << "  \"source\": {\n";
         out << "    \"url\": \"" << json_escape(source->url) << "\",\n";

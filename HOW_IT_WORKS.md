@@ -33,7 +33,8 @@ Import records the snapshot's osmosis replication provenance in
 `manifest.json` from a `<base>.state.txt` sidecar next to the osh, downloaded
 manually with wget on the snapshot's day: upstream `state.txt` is always the
 current state and would be too new for an older snapshot. `prepare-update`
-and `update` instead fetch the live `state.txt` from the update URL.
+records only the update stream URL, keeping the recorded sequence and
+timestamp; `update` fetches the live `state.txt` from the update URL.
 
 ### Incremental runs
 
@@ -138,7 +139,8 @@ scan (returning 0 for nodes absent from the cache).
 
 `karmamap update` applies osmosis replication diffs to an existing dataset
 whose `manifest.json` recorded an update URL (an `--update-url` passed to
-`karmamap import`, or the one required by `karmamap prepare-update`). The
+`karmamap import`, or the one recorded by `karmamap prepare-update`, which
+never fetches state.txt). The
 update stream is that recorded source URL unless `--update-url` is given
 explicitly (which must then match), and update runs against the `.last`
 incremental cache built by `prepare-update`. The starting
