@@ -21,11 +21,15 @@ struct Options {
     // Last-known-position cache, <node-cache>.last by default; prepare-update
     // writes it, update reads and rebuilds it.
     std::string node_cache_last_path;
+    // Diff download cache dir and persisted vandalism minute store; both live
+    // next to the node caches (parent dir of the default node cache path).
+    std::string diffs_dir;
+    std::string vandalism_minutes_path;
     // Output directory for the Parquet datasets (default: $DATA_DIR/output,
     // i.e. data/output, or /data/output in the container where DATA_DIR=/data).
     std::string output_dir;
     std::string update_url;
-    std::string cookie_path;  // empty: use <output-dir>/.geofabrik.cookie
+    std::string cookie_path;  // empty: use <node-cache-parent>/.geofabrik.cookie
     int64_t max_update_diffs = 0;  // update [N], N>=0; 0: catch up to the current state text
     int h3_resolution = 9;
     size_t way_batch_bytes = kDefaultWayBatchBytes;

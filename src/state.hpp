@@ -56,8 +56,9 @@ std::string sidecar_state_path(const std::string& osh_path);
 std::string diff_url(const std::string& update_url, uint64_t sequence_number);
 
 // Parses a local replication diff file name ("<seq>.osc.gz", as stored under
-// <output-dir>/diffs) into its sequence; nullopt for any other name there
-// (e.g. a stray ".osc.gz.tmp" temp from an interrupted download).
+// the diffs dir next to the node caches) into its sequence; nullopt for any
+// other name there (e.g. a stray ".osc.gz.tmp" temp from an interrupted
+// download).
 std::optional<uint64_t> diff_file_sequence(const std::string& name);
 
 // Parses osmosis-format state.txt text. Throws std::runtime_error when a

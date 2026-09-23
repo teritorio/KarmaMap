@@ -29,8 +29,9 @@ void print_usage(const char* argv0) {
         << "                          must match the recorded one). N caps the number\n"
         << "                          of diffs fetched (default: catch up to the\n"
         << "                          current state.txt). Each applied diff is\n"
-        << "                          removed from <output-dir>/diffs once every\n"
-        << "                          pass over it succeeded. Reads and rebuilds the\n"
+        << "                          removed from the diffs dir (next to the\n"
+        << "                          node caches) once every pass over it\n"
+        << "                          succeeded. Reads and rebuilds the\n"
         << "                          --node-cache-last cache; the full history node\n"
         << "                          cache is not used.\n"
         << "  help / --help / -h      Show this help.\n\n"
@@ -49,7 +50,7 @@ void print_usage(const char* argv0) {
         << "                            snapshot's sidecar state file).\n"
         << "  --cookie <jar>            Netscape cookie jar for the Geofabrik internal\n"
         << "                            server (osm-internal.download.geofabrik.de);\n"
-        << "                            default: <output-dir>/.geofabrik.cookie. When the\n"
+        << "                            default: <node-cache-parent>/.geofabrik.cookie. When the\n"
         << "                            update URL points at the internal host, karmamap\n"
         << "                            obtains and refreshes the jar itself from the OSM\n"
         << "                            account in OSM_GEOFABRIK_USER/OSM_GEOFABRIK_PASSWORD\n"
@@ -242,6 +243,13 @@ bool parse_args(int argc, char** argv, Options* opts) {
     if (opts->node_cache_last_path.empty()) {
         opts->node_cache_last_path = opts->node_cache_path + ".last";
     }
+    // The diff cache and the minute store sit next to the node caches, not
+    // under output-dir (both default to $DATA_DIR, output-dir's parent).
+    const std::filesystem::path cache_parent =
+        std::filesystem::path(opts->node_cache_path).parent_path();
+    opts->diffs_dir = (cache_parent / "diffs").lexically_normal().string();
+    opts->vandalism_minutes_path =
+        (cache_parent / "vandalism_minutes.bin").lexically_normal().string();
     if (opts->h3_resolution < 0 ||
         opts->h3_resolution > h3_utils::kMaxPackedCellResolution) {
         throw std::runtime_error(

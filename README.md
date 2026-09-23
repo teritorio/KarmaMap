@@ -85,7 +85,7 @@ OSM_GEOFABRIK_PASSWORD=my_osm_password
 
 karmamap performs Geofabrik's OAuth2 cookie dance itself from these
 credentials, caches the session in the Netscape jar
-`<output-dir>/.geofabrik.cookie` (`/data/output/.geofabrik.cookie` in the
+`<node-cache-parent>/.geofabrik.cookie` (`/data/.geofabrik.cookie` in the
 container, so it survives runs), probes `<jar>` acceptance against the
 server's `cookie_status` endpoint and refreshes it when expired. The jar is
 sent on the `state.txt` fetch; the same cookie plumbing is what a later
@@ -150,7 +150,7 @@ defaults (`data/output`, `<output-dir>/../node_positions.cache` =
 | `--node-cache-last <file>` | Incremental cache holding only the last known h3 cell per node — written by prepare-update, read and rebuilt by update. Default `<node-cache>.last` |
 | `--output-dir <dir>` | Output directory for the Parquet datasets (created if missing), default `$DATA_DIR/output` — `data/output` bare metal, `/data/output` in the container (`DATA_DIR=/data`) |
 | `--update-url <url>` | Osmosis replication update URL (e.g. `https://osm-internal.download.geofabrik.de/africa/canary-islands-updates/`); required by prepare-update, optional override in update (must match the recorded source). At import it records the update stream URL in `manifest.json`.
-| `--cookie <jar>` | Netscape cookie jar for the Geofabrik internal server, default `<output-dir>/.geofabrik.cookie`. Only consulted when `--update-url` points at `osm-internal.download.geofabrik.de`: karmamap obtains/refreshes the jar from the OSM account in `OSM_GEOFABRIK_USER`/`OSM_GEOFABRIK_PASSWORD` (`.env`) and sends it on the `state.txt` fetch |
+| `--cookie <jar>` | Netscape cookie jar for the Geofabrik internal server, default `<node-cache-parent>/.geofabrik.cookie`. Only consulted when `--update-url` points at `osm-internal.download.geofabrik.de`: karmamap obtains/refreshes the jar from the OSM account in `OSM_GEOFABRIK_USER`/`OSM_GEOFABRIK_PASSWORD` (`.env`) and sends it on the `state.txt` fetch |
 | `--pass 1\|2\|3\|all` | Import only: `1` (nodes only), `2` (ways only, requires an already populated node cache), `3` (merge + sort only, requires passes 1 and 2 to have already run), or `all` (default) |
 | `--way-batch-mb <mb>` | Import only, way-pass lookup batch budget in MiB (default: `512`) |
 | `--h3-resolution <r>` | Resolution of the data cells, 0-13 (default: `9`); must match between import, prepare-update and update (the caches encode cells at this resolution) |
@@ -209,10 +209,11 @@ docker compose --profile=build run --rm karmamap karmamap update
 
 Bare `update` applies every diff up to the current `state.txt`; `update N`
 stops after N diffs. Each fetched diff (`<seq>.osc.gz`,
-downloaded to `<output-dir>/diffs/`) runs the node and way passes with per-diff
-staging files, so a multi-diff run merges everything into `data.parquet` exactly
-once. A diff file is removed once its passes succeeded, so the `diffs/` dir does
-not accumulate; diffs already committed by earlier runs are purged on start.
+downloaded to the diffs dir next to the node caches) runs the node and way
+passes with per-diff staging files, so a multi-diff run merges everything into
+`data.parquet` exactly once. A diff file is removed once its passes succeeded,
+so the `diffs/` dir does not accumulate; diffs already committed by earlier
+runs are purged on start.
 
 ### Serving the web frontend
 
@@ -270,7 +271,7 @@ wget -O data/canary-islands-internal.state.txt https://osm-internal.download.geo
 Both files must be fetched together: import records the replication state of
 the `state.txt` sidecar, so download it on the same day as the osh. On the
 internal server both URLs sit behind the OSM cookie; add
-`--load-cookies data/output/.geofabrik.cookie` to wget when the jar exists
+`--load-cookies <node-cache-parent>/.geofabrik.cookie` to wget when the jar exists
 from an earlier run.
 
 ```bash

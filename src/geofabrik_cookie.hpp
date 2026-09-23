@@ -23,8 +23,8 @@ inline constexpr char kCookieStatusUrl[] =
     "https://osm-internal.download.geofabrik.de/cookie_status";
 inline constexpr char kOsmHost[] = "https://www.openstreetmap.org";
 
-// The default Netscape cookie jar path: <output-dir>/.geofabrik.cookie.
-std::string default_cookie_path(const std::string& output_dir);
+// The default Netscape cookie jar path: <node-cache-parent>/.geofabrik.cookie.
+std::string default_cookie_path(const std::string& base_dir);
 
 // True when the URL points at the internal Geofabrik server and therefore
 // needs a session cookie.

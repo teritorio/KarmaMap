@@ -11,10 +11,10 @@
 
 namespace geofabrik_cookie {
 
-std::string default_cookie_path(const std::string& output_dir) {
-    if (output_dir.empty()) return ".geofabrik.cookie";
-    if (output_dir.back() == '/') return output_dir + ".geofabrik.cookie";
-    return output_dir + "/.geofabrik.cookie";
+std::string default_cookie_path(const std::string& base_dir) {
+    if (base_dir.empty()) return ".geofabrik.cookie";
+    if (base_dir.back() == '/') return base_dir + ".geofabrik.cookie";
+    return base_dir + "/.geofabrik.cookie";
 }
 
 bool requires_auth(const std::string& url) {

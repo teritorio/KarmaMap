@@ -146,10 +146,11 @@ explicitly (which must then match), and update runs against the `.last`
 incremental cache built by `prepare-update`. The starting
 sequence is the recorded source sequence; each
 `.osc.gz` diff (URL `AAA/BBB/CCC.osc.gz`, where N = AAA*1000000 + BBB*1000 +
-CCC from the 3/3/3 split of the sequence) is downloaded to `<output-dir>/diffs/` — a file
+CCC from the 3/3/3 split of the sequence) is downloaded to the diffs dir next
+to the node caches — a file
 already present is reused, a partial download is removed on failure — and
 applied. Once every pass over a diff succeeded its file is removed, so
-`<output-dir>/diffs/` only ever holds in-flight diffs; diffs committed by
+the diffs dir only ever holds in-flight diffs; diffs committed by
 earlier runs are purged at update start. Bare `update` (or `update 0`) fetches
 every diff up to the current
 `state.txt`; `update N` stops after N.
@@ -255,7 +256,7 @@ invisible = deleted) and counts **modified + deleted** objects per
 since the epoch; creates are ignored).
 
 The minute buckets are persisted as the binary block store
-`vandalism_minutes.bin` next to the stage root (see `vandalism_store.hpp` for
+`vandalism_minutes.bin` next to the node caches (see `vandalism_store.hpp` for
 the on-disk format: one 16-byte record per `(uid, minute)`, sorted, keyed as
 the update finalize's merge base). `fold_minute_counts` reads the store plus
 the run's staged buckets, sums equal `(uid, minute)` keys (so a minute that

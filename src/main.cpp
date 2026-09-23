@@ -73,8 +73,10 @@ void remove_applied_diff(const std::string& path) {
 std::string resolve_update_cookie(const Options& opts) {
     if (!geofabrik_cookie::requires_auth(opts.update_url)) return "";
     std::string jar =
-        opts.cookie_path.empty() ? geofabrik_cookie::default_cookie_path(opts.output_dir)
-                                 : opts.cookie_path;
+        opts.cookie_path.empty()
+            ? geofabrik_cookie::default_cookie_path(
+                  std::filesystem::path(opts.node_cache_path).parent_path().string())
+            : opts.cookie_path;
     if (!geofabrik_cookie::has_credentials() && !std::filesystem::exists(jar)) {
         throw std::runtime_error(
             "The update URL points at the Geofabrik internal server "
@@ -226,8 +228,9 @@ void run_users_history_pass(const Options& opts) {
 // Update mode: advances an existing dataset along its replication diff stream
 // (see options.cpp, the "update" command). Starting from the sequence recorded
 // in manifest.json's source block, every diff up to the target (the current
-// state.txt, capped by "update [N]") is downloaded to <output-dir>/diffs and
-// applied by the update node and way passes into per-sequence staging
+// state.txt, capped by "update [N]") is downloaded to the diffs dir (next to
+// the node caches) and applied by the update node and way passes into
+// per-sequence staging
 // partitions (nodes.<seq>.parquet / ways.<seq>.parquet). Diffs already
 // committed by earlier runs (at or below the recorded base sequence) are
 // purged on start, and each freshly downloaded diff is removed once every
@@ -270,7 +273,7 @@ std::optional<replication_state::State> run_update_mode(
     // it was fully applied and this run never re-fetches it. Best-effort: a
     // leftover here is an inert download cache, so a removal failure warns
     // instead of aborting the update.
-    const std::string diffs_dir = opts.output_dir + "/diffs";
+    const std::string diffs_dir = opts.diffs_dir;
     if (std::filesystem::is_directory(diffs_dir)) {
         for (const auto& entry : std::filesystem::directory_iterator(diffs_dir)) {
             if (!entry.is_regular_file()) continue;
@@ -350,7 +353,7 @@ std::optional<replication_state::State> run_update_mode(
     // already reflects every diff of this run. Filter 3 (any node moved
     // > 500 m) folds into per-day flags the same way, and both staging roots
     // are consumed here.
-    const std::string minutes_path = opts.output_dir + "/vandalism_minutes.bin";
+    const std::string minutes_path = opts.vandalism_minutes_path;
     vandalism::fold_minute_counts(vandalism_stage_root + "/counts", minutes_path, applied);
     const std::map<std::pair<int64_t, uint16_t>, uint8_t> move_flags =
         vandalism::flagged_move_days(vandalism_stage_root);

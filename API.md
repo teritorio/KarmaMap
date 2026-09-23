@@ -22,12 +22,17 @@ output-dir/
 ├── manifest.json
 ├── users_history.parquet
 ├── user_reputation.parquet
-├── vandalism_minutes.bin     # update-only; binary block store
 └── changes/
     └── year=2025/
         ├── data.parquet      # (h3_cell, change_date, count)
         ├── nodes.parquet     # staging, merged and removed by pass 3
         └── ways.parquet      # staging, merged and removed by pass 3
+
+# Next to the node caches (output-dir's parent by default):
+node_positions.cache      # full-history node cache (import/prepare-update)
+node_positions.cache.last  # incremental cache (prepare-update/update)
+vandalism_minutes.bin     # update-only; binary block store
+diffs/                    # update-only; in-flight diff download cache
 ```
 
 Files are ZSTD-compressed. `manifest.json` is rewritten at the end of every
