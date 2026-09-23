@@ -24,6 +24,19 @@ export const TAG_COUNTERS = TOP12_TAGS.map((key) => `tag_${key}`)
 // creations + tags), used to project a wide per-uid row into a counters map.
 export const ALL_COUNTERS = [...CHANGE_COUNTERS, 'relation_created', ...TAG_COUNTERS]
 
+// Bits of the daily vandalism_flag column of users_history.parquet,
+// mirroring src/vandalism.hpp. Filter 2/3 are per-day occurrences; filter 1
+// is user-wide (every day of a below-threshold contributor trips it).
+export const FLAG_FILTER_2 = 0x01
+export const FLAG_FILTER_3 = 0x02
+export const FLAG_FILTER_1 = 0x04
+
+export const FLAG_LABELS = [
+  { mask: FLAG_FILTER_2, label: 'Filter 2: >500 modified/deleted in one hour' },
+  { mask: FLAG_FILTER_3, label: 'Filter 3: node moved >500 m' },
+  { mask: FLAG_FILTER_1, label: 'Filter 1: reputation <5% (user-wide)' },
+]
+
 // OSMPatrol reputation caps (Neis, Goetz & Zipf 2012, §4). The reputation is
 // built only from *created* objects and Top12 tag usage; modifications and
 // deletions carry no reputation value. Each of the 12 tags is worth up to 4
@@ -77,17 +90,19 @@ function computeReputation(row, stats) {
 
 // Totals from the exact user_reputation.parquet row (all 21 history sums
 // and the identity columns are stored per uid by the pipeline), plus the
-// per-day timeline from users_history.parquet and the activity-by-day edit
-// counts that feed the history graph.
+// per-day timeline from users_history.parquet: the activity-by-day edit
+// counts and per-day vandalism_flag masks that feed the history graph.
 export function computeScores(reputationRows, historyRows, stats) {
   const repRow = reputationRows[0]
   const counters = { ...repRow.counters }
 
   const byDay = new Map()
+  const flagByDay = new Map()
   for (const row of historyRows) {
     const dayCount = Number(row.count ?? 0)
     const day = dayKey(row.change_date)
     byDay.set(day, (byDay.get(day) ?? 0) + dayCount)
+    flagByDay.set(day, (flagByDay.get(day) ?? 0) | Number(row.vandalism_flag ?? 0))
   }
 
   const totalEdits = CHANGE_COUNTERS.reduce((sum, k) => sum + counters[k], 0)
@@ -98,6 +113,7 @@ export function computeScores(reputationRows, historyRows, stats) {
     counters,
     totalEdits,
     byDay,
+    flagByDay,
     reputation,
   }
 }

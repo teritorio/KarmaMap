@@ -6,11 +6,11 @@
 // prunes straight to the matching pages); the reputation and per-uid counter
 // totals come from the same row. Only the per-day activity timeline still
 // comes from users_history.parquet (uid-sorted, so a range filter prunes
-// pages, with exact membership kept client-side); the timeline's per-day
-// counts are read from the single `count` column (the day's total activity:
-// the six node/way change counters plus the three relation counters). The
-// dataset-wide `active`/`max` stats are read once from the file's
-// key_value_metadata footer instead of repeated per-row columns.
+// pages, with exact membership kept client-side); the timeline reads each
+// day's `count` (the day's total activity: the six node/way change counters
+// plus the three relation counters) and its `vandalism_flag` bits for the
+// history chart. The dataset-wide `active`/`max` stats are read once from
+// the file's key_value_metadata footer instead of repeated per-row columns.
 
 import { queryRows, queryRowsWithMetadata } from '../lib/parquet.js'
 import { ALL_COUNTERS, TAG_COUNTERS } from './reputation.js'
@@ -64,13 +64,15 @@ export async function queryReputationByUsername(baseUrl, path, username, footerS
 // uid-sorted file: a [min, max] range filter prunes pages, and the exact
 // uid set is applied client-side (the same pattern the changes viewer uses
 // for its non-contiguous H3 cell set). Used for the per-day timeline only.
+// The projection is the file's full column set (uid, change_date, count,
+// vandalism_flag); the flag bits drive the history chart's vandalism marks.
 export async function queryHistory(baseUrl, path, uids, footerSize) {
   if (uids.length === 0) return []
   const minUid = Math.min(...uids)
   const maxUid = Math.max(...uids)
   const uidSet = new Set(uids)
-  // The history file holds exactly the timeline's 3 columns (uid,
-  // change_date, count), so no projection is needed.
-  const rows = await queryRows(baseUrl, path, { uid: { $gte: minUid, $lte: maxUid } }, undefined, footerSize)
+  const rows = await queryRows(
+    baseUrl, path, { uid: { $gte: minUid, $lte: maxUid } },
+    ['uid', 'change_date', 'count', 'vandalism_flag'], footerSize)
   return rows.filter((row) => uidSet.has(Number(row.uid)))
 }

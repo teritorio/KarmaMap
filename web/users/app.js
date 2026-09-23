@@ -168,7 +168,7 @@ async function search(manifest) {
       profileEl.innerHTML = ''
       scoreEl.innerHTML = ''
       scoresEl.innerHTML = ''
-      setHistogramData(new Map())
+      setHistogramData(new Map(), new Map())
       setStatus(`No profile found for "${name}".`)
       return
     }
@@ -181,7 +181,7 @@ async function search(manifest) {
     renderProfile(name, scores)
     renderScore(scores)
     renderScores(scores)
-    setHistogramData(scores.byDay)
+    setHistogramData(scores.byDay, scores.flagByDay)
     setStatus(`${name}: reputation ${scores.reputation.value}, ${scores.totalEdits} edits across ${scores.byDay.size} active day${scores.byDay.size === 1 ? '' : 's'}.`)
   } catch (err) {
     console.error(err)
