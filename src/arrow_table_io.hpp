@@ -1,7 +1,7 @@
 #pragma once
 
 // Shared Arrow/Parquet table I/O for the merge-style passes (sort pass and
-// the user-indicator finalize), so identical open/write/finalize behaviour
+// the users-history finalize), so identical open/write/finalize behaviour
 // is not duplicated.
 
 #include <arrow/api.h>

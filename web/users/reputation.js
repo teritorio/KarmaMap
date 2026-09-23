@@ -75,16 +75,16 @@ function computeReputation(row, stats) {
   }
 }
 
-// Totals from the exact user_reputation.parquet row (all 21 indicator sums
+// Totals from the exact user_reputation.parquet row (all 21 history sums
 // and the identity columns are stored per uid by the pipeline), plus the
-// per-day timeline from user_indicators.parquet and the activity-by-day edit
+// per-day timeline from users_history.parquet and the activity-by-day edit
 // counts that feed the history graph.
-export function computeScores(reputationRows, indicatorRows, stats) {
+export function computeScores(reputationRows, historyRows, stats) {
   const repRow = reputationRows[0]
   const counters = { ...repRow.counters }
 
   const byDay = new Map()
-  for (const row of indicatorRows) {
+  for (const row of historyRows) {
     const dayCount = Number(row.count ?? 0)
     const day = dayKey(row.change_date)
     byDay.set(day, (byDay.get(day) ?? 0) + dayCount)

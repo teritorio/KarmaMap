@@ -1,14 +1,14 @@
 // Users viewer: looks up an OSM username directly in user_reputation.parquet
 // (the pipeline stamps the current username per uid), fetches that user's
-// exact reputation row and their per-day rows from user_indicators.parquet,
-// and renders the OSMPatrol reputation, raw indicator totals, the profile
+// exact reputation row and their per-day rows from users_history.parquet,
+// and renders the OSMPatrol reputation, raw history totals, the profile
 // identity fields and an edit-activity timeline. Same architecture as the
 // changes viewer (page + app + query + histogram + permalink modules over the
 // shared data-access lib in web/lib), but no spatial component.
 
 import { loadManifest, dayKey } from '../lib/api.js'
 import { readPermalink, writePermalink } from './permalink.js'
-import { queryReputationByUsername, queryIndicators } from './query.js'
+import { queryReputationByUsername, queryHistory } from './query.js'
 import { computeScores, TAG_COUNTERS, REP_CAPS, REP_FORMULA } from './reputation.js'
 import { initHistogram, setHistogramData, setLogScale } from './histogram.js'
 
@@ -174,9 +174,9 @@ async function search(manifest) {
     }
 
     const uids = [...new Set(reps.map((p) => p.uid))]
-    const indicatorsDataset = manifest.datasets.user_indicators
-    const indicators = await queryIndicators(BASE_URL, indicatorsDataset.path, uids, indicatorsDataset.footer_size)
-    const scores = computeScores(reps, indicators, stats)
+    const historyDataset = manifest.datasets.users_history
+    const history = await queryHistory(BASE_URL, historyDataset.path, uids, historyDataset.footer_size)
+    const scores = computeScores(reps, history, stats)
 
     renderProfile(name, scores)
     renderScore(scores)
@@ -208,8 +208,8 @@ async function main() {
   if (user) usernameEl.value = user
 
   const datasets = manifest.datasets ?? {}
-  if (!datasets.user_reputation || !datasets.user_indicators) {
-    setStatus('user_reputation/user_indicators not in manifest — the pipeline did not produce the user datasets.')
+  if (!datasets.user_reputation || !datasets.users_history) {
+    setStatus('user_reputation/users_history not in manifest — the pipeline did not produce the user datasets.')
     return
   }
 

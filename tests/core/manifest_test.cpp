@@ -134,13 +134,13 @@ TEST(Manifest, WritesUserDatasetEntries) {
     TempDir dir;
     make_partitions(dir.join("changes"), {"2024"});
     {
-        std::ofstream(dir.join("user_indicators.parquet")) << "x\n";
+        std::ofstream(dir.join("users_history.parquet")) << "x\n";
         std::ofstream(dir.join("user_reputation.parquet")) << "z\n";
     }
     manifest::write_manifest(dir.path(), 4);
 
     const std::string json = read_file(dir.join("manifest.json"));
-    EXPECT_NE(json.find("\"user_indicators\": { \"path\": \"user_indicators.parquet\", \"partitions\": [] }"),
+    EXPECT_NE(json.find("\"users_history\": { \"path\": \"users_history.parquet\", \"partitions\": [] }"),
               std::string::npos);
     EXPECT_NE(json.find("\"user_reputation\": { \"path\": \"user_reputation.parquet\", \"partitions\": [] }"),
               std::string::npos);
@@ -158,13 +158,13 @@ TEST(Manifest, WritesFooterSizeForUserDatasets) {
     std::shared_ptr<arrow::Array> values;
     ASSERT_TRUE(builder.Finish(&values).ok());
     auto schema = arrow::schema({arrow::field("v", arrow::uint32(), false)});
-    arrow_table_io::write_table(dir.join("user_indicators.parquet"),
+    arrow_table_io::write_table(dir.join("users_history.parquet"),
                                 arrow::Table::Make(schema, {values}));
 
     manifest::write_manifest(dir.path(), 4);
 
     const std::string json = read_file(dir.join("manifest.json"));
-    EXPECT_NE(json.find("\"user_indicators\": { \"path\": \"user_indicators.parquet\", \"partitions\": [], \"footer_size\": "),
+    EXPECT_NE(json.find("\"users_history\": { \"path\": \"users_history.parquet\", \"partitions\": [], \"footer_size\": "),
               std::string::npos);
 }
 
@@ -174,7 +174,7 @@ TEST(Manifest, SkipsUserDatasetsWhenAbsent) {
     manifest::write_manifest(dir.path(), 4);
 
     const std::string json = read_file(dir.join("manifest.json"));
-    EXPECT_EQ(json.find("\"user_indicators\""), std::string::npos);
+    EXPECT_EQ(json.find("\"users_history\""), std::string::npos);
     EXPECT_EQ(json.find("\"user_reputation\""), std::string::npos);
 }
 

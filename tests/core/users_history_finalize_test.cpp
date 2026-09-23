@@ -12,7 +12,7 @@
 
 #include "options.hpp"
 #include "test_helpers.hpp"
-#include "user_indicators.hpp"
+#include "users_history.hpp"
 #include "vandalism.hpp"
 #include "vandalism_store.hpp"
 
@@ -64,13 +64,13 @@ void write_stage(const std::string& path, const std::vector<StageRow>& rows) {
     arrow::UInt16Builder day;
     std::vector<arrow::UInt32Builder*> counters;
     std::vector<std::unique_ptr<arrow::UInt32Builder>> owned_counters;
-    for (size_t i = 0; i < user_indicators::kCounterCount; ++i) {
+    for (size_t i = 0; i < users_history::kCounterCount; ++i) {
         owned_counters.push_back(std::make_unique<arrow::UInt32Builder>());
         counters.push_back(owned_counters.back().get());
     }
 
     // Non-const accessors for the counter fields in declaration order.
-    uint32_t (StageRow::*members[user_indicators::kCounterCount]) = {
+    uint32_t (StageRow::*members[users_history::kCounterCount]) = {
         &StageRow::node_created, &StageRow::node_modified, &StageRow::node_deleted,
         &StageRow::way_created,  &StageRow::way_modified,  &StageRow::way_deleted,
         &StageRow::relation_created,
@@ -86,17 +86,17 @@ void write_stage(const std::string& path, const std::vector<StageRow>& rows) {
         append_ok(uid, r.uid);
         append_ok(username, r.username);
         append_ok(day, r.day);
-        for (size_t i = 0; i < user_indicators::kCounterCount; ++i) {
+        for (size_t i = 0; i < users_history::kCounterCount; ++i) {
             append_ok(*counters[i], r.*members[i]);
         }
     }
 
     std::shared_ptr<arrow::Array> a_uid, a_user, a_day;
-    std::vector<std::shared_ptr<arrow::Array>> a_counters(user_indicators::kCounterCount);
+    std::vector<std::shared_ptr<arrow::Array>> a_counters(users_history::kCounterCount);
     finish_ok(uid, &a_uid);
     finish_ok(username, &a_user);
     finish_ok(day, &a_day);
-    for (size_t i = 0; i < user_indicators::kCounterCount; ++i) {
+    for (size_t i = 0; i < users_history::kCounterCount; ++i) {
         finish_ok(*counters[i], &a_counters[i]);
     }
 
@@ -134,14 +134,14 @@ void write_stage(const std::string& path, const std::vector<StageRow>& rows) {
 }
 
 // Reads back an output file into typed helper vectors.
-struct IndicatorRows {
+struct HistoryRows {
     std::vector<int64_t> uid;
     std::vector<uint16_t> day;
     std::vector<uint32_t> count;
     std::vector<uint8_t> flag;
 };
 
-IndicatorRows read_indicators(const std::string& path) {
+HistoryRows read_history(const std::string& path) {
     auto combined_result = read_parquet(path)->CombineChunks();
     EXPECT_TRUE(combined_result.ok()) << combined_result.status();
     if (!combined_result.ok()) return {};
@@ -150,7 +150,7 @@ IndicatorRows read_indicators(const std::string& path) {
     // change counters plus the three relation counters), and the vandalism
     // filter-2 flag.
     EXPECT_EQ(t->num_columns(), 4);
-    IndicatorRows out;
+    HistoryRows out;
     const auto* uid = static_cast<const arrow::Int64Array*>(t->column(0)->chunk(0).get());
     const auto* day = static_cast<const arrow::UInt16Array*>(t->column(1)->chunk(0).get());
     const auto* count = static_cast<const arrow::UInt32Array*>(t->column(2)->chunk(0).get());
@@ -188,10 +188,10 @@ ReputationRows read_reputation(const std::string& path) {
     return out;
 }
 
-TEST(UserIndicatorFinalize, ConcatenatesSortsAndDerives) {
+TEST(UsersHistoryFinalize, ConcatenatesSortsAndDerives) {
     TempDir dir;
     const std::string stage = dir.join("stage");
-    const std::string indicators = dir.join("user_indicators.parquet");
+    const std::string history = dir.join("users_history.parquet");
 
     std::filesystem::create_directories(stage);
 
@@ -209,13 +209,13 @@ TEST(UserIndicatorFinalize, ConcatenatesSortsAndDerives) {
                     {12, "", 3000, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0},
                 });
 
-    user_indicators::run_finalize(stage, indicators, kDefaultIndicatorsGroupRows,
-                                  kDefaultReputationGroupRows);
+    users_history::run_finalize(stage, history, kDefaultUsersHistoryGroupRows,
+                                kDefaultReputationGroupRows);
 
     EXPECT_FALSE(std::filesystem::exists(stage));
-    EXPECT_TRUE(std::filesystem::exists(indicators));
+    EXPECT_TRUE(std::filesystem::exists(history));
 
-    const auto ind = read_indicators(indicators);
+    const auto ind = read_history(history);
     // Sorted by (uid, change_date).
     const std::vector<int64_t> exp_uid = {10, 10, 10, 11, 12};
     const std::vector<uint16_t> exp_day = {1000, 1005, 1050, 2000, 3000};
@@ -254,31 +254,31 @@ TEST(UserIndicatorFinalize, ConcatenatesSortsAndDerives) {
     EXPECT_EQ(rep.first_seen_day[2], 2000);
 }
 
-TEST(UserIndicatorFinalize, NoStageIsNoOp) {
+TEST(UsersHistoryFinalize, NoStageIsNoOp) {
     TempDir dir;
-    const std::string indicators = dir.join("user_indicators.parquet");
+    const std::string history = dir.join("users_history.parquet");
 
-    EXPECT_NO_THROW(user_indicators::run_finalize(dir.join("nope"), indicators,
-                                                  kDefaultIndicatorsGroupRows,
-                                                  kDefaultReputationGroupRows));
-    EXPECT_FALSE(std::filesystem::exists(indicators));
+    EXPECT_NO_THROW(users_history::run_finalize(dir.join("nope"), history,
+                                                kDefaultUsersHistoryGroupRows,
+                                                kDefaultReputationGroupRows));
+    EXPECT_FALSE(std::filesystem::exists(history));
 
     // An empty stage directory is equally a no-op.
     const std::string empty_stage = dir.join("empty_stage");
     std::filesystem::create_directories(empty_stage);
-    EXPECT_NO_THROW(user_indicators::run_finalize(empty_stage, indicators,
-                                                  kDefaultIndicatorsGroupRows,
-                                                  kDefaultReputationGroupRows));
-    EXPECT_FALSE(std::filesystem::exists(indicators));
+    EXPECT_NO_THROW(users_history::run_finalize(empty_stage, history,
+                                                kDefaultUsersHistoryGroupRows,
+                                                kDefaultReputationGroupRows));
+    EXPECT_FALSE(std::filesystem::exists(history));
 }
 
 // Update mode: per-diff stage groups under stage_root/seq_<n>/ fold into the
-// base user_indicators.parquet and user_reputation.parquet exactly once.
-TEST(UserIndicatorFinalize, UpdateMergesDeltasIntoExistingFiles) {
+// base users_history.parquet and user_reputation.parquet exactly once.
+TEST(UsersHistoryFinalize, UpdateMergesDeltasIntoExistingFiles) {
     TempDir dir;
-    const std::string indicators = dir.join("user_indicators.parquet");
+    const std::string history = dir.join("users_history.parquet");
 
-    // Base dataset: one scan/finalize run producing the indicator and
+    // Base dataset: one scan/finalize run producing the history and
     // reputation files.
     const std::string base_stage = dir.join("base_stage");
     std::filesystem::create_directories(base_stage);
@@ -287,8 +287,8 @@ TEST(UserIndicatorFinalize, UpdateMergesDeltasIntoExistingFiles) {
                     {10, "alice", 1000, 5, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0},
                     {11, "bob", 2000, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
                 });
-    user_indicators::run_finalize(base_stage, indicators, kDefaultIndicatorsGroupRows,
-                                  kDefaultReputationGroupRows);
+    users_history::run_finalize(base_stage, history, kDefaultUsersHistoryGroupRows,
+                                kDefaultReputationGroupRows);
 
     // One update run: sequence 2847600 (nodes+ways) and 2847601 (ways only),
     // in separate stage groups under stage_root/seq_<n>.
@@ -307,13 +307,13 @@ TEST(UserIndicatorFinalize, UpdateMergesDeltasIntoExistingFiles) {
                     {11, "bob", 2001, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
                 });
 
-    user_indicators::run_update_finalize(stage_root, indicators,
-                                         kDefaultIndicatorsGroupRows,
-                                         kDefaultReputationGroupRows,
+    users_history::run_update_finalize(stage_root, history,
+                                       kDefaultUsersHistoryGroupRows,
+                                       kDefaultReputationGroupRows,
                                          dir.join("vandalism_minutes.bin"), {});
 
     // Existing (uid,day) rows accumulate; new users are appended.
-    const auto ind = read_indicators(indicators);
+    const auto ind = read_history(history);
     const std::vector<int64_t> exp_uid = {10, 11, 11, 13};
     const std::vector<uint16_t> exp_day = {1000, 2000, 2001, 1001};
     ASSERT_EQ(ind.uid.size(), exp_uid.size());
@@ -344,22 +344,22 @@ TEST(UserIndicatorFinalize, UpdateMergesDeltasIntoExistingFiles) {
     EXPECT_FALSE(std::filesystem::exists(stage_root));
 }
 
-TEST(UserIndicatorFinalize, UpdateNoStageIsNoOp) {
+TEST(UsersHistoryFinalize, UpdateNoStageIsNoOp) {
     TempDir dir;
-    const std::string indicators = dir.join("user_indicators.parquet");
+    const std::string history = dir.join("users_history.parquet");
 
-    EXPECT_NO_THROW(user_indicators::run_update_finalize(
-        dir.join("nope"), indicators, kDefaultIndicatorsGroupRows,
+    EXPECT_NO_THROW(users_history::run_update_finalize(
+        dir.join("nope"), history, kDefaultUsersHistoryGroupRows,
         kDefaultReputationGroupRows, dir.join("vandalism_minutes.bin"), {}));
-    EXPECT_FALSE(std::filesystem::exists(indicators));
+    EXPECT_FALSE(std::filesystem::exists(history));
 }
 
 // The vandalism filter-2 flag: with a persisted minute store present, the
 // update finalize marks exactly the (uid, day) pairs that hold a minute whose
 // trailing one-hour span exceeds the threshold.
-TEST(UserIndicatorFinalize, UpdateFlagsVandalismDaysFromMinuteStore) {
+TEST(UsersHistoryFinalize, UpdateFlagsVandalismDaysFromMinuteStore) {
     TempDir dir;
-    const std::string indicators = dir.join("user_indicators.parquet");
+    const std::string history = dir.join("users_history.parquet");
 
     // Base dataset from import (day 1000 for uid 10, day 2000 for uid 11).
     const std::string base_stage = dir.join("base_stage");
@@ -369,8 +369,8 @@ TEST(UserIndicatorFinalize, UpdateFlagsVandalismDaysFromMinuteStore) {
                     {10, "alice", 1000, 5, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0},
                     {11, "bob", 2000, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
                 });
-    user_indicators::run_finalize(base_stage, indicators, kDefaultIndicatorsGroupRows,
-                                  kDefaultReputationGroupRows);
+    users_history::run_finalize(base_stage, history, kDefaultUsersHistoryGroupRows,
+                                kDefaultReputationGroupRows);
 
     // Minute store whose (uid, minute) -> count flags:
     //   uid 10 day 1000: minute 1440*1000+30 carries 501 edits -> flagged.
@@ -394,11 +394,11 @@ TEST(UserIndicatorFinalize, UpdateFlagsVandalismDaysFromMinuteStore) {
                     {13, "carol", 1001, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
                 });
 
-    user_indicators::run_update_finalize(stage_root, indicators,
-                                         kDefaultIndicatorsGroupRows,
-                                         kDefaultReputationGroupRows, minutes, {});
+    users_history::run_update_finalize(stage_root, history,
+                                       kDefaultUsersHistoryGroupRows,
+                                       kDefaultReputationGroupRows, minutes, {});
 
-    const auto ind = read_indicators(indicators);
+    const auto ind = read_history(history);
     // Rows sorted by (uid, change_date): uid 10 day 1000, uid 11 day 2000,
     // uid 13 day 1001.
     ASSERT_EQ(ind.uid.size(), 3);
@@ -416,9 +416,9 @@ TEST(UserIndicatorFinalize, UpdateFlagsVandalismDaysFromMinuteStore) {
 // The combined vandalism flag: base flags are carried forward, this run's
 // filter-2 bits come from the minute store and filter-3 bits from the moves
 // folding, so a day flagged by both screens carries 0x03.
-TEST(UserIndicatorFinalize, UpdateFlagsCombineCarriedAndMoveDays) {
+TEST(UsersHistoryFinalize, UpdateFlagsCombineCarriedAndMoveDays) {
     TempDir dir;
-    const std::string indicators = dir.join("user_indicators.parquet");
+    const std::string history = dir.join("users_history.parquet");
 
     // Base dataset from import for uid 10 day 1000 and uid 11 day 2000.
     const std::string base_stage = dir.join("base_stage");
@@ -428,8 +428,8 @@ TEST(UserIndicatorFinalize, UpdateFlagsCombineCarriedAndMoveDays) {
                     {10, "alice", 1000, 5, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0},
                     {11, "bob", 2000, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
                 });
-    user_indicators::run_finalize(base_stage, indicators, kDefaultIndicatorsGroupRows,
-                                  kDefaultReputationGroupRows);
+    users_history::run_finalize(base_stage, history, kDefaultUsersHistoryGroupRows,
+                                kDefaultReputationGroupRows);
 
     const std::string minutes = dir.join("vandalism_minutes.bin");
     {
@@ -449,16 +449,16 @@ TEST(UserIndicatorFinalize, UpdateFlagsCombineCarriedAndMoveDays) {
                     {
                         {90, username, day, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
                     });
-        user_indicators::run_update_finalize(stage_root, indicators,
-                                             kDefaultIndicatorsGroupRows,
-                                             kDefaultReputationGroupRows, minutes,
+        users_history::run_update_finalize(stage_root, history,
+                                           kDefaultUsersHistoryGroupRows,
+                                           kDefaultReputationGroupRows, minutes,
                                              move_flags);
     };
 
     // Run 1: uid 90 day 3000 staged; only the minute store carries the
     // filter-2 flag for uid 10 day 1000.
     update_with("1", "zoe", 3000, {}, 2847600);
-    const auto ind1 = read_indicators(indicators);
+    const auto ind1 = read_history(history);
     // (uid, day) sorted: uid 10 day 1000, uid 11 day 2000, uid 90 day 3000.
     ASSERT_EQ(ind1.uid.size(), 3);
     EXPECT_EQ(ind1.day[0], 1000);
@@ -475,7 +475,7 @@ TEST(UserIndicatorFinalize, UpdateFlagsCombineCarriedAndMoveDays) {
                 },
                 2847601);
 
-    const auto ind = read_indicators(indicators);
+    const auto ind = read_history(history);
     //   uid 10 day 1000: filter 2 carried + filter 3 added -> 0x03.
     //   uid 11 day 2000: move-flagged only -> 0x02.
     //   uid 90 days 3000/3001: neither screen -> 0.

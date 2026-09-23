@@ -80,13 +80,13 @@ add_library(karmamap_core STATIC
   src/sort_pass.cpp
   src/state.cpp
   src/update.cpp
-  src/user_indicators.cpp
+  src/users_history.cpp
   src/vandalism.cpp
 )
 
 target_include_directories(karmamap_core PUBLIC src)
 
-# User-indicator scan (user_indicators.cpp) pulls in libosmium and protozero;
+# Users-history scan (users_history.cpp) pulls in libosmium and protozero;
 # made PUBLIC so the executable and the test binaries inherit them too.
 target_include_directories(karmamap_core PUBLIC
   ${OSMIUM_INCLUDE_DIR}

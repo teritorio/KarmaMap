@@ -16,7 +16,7 @@
 
 #include "options.hpp"
 #include "test_helpers.hpp"
-#include "user_indicators.hpp"
+#include "users_history.hpp"
 
 namespace {
 
@@ -41,25 +41,25 @@ void write_stage_named(const std::string& path,
     arrow::StringBuilder username;
     arrow::UInt16Builder day;
     std::vector<std::unique_ptr<arrow::UInt32Builder>> counters;
-    for (size_t i = 0; i < user_indicators::kCounterCount; ++i) {
+    for (size_t i = 0; i < users_history::kCounterCount; ++i) {
         counters.push_back(std::make_unique<arrow::UInt32Builder>());
     }
     for (const auto& [u, name, d, cts] : rows) {
         append_ok(uid, u);
         append_ok(username, name);
         append_ok(day, d);
-        ASSERT_EQ(cts.size(), user_indicators::kCounterCount);
-        for (size_t c = 0; c < user_indicators::kCounterCount; ++c) {
+        ASSERT_EQ(cts.size(), users_history::kCounterCount);
+        for (size_t c = 0; c < users_history::kCounterCount; ++c) {
             append_ok(*counters[c], cts[c]);
         }
     }
 
     std::shared_ptr<arrow::Array> a_uid, a_user, a_day;
-    std::vector<std::shared_ptr<arrow::Array>> a_counters(user_indicators::kCounterCount);
+    std::vector<std::shared_ptr<arrow::Array>> a_counters(users_history::kCounterCount);
     finish_ok(uid, &a_uid);
     finish_ok(username, &a_user);
     finish_ok(day, &a_day);
-    for (size_t i = 0; i < user_indicators::kCounterCount; ++i) {
+    for (size_t i = 0; i < users_history::kCounterCount; ++i) {
         finish_ok(*counters[i], &a_counters[i]);
     }
 
@@ -110,7 +110,7 @@ void write_stage(const std::string& path,
 TEST(ReputationFile, WritesExactWidePerUidTable) {
     TempDir dir;
     const std::string stage = dir.join("stage");
-    const std::string indicators = dir.join("user_indicators.parquet");
+    const std::string history = dir.join("users_history.parquet");
     std::filesystem::create_directories(stage);
 
     // Counter indices follow the stage schema: 0 node_created, 3 way_created,
@@ -121,7 +121,7 @@ TEST(ReputationFile, WritesExactWidePerUidTable) {
     const uint32_t relation_created = 6;
     const uint32_t tag_building = 11;
     const uint32_t tag_highway = 12;
-    std::vector<uint32_t> c(user_indicators::kCounterCount, 0);
+    std::vector<uint32_t> c(users_history::kCounterCount, 0);
     auto row = [&](std::initializer_list<std::pair<uint32_t, uint32_t>> set) {
         auto r = c;
         for (const auto& [idx, v] : set) r[idx] = v;
@@ -141,8 +141,8 @@ TEST(ReputationFile, WritesExactWidePerUidTable) {
                     {4, row({{relation_created, 7}})},
                 });
 
-    user_indicators::run_finalize(stage, indicators, kDefaultIndicatorsGroupRows,
-                                  kDefaultReputationGroupRows);
+    users_history::run_finalize(stage, history, kDefaultUsersHistoryGroupRows,
+                                kDefaultReputationGroupRows);
 
     const std::string rep = dir.join("user_reputation.parquet");
     EXPECT_TRUE(std::filesystem::exists(rep));
@@ -248,11 +248,11 @@ TEST(ReputationFile, WritesExactWidePerUidTable) {
 TEST(ReputationFile, SortsByUsernameThenUid) {
     TempDir dir;
     const std::string stage = dir.join("stage");
-    const std::string indicators = dir.join("user_indicators.parquet");
+    const std::string history = dir.join("users_history.parquet");
     std::filesystem::create_directories(stage);
 
     const uint32_t node_created = 0;
-    std::vector<uint32_t> c(user_indicators::kCounterCount, 0);
+    std::vector<uint32_t> c(users_history::kCounterCount, 0);
     auto row = [&](uint32_t v) { auto r = c; r[node_created] = v; return r; };
 
     // Uid groups arrive in uid order; the usernames are scrambled on purpose
@@ -267,8 +267,8 @@ TEST(ReputationFile, SortsByUsernameThenUid) {
                           {8, "dave", 104, row(1)},
                       });
 
-    user_indicators::run_finalize(stage, indicators, kDefaultIndicatorsGroupRows,
-                                  kDefaultReputationGroupRows);
+    users_history::run_finalize(stage, history, kDefaultUsersHistoryGroupRows,
+                                kDefaultReputationGroupRows);
 
     const std::string rep = dir.join("user_reputation.parquet");
     EXPECT_TRUE(std::filesystem::exists(rep));

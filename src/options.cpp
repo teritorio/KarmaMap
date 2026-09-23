@@ -69,8 +69,9 @@ void print_usage(const char* argv0) {
         << "                            dataset (default: 10000); smaller row groups keep\n"
         << "                            h3_cell/change_date min-max compact so range-pruning\n"
         << "                            clients download only the pages they need\n"
-        << "  --indicators-group-rows <n> Target rows per Parquet row group of\n"
-        << "                            user_indicators.parquet (default: 10000)\n"
+        << "  --users-history-group-rows <n>\n"
+        << "                            Target rows per Parquet row group of\n"
+        << "                            users_history.parquet (default: 10000)\n"
         << "  --reputation-group-rows <n> Target rows per Parquet row group of\n"
         << "                            user_reputation.parquet (default: 1000)\n";
 }
@@ -161,12 +162,12 @@ bool parse_args(int argc, char** argv, Options* opts) {
                 throw std::runtime_error("--change-group-rows must be at least 1000");
             }
             opts->change_group_rows = rows;
-        } else if (arg == "--indicators-group-rows") {
-            const long long rows = std::stoll(next_value("--indicators-group-rows"));
+        } else if (arg == "--users-history-group-rows") {
+            const long long rows = std::stoll(next_value("--users-history-group-rows"));
             if (rows < 1'000) {
-                throw std::runtime_error("--indicators-group-rows must be at least 1000");
+                throw std::runtime_error("--users-history-group-rows must be at least 1000");
             }
-            opts->indicators_group_rows = rows;
+            opts->users_history_group_rows = rows;
         } else if (arg == "--reputation-group-rows") {
             const long long rows = std::stoll(next_value("--reputation-group-rows"));
             if (rows < 1'000) {

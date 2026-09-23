@@ -2,7 +2,7 @@
 // Unlike the changes viewer's full-coverage timeline, this shows only the
 // days the user actually edited (sparse data), so the x-axis has no fixed
 // bounds and zero-count days simply do not appear. Each day counts the nine
-// indicator counters: the six node/way changes plus the three relation
+// history counters: the six node/way changes plus the three relation
 // counters. The
 // y-axis is logarithmic by default.
 

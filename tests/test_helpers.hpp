@@ -103,7 +103,7 @@ inline int64_t sum_column(const std::shared_ptr<arrow::Table>& table, const std:
 
 // Writes a whole table to Parquet (ZSTD-compressed) and closes the file.
 // Shared by the core tests that seed stage files for the sort, manifest and
-// indicator passes.
+// history passes.
 inline void write_table(const std::string& path,
                         const std::shared_ptr<arrow::Table>& table) {
     auto outfile_result = arrow::io::FileOutputStream::Open(path);

@@ -1,11 +1,11 @@
 // User queries across the non-partitioned Parquet files written by the
-// user-indicators pass, served from data/ one directory above the viewers. Username
+// users-history pass, served from data/ one directory above the viewers. Username
 // matching uses a direct exact-username lookup on
 // user_reputation.parquet (the pipeline stamps the current username per uid,
 // and that file is username-sorted with a uid tie-break, so the exact filter
 // prunes straight to the matching pages); the reputation and per-uid counter
 // totals come from the same row. Only the per-day activity timeline still
-// comes from user_indicators.parquet (uid-sorted, so a range filter prunes
+// comes from users_history.parquet (uid-sorted, so a range filter prunes
 // pages, with exact membership kept client-side); the timeline's per-day
 // counts are read from the single `count` column (the day's total activity:
 // the six node/way change counters plus the three relation counters). The
@@ -38,7 +38,7 @@ function readAspectStats(metadata) {
 
 // Exact username match on user_reputation.parquet (the current username is
 // stamped per uid), returning the whole wide per-uid row -- identity columns,
-// reputation and indicator totals -- plus the dataset-wide active/max stats
+// reputation and history totals -- plus the dataset-wide active/max stats
 // read from the file footer. uid and the day columns are small integers
 // (int64/uint16), so Number() conversion is lossless.
 export async function queryReputationByUsername(baseUrl, path, username, footerSize) {
@@ -64,12 +64,12 @@ export async function queryReputationByUsername(baseUrl, path, username, footerS
 // uid-sorted file: a [min, max] range filter prunes pages, and the exact
 // uid set is applied client-side (the same pattern the changes viewer uses
 // for its non-contiguous H3 cell set). Used for the per-day timeline only.
-export async function queryIndicators(baseUrl, path, uids, footerSize) {
+export async function queryHistory(baseUrl, path, uids, footerSize) {
   if (uids.length === 0) return []
   const minUid = Math.min(...uids)
   const maxUid = Math.max(...uids)
   const uidSet = new Set(uids)
-  // The indicator file holds exactly the timeline's 3 columns (uid,
+  // The history file holds exactly the timeline's 3 columns (uid,
   // change_date, count), so no projection is needed.
   const rows = await queryRows(baseUrl, path, { uid: { $gte: minUid, $lte: maxUid } }, undefined, footerSize)
   return rows.filter((row) => uidSet.has(Number(row.uid)))

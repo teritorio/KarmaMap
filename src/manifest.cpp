@@ -311,16 +311,16 @@ void write_manifest(const std::string& output_dir, int h3_resolution,
     }
     write_dataset("changes", "changes", partitions, partition_footer_sizes);
 
-    // The user-indicator outputs are non-partitioned single files; the empty
+    // The users-history outputs are non-partitioned single files; the empty
     // partition list tells year-based query clients to skip them. footer_size
     // lets the users viewer read the exact footer window of these files.
     auto single_file_field = [&](const std::string& path) -> std::string {
         auto size = footer_size(output_dir + "/" + path);
         return size ? "\"footer_size\": " + std::to_string(*size) : std::string();
     };
-    if (std::filesystem::exists(output_dir + "/user_indicators.parquet")) {
-        write_dataset("user_indicators", "user_indicators.parquet", {},
-                      single_file_field("user_indicators.parquet"));
+    if (std::filesystem::exists(output_dir + "/users_history.parquet")) {
+        write_dataset("users_history", "users_history.parquet", {},
+                      single_file_field("users_history.parquet"));
     }
     if (std::filesystem::exists(output_dir + "/user_reputation.parquet")) {
         write_dataset("user_reputation", "user_reputation.parquet", {},

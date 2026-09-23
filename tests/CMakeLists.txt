@@ -3,13 +3,13 @@
 #
 # Layout mirrors the two test binaries:
 #   unit/ -> unit_tests : pure logic under src/ (h3_utils, date_utils,
-#                         node_cache, user_indicator rules, options).
+#                         node_cache, users_history rules, options).
 #   core/ -> core_tests : Parquet I/O and directory-processing integration
 #                         (parquet_batch_writer, manifest, sort_pass,
-#                         user_indicator finalize) with a custom main that
+#                         users_history finalize) with a custom main that
 #                         initializes Arrow's compute engine.
 # Linking karmamap_core (PUBLIC) pulls Arrow, Parquet, zstd, H3 and
-# the user_indicators.cpp osmium includes transitively.
+# the users_history.cpp osmium includes transitively.
 
 find_package(GTest REQUIRED)
 include(GoogleTest)
@@ -20,7 +20,7 @@ add_executable(unit_tests
   unit/geofabrik_cookie_test.cpp
   unit/node_cache_test.cpp
   unit/incremental_cache_test.cpp
-  unit/user_indicator_rules_test.cpp
+  unit/users_history_rules_test.cpp
   unit/reputation_test.cpp
   unit/options_test.cpp
   unit/state_test.cpp
@@ -44,7 +44,7 @@ add_executable(core_tests
   core/parquet_batch_writer_test.cpp
   core/manifest_test.cpp
   core/sort_pass_test.cpp
-  core/user_indicator_finalize_test.cpp
+  core/users_history_finalize_test.cpp
   core/reputation_test.cpp
   core/vandalism_finalize_test.cpp
   core/way_update_test.cpp

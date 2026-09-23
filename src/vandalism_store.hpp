@@ -5,7 +5,7 @@
 // store holds the merged per-(uid, minute) modified+deleted counts for the
 // whole update period; the update finalize sums the incoming diffs' staged
 // buckets into it ("merge with the incoming update"). The daily user history
-// (user_indicators.parquet) then carries a per-day flag derived from it, so
+// (users_history.parquet) then carries a per-day flag derived from it, so
 // this file is the source of truth for the flag, not a query artifact.
 //
 // Same block/compression scheme as node_cache::incremental:

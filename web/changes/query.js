@@ -73,7 +73,7 @@ export async function queryChanges({
   for (const year of years) {
     for (const datasetName of Object.keys(manifest.datasets)) {
       const dataset = manifest.datasets[datasetName]
-      // Non-partitioned datasets (e.g. the user-indicator files) declare an
+      // Non-partitioned datasets (e.g. the users-history files) declare an
       // empty partition list; they are not part of the year-partitioned
       // bbox query and are skipped entirely.
       if (!Array.isArray(dataset.partitions) || dataset.partitions.length === 0) continue

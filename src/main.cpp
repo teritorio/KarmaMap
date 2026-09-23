@@ -10,7 +10,7 @@
 //     (merges each year's node and way counts into a single count column of
 //     data.parquet, sorted by (h3_cell, change_date) so that Parquet row
 //     group min/max statistics become useful for bbox and date-range
-//     pruning), plus the per-user/per-day indicator pass.
+//     pruning), plus the per-user/per-day history pass.
 //   prepare-update            build the .last incremental cache (one record per
 //     node, last known h3 cell, no day) from the node cache and record the
 //     update stream provenance in manifest.json.
@@ -39,7 +39,7 @@
 #include "sort_pass.hpp"
 #include "state.hpp"
 #include "update.hpp"
-#include "user_indicators.hpp"
+#include "users_history.hpp"
 #include "vandalism.hpp"
 #include "way_processor.hpp"
 
@@ -194,19 +194,19 @@ void run_step4_pass(const Options& opts) {
               << " cache_bytes=" << cache_writer.bytes() << "\n";
 }
 
-void run_user_indicator_pass(const Options& opts) {
-    const std::string stage_dir = opts.output_dir + "/user_indicator_stage";
-    const std::string indicators_path = opts.output_dir + "/user_indicators.parquet";
+void run_users_history_pass(const Options& opts) {
+    const std::string stage_dir = opts.output_dir + "/users_history_stage";
+    const std::string history_path = opts.output_dir + "/users_history.parquet";
 
     // A re-run never reuses stale outputs: wipe stage + final files before
     // scanning, so an empty scan cannot leave last run's rows behind.
     std::filesystem::remove_all(stage_dir);
-    std::filesystem::remove(indicators_path);
+    std::filesystem::remove(history_path);
     std::filesystem::remove(opts.output_dir + "/user_reputation.parquet");
 
-    user_indicators::run_scan(opts.input_path, stage_dir);
-    user_indicators::run_finalize(stage_dir, indicators_path, opts.indicators_group_rows,
-                                  opts.reputation_group_rows);
+    users_history::run_scan(opts.input_path, stage_dir);
+    users_history::run_finalize(stage_dir, history_path, opts.users_history_group_rows,
+                                opts.reputation_group_rows);
 }
 
 // Update mode: advances an existing dataset along its replication diff stream
@@ -270,12 +270,12 @@ std::optional<replication_state::State> run_update_mode(
 
     update_pass::NodeState node_state(opts.node_cache_last_path, opts.h3_resolution);
     const std::string diffs_dir = opts.output_dir + "/diffs";
-    const std::string indicator_stage_root =
-        opts.output_dir + "/user_indicator_update_stage";
+    const std::string history_stage_root =
+        opts.output_dir + "/users_history_update_stage";
     const std::string vandalism_stage_root = opts.output_dir + "/vandalism_update_stage";
     // Stage groups from a crashed earlier run may cover sequences this run
     // does not re-scan; drop them so finalize only folds what was applied.
-    std::filesystem::remove_all(indicator_stage_root);
+    std::filesystem::remove_all(history_stage_root);
     std::filesystem::remove_all(vandalism_stage_root);
     // Filter 2 stages go under vandalism_update_stage/counts/seq_<n>; the
     // move sink stages filter 3 under vandalism_update_stage/moves/seq_<n>.
@@ -289,8 +289,8 @@ std::optional<replication_state::State> run_update_mode(
                                      &node_state, &move_sink);
         update_pass::run_way_update(diff_path, changes_root, seq, node_state,
                                     opts.way_batch_bytes);
-        user_indicators::run_scan_diff(
-            diff_path, indicator_stage_root + "/seq_" + std::to_string(seq));
+        users_history::run_scan_diff(
+            diff_path, history_stage_root + "/seq_" + std::to_string(seq));
         vandalism::run_scan_diff(
             diff_path, vandalism_stage_root + "/counts/seq_" + std::to_string(seq));
         move_sink.finish_seq();
@@ -314,11 +314,11 @@ std::optional<replication_state::State> run_update_mode(
     const std::map<std::pair<int64_t, uint16_t>, uint8_t> move_flags =
         vandalism::flagged_move_days(vandalism_stage_root);
 
-    user_indicators::run_update_finalize(indicator_stage_root,
-                                         opts.output_dir + "/user_indicators.parquet",
-                                         opts.indicators_group_rows,
-                                         opts.reputation_group_rows, minutes_path,
-                                         move_flags);
+    users_history::run_update_finalize(history_stage_root,
+                                       opts.output_dir + "/users_history.parquet",
+                                       opts.users_history_group_rows,
+                                       opts.reputation_group_rows, minutes_path,
+                                       move_flags);
 
     // Provenance now reflects the applied state: the sequence is the last
     // applied diff (indexed by "update N"), the timestamp is the fetched
@@ -402,7 +402,7 @@ int main(int argc, char** argv) {
                 if (opts.run_sort_pass) {
                     run_sort_pass(opts);
                 }
-                run_user_indicator_pass(opts);
+                run_users_history_pass(opts);
                 break;
         }
 

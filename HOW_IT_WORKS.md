@@ -26,7 +26,7 @@ under `karmamap import`, step 4 under `karmamap prepare-update`:
    `<node-cache>.last` by default (see "Incremental cache" below). Step 4 is
    not part of import: run `karmamap prepare-update` for it.
 
-Passes 1-3 and the user-indicator pass run as part of `karmamap import`
+Passes 1-3 and the users-history pass run as part of `karmamap import`
 (step 4 lives in `karmamap prepare-update`; see below).
 
 Import records the snapshot's osmosis replication provenance in
@@ -53,7 +53,7 @@ alone. The manifest is rebuilt at the end of every run.
 | Deleted way with a previously known geometry | Counted on the last known geometry |
 | Deleted way with no previously known geometry | Skipped |
 | Visible way with no nodes | Skipped |
-| Relations | Out of scope for the change-counting passes; the user-indicators pass counts relation created/modified/deleted in a day's activity (relations feed the reputation only via creations) |
+| Relations | Out of scope for the change-counting passes; the users-history pass counts relation created/modified/deleted in a day's activity (relations feed the reputation only via creations) |
 | Node cells of a way | Each distinct node cell counted once per way version |
 | Time zone | Strict UTC |
 | Source file ordering | Assumed sorted by `(id, version)` ascending, as documented for OSM full-history files |
@@ -181,10 +181,10 @@ later than the applied one (a crashed run that fetched further than a capped
 rerun applies) is dropped rather than folded. Years holding no staging are
 never rewritten.
 
-Each update diff additionally runs the user-indicator scan
-into `user_indicator_update_stage/seq_<n>/`; one finalize pass folds the
+Each update diff additionally runs the users-history scan
+into `users_history_update_stage/seq_<n>/`; one finalize pass folds the
 per-`(uid, change_date)` activity deltas and per-uid counter totals into
-`user_indicators.parquet` (in place, sorted) and rebuilds
+`users_history.parquet` (in place, sorted) and rebuilds
 `user_reputation.parquet` from the combined existing + delta totals. The
 manifest's source block is updated to reflect the highest applied sequence
 and its timestamp once per run.
@@ -201,38 +201,38 @@ load-bearing:
    binary store `vandalism_minutes.bin` (`vandalism_store.hpp`), summing
    equal `(uid, minute)` keys — the store is the merge base for the next run
    and is stamped with the applied sequence so a rerun is a no-op.
-2. `user_indicators::run_update_finalize` reads it through
+2. `users_history::run_update_finalize` reads it through
    `vandalism::flagged_days` plus this run's `vandalism::flagged_move_days`
-   and recomputes the `vandalism_flag` column of `user_indicators.parquet`
+   and recomputes the `vandalism_flag` column of `users_history.parquet`
    (base flags carried forward, ORed with this run's filter-2 and filter-3
    bits).
 3. `vandalism::flagged_move_days` folds the staged node moves (> 500 m) into
    those same per-day bits (filter 3); its stage is transient and removed, so
    every finalize is idempotent. `vandalism_minutes.bin` likewise folds
    minutes (filter 2). There is no persisted move dataset — both filters land
-   only in `user_indicators.parquet`'s `vandalism_flag` bits.
+   only in `users_history.parquet`'s `vandalism_flag` bits.
 
-## User-indicator pass
+## Users-history pass
 
-The user-indicators pass scores history **per user and per UTC
+The users-history pass scores history **per user and per UTC
 day** with cheap OSMPatrol-style heuristics. It is a single streaming scan
 over the node and way history plus relation creations (no changeset metadata
 is needed) and one in-memory finalize. OSM full history is
 `(id, version)`-sorted, so the scan is a running pass with O(1) object
 state, writing day-aggregates to a staged
-`user_indicator_stage/stage_*.parquet` directory that finalize merges, sorts
+`users_history_stage/stage_*.parquet` directory that finalize merges, sorts
 by `(uid, change_date)`, derives the reputation rows, and removes.
 `user_reputation.parquet` is a pure derived view of that data: one row per
 user, so it grows with new users, not new edits, and can be rebuilt from the
 per-user totals without re-reading history. The non-partitioned single files
-keep the `uid` join cheap and the numerics-only indicators file small.
+keep the `uid` join cheap and the numerics-only history file small.
 
 ## Vandalism pass
 
 The vandalism engine (OSMPatrol filters 2 and 3 of Neis, Goetz & Zipf 2012)
 watches the diff stream, not the full history — it runs `update`-only. The
 2021 replication diff scan (`vandalism::run_scan_diff`) reuses the
-user-indicator classification (visible version 1 = created, later = modified,
+users-history classification (visible version 1 = created, later = modified,
 invisible = deleted) and counts **modified + deleted** objects per
 `(uid, minute)` into `vandalism_update_stage/counts/seq_<n>/` (UTC minutes
 since the epoch; creates are ignored).
@@ -252,8 +252,8 @@ skipped.
 `hour_spans`, the trailing 60-minute window (the minute's count plus the
 previous 59), and any day holding a minute whose span is strictly above 500
 is flagged (`day = minute / 1440`, so a burst crossing midnight still lands
-on the day of its peak minute). The user-indicators update finalize merges
-those flags into `user_indicators.parquet`'s `vandalism_flag` column for the
+on the day of its peak minute). The users-history update finalize merges
+those flags into `users_history.parquet`'s `vandalism_flag` column for the
 whole history. Import writes the column as 0: the full-history scan precedes
 the replication stream, so no minute buckets exist for it.
 
@@ -264,10 +264,10 @@ detected move beyond the 500 m screen to `vandalism::NodeMoveSink`, which
 stages `(uid, minute)` rows under
 `vandalism_update_stage/moves/seq_<n>/` (rows that do not clear the screen
 are dropped before staging). `flagged_move_days` folds them straight into
-this run's `(uid, day) -> filter-3 bit` flags used by the user-indicators
+this run's `(uid, day) -> filter-3 bit` flags used by the users-history
 finalize and removes the stage root, so there is **no persisted move
 dataset** — filter 3 survives only as the carried/ORed day bit in
-`user_indicators.parquet`. The distance is measured from the prior cell
+`users_history.parquet`. The distance is measured from the prior cell
 center to the new point, within one res-9 cell radius (~175 m) of the true
 prior: fine for the 500 m screen, not for the paper's finer 11 m
 edit-analysis flag. Filter 1 (new users / reputation < 5%) is left to a
@@ -295,14 +295,14 @@ page URL (`../data`, see README, "Serving the web frontend").
 `user_reputation.parquet` (the pipeline stamps the current username per uid,
 and the file is username-sorted with a uid tie-break, so the exact filter
 prunes straight to the matching pages). The reputation, identity fields and
-per-indicator totals all come from that same user row; the dataset-wide
+per-history totals all come from that same user row; the dataset-wide
 `active`/`max` aspect stats are read once from the file's
 `key_value_metadata` footer instead of repeated per-row columns, and the
 per-aspect points are recomputed from the stored `pct` and the constant paper
 caps — no ranking or percentile math runs in the browser.
 
 Only the per-day activity timeline is then read from
-`user_indicators.parquet`: a `uid` `[min, max]` range filter prunes the
+`users_history.parquet`: a `uid` `[min, max]` range filter prunes the
 uid-sorted file to the pages holding that user, with exact membership kept
 client-side. Each day's `count` column already totals the six node/way change
 counters plus the three relation counters; the per-uid edit total stays

@@ -1,9 +1,9 @@
 #pragma once
 
-// User-indicator computation: an optional, H3-independent mode that scores
+// Users-history computation: an optional, H3-independent mode that scores
 // the OSM full history per contributing user and per UTC day. Two outputs:
 //
-//   user_indicators.parquet  per (uid, change_date) activity counter plus the
+//   users_history.parquet  per (uid, change_date) activity counter plus the
 //                            vandalism flag bits:
 //                            (uid, change_date, count = the six node/way
 //                            change counters + relation_created +
@@ -18,15 +18,15 @@
 //                            update finalize, 0 on import. The per-day
 //                            tag_* counters are aggregated in finalize and
 //                            surface only as reputation totals below)
-//   user_reputation.parquet  per-uid reputation + full indicator totals
+//   user_reputation.parquet  per-uid reputation + full history totals
 //                            (uid, username, first_seen_day, reputation,
 //                             21 counter totals, per-aspect pct;
 //                             active/max in file metadata)
 //
-// Both are non-partitioned, with user_indicators sorted by (uid,
+// Both are non-partitioned, with users_history sorted by (uid,
 // change_date) and user_reputation.parquet by username (uid tie-break), so
 // an exact username filter in the users viewer prunes to the matching pages;
-// the per-day indicator table still joins on uid for the timeline.
+// the per-day history table still joins on uid for the timeline.
 //
 // The scan is a single streaming pass over the history (entity bits
 // node|way|relation). OSM full-history files are sorted by (object id,
@@ -59,7 +59,7 @@
 #include <unordered_map>
 #include <utility>
 
-namespace user_indicators {
+namespace users_history {
 
 constexpr size_t kFlushThreshold = 1'000'000;  // accumulator rows per stage flush
 
@@ -227,11 +227,11 @@ private:
     std::unordered_map<UserDayKey, UserDayEntry, UserDayKeyHash> days_;
 };
 
-// One streaming scan + finalize of the stage data. See user_indicators.cpp.
+// One streaming scan + finalize of the stage data. See users_history.cpp.
 void run_scan(const std::string& input_path, const std::string& stage_dir);
 
-void run_finalize(const std::string& stage_dir, const std::string& indicators_path,
-                  int64_t indicators_group_rows, int64_t reputation_group_rows);
+void run_finalize(const std::string& stage_dir, const std::string& history_path,
+                  int64_t users_history_group_rows, int64_t reputation_group_rows);
 
 // Update mode: scans one replication diff (an .osc.gz change file) into a
 // fresh stage_dir. The scan handler classifies diff objects the same way the
@@ -242,7 +242,7 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
 
 // Merges the per-diff update stage dirs under `stage_root` (each
 // stage_root/seq_<n>/stage_*.parquet) into the existing datasets: the per
-// (uid, change_date) deltas are summed into user_indicators.parquet, and
+// (uid, change_date) deltas are summed into users_history.parquet, and
 // user_reputation.parquet is recomputed from the existing per-uid totals plus
 // the diff totals (so newly appeared contributors join the ranking). The
 // vandalism_flag bits are rebuilt over the whole history: bit 0
@@ -254,9 +254,9 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
 // plus one update per day yields the monotonic bits. Called once per update
 // run. The existing files must carry the schemas written by run_finalize
 // (full-run datasets) or a previous update finalize.
-void run_update_finalize(const std::string& stage_root, const std::string& indicators_path,
-                         int64_t indicators_group_rows, int64_t reputation_group_rows,
+void run_update_finalize(const std::string& stage_root, const std::string& history_path,
+                         int64_t users_history_group_rows, int64_t reputation_group_rows,
                          const std::string& minutes_path,
                          const std::map<std::pair<int64_t, uint16_t>, uint8_t>& move_flags);
 
-}  // namespace user_indicators
+}  // namespace users_history

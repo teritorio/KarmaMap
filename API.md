@@ -8,19 +8,19 @@ The two access parts:
 
 - **Changes** — `changes/`: yearly partitioned `(h3_cell, change_date,
   count)` change counts (node + way changes merged per cell per day).
-- **Users** — `user_indicators.parquet` and
+- **Users** — `users_history.parquet` and
   `user_reputation.parquet`: per-user, per-day activity and reputation.
 - **Vandalism** — `vandalism_minutes.bin` (binary, not Parquet): the
   update-only OSMPatrol filter-2 source; filter-3 fold stages are transient.
   The per-day flags (bits for filters 2 and 3) land in
-  `user_indicators.parquet`.
+  `users_history.parquet`.
 
 ## Output layout
 
 ```
 output-dir/
 ├── manifest.json
-├── user_indicators.parquet
+├── users_history.parquet
 ├── user_reputation.parquet
 ├── vandalism_minutes.bin     # update-only; binary block store
 └── changes/
@@ -51,7 +51,7 @@ row data exists yet):
       "partitions": ["2005", "2006", "..."],
       "partition_footer_sizes": { "2005": 41298, "2006": 39807, "..." }
     },
-    "user_indicators": { "path": "user_indicators.parquet", "partitions": [], "footer_size": 35112 },
+    "users_history": { "path": "users_history.parquet", "partitions": [], "footer_size": 35112 },
     "user_reputation": { "path": "user_reputation.parquet", "partitions": [], "footer_size": 40894 }
   }
 }
@@ -75,7 +75,7 @@ missing or not a plain Parquet file.
 `date_range` is the merged `change_date` min/max read from each year's
 `data.parquet` footer (column statistics), so date pickers can bound their
 inputs to the actual data span rather than the edge whole years. The
-user-indicator entries appear only when their files exist; an empty
+users-history entries appear only when their files exist; an empty
 partition list signals a non-partitioned single file, which year-based
 query clients skip.
 
@@ -129,7 +129,7 @@ only until the first merge after their fetch.
 Both files are written by every import and update run. They
 are two non-partitioned single files.
 
-- `user_indicators.parquet` — one row per `(uid, change_date)`, sorted by
+- `users_history.parquet` — one row per `(uid, change_date)`, sorted by
   `(uid, change_date)`:
 
   | Column | Type | Meaning |
@@ -143,7 +143,7 @@ are two non-partitioned single files.
   per-user sums are written (in `user_reputation.parquet`), so they never
   appear per day.
 
-  Only `uid` carries footer row-group statistics in `user_indicators.parquet`
+  Only `uid` carries footer row-group statistics in `users_history.parquet`
   (it is the sole pruning column); in `user_reputation.parquet` both `username`
   (exact filter) and `uid` (stable identity key) do. Every other column is
   written without them to keep the footer metadata compact.
@@ -158,7 +158,7 @@ are two non-partitioned single files.
   | `username` | `utf8` | The user's current username (identity, for direct lookup) |
   | `first_seen_day` | `uint16` | Day the user's first watched change appears |
   | `reputation` | `uint8` | Exact current score 0-100 (sum of the per-aspect points) |
-  | `node_created` … `tag_waterway` | `uint32` | Per-user sums of the 21 indicator counters |
+  | `node_created` … `tag_waterway` | `uint32` | Per-user sums of the 21 history counters |
 
   Then, for each aspect `node`, `way`, `relation` and `tag_<key>` (each
   Top12 tag):
@@ -204,7 +204,7 @@ SELECT r.username,
        i.count AS edits,
        r.relation_created
 FROM read_parquet('output-dir/user_reputation.parquet') r
-JOIN read_parquet('output-dir/user_indicators.parquet') i USING (uid)
+JOIN read_parquet('output-dir/users_history.parquet') i USING (uid)
 ORDER BY edits DESC
 LIMIT 20;
 ```
@@ -216,7 +216,7 @@ recorded replication sequence and are absent after a pure import. They
 implement the OSMPatrol filters 2 (`> 500 modified/deleted in one hour`) and 3
 (node moved beyond 500 m); filter 1 (new users / reputation < 5%) is joined
 from `user_reputation.parquet` at query time. Both filters fold into the
-per-day `vandalism_flag` bits of `user_indicators.parquet`; filter 2 draws on
+per-day `vandalism_flag` bits of `users_history.parquet`; filter 2 draws on
 one binary store and filter 3's move staging is transient.
 
 - `vandalism_minutes.bin` — the **binary** per-`(uid, minute)` modified+
@@ -234,7 +234,7 @@ one binary store and filter 3's move staging is transient.
 
 - Filter 3 stages the run's detected node moves (`> 500` m, as `(uid, minute)`
   rows, gated by the sink) under the update stage root. `flagged_move_days`
-  folds them into `(uid, day) -> bit-1` flags for `user_indicators.parquet`
+  folds them into `(uid, day) -> bit-1` flags for `users_history.parquet`
   and removes the root; the base file's flags are carried forward and ORed, so
   the combination is monotonic across reruns. The distance is measured from
   the old H3 cell center to the new point: off by up to one res-9 cell radius

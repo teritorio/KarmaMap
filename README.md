@@ -8,7 +8,7 @@ calendar year
 bbox + date-range queries (e.g. with DuckDB or the included web frontend).
 The `count` of a cell on a day sums the node changes and the way changes, in
 the same file per year so a client reads one dataset per year. The
-user-indicators pass adds the karma layer: per-user, per-day activity
+users-history pass adds the karma layer: per-user, per-day activity
 and a 0-100 reputation per contributor.
 
 The output is queried directly in the browser by two static viewers shipped
@@ -20,13 +20,13 @@ reputation scoring follows [Neis, Goetz & Zipf, *ISPRS Int. J. Geo-Inf.*
 
 - `changes/` — `(h3_cell, change_date, count)` counts (node + way changes
   merged per cell per day), partitioned by calendar year.
-- `user_indicators.parquet` and `user_reputation.parquet` — per-user, per-day
-  activity and reputation, built by every run; the indicator file also
+- `users_history.parquet` and `user_reputation.parquet` — per-user, per-day
+  activity and reputation, built by every run; the history file also
   carries the per-day vandalism filter-2 flag (a `vandalism_flag` column).
 - Vandalism outputs of every `update` run: `vandalism_minutes.bin` (the
   persisted per-`(uid, minute)` modified+deleted bucket store behind the
   flag) and the bit-coded per-day `vandalism_flag` in
-  `user_indicators.parquet` (bit 0 = filter 2, bit 1 = filter-3 node moves
+  `users_history.parquet` (bit 0 = filter 2, bit 1 = filter-3 node moves
   over 500 m; there is no persisted node-moves dataset — both filters
   survive only as carried day bits).
 
@@ -37,7 +37,7 @@ reputation scoring follows [Neis, Goetz & Zipf, *ISPRS Int. J. Geo-Inf.*
 ## Documentation
 
 - [HOW_IT_WORKS.md](HOW_IT_WORKS.md) — the internal pipeline: passes,
-  business rules, resolution, node cache and the user-indicator
+  business rules, resolution, node cache and the users-history
   pass, plus how the bundled web viewers query the data.
 - [API.md](API.md) — the Parquet data contract (layout, schemas, encodings)
   for reusers.
@@ -121,7 +121,7 @@ karmamap help
 
 Three verbs, one per stage:
 
-- **import** runs passes 1-3 (nodes, ways, merge) and the user-indicators
+- **import** runs passes 1-3 (nodes, ways, merge) and the users-history
   pass, building the `changes/` dataset from an OSM full-history snapshot
   (`.osh.pbf`). It reads the `<base>.state.txt` sidecar next to the snapshot
   (downloaded with wget on the snapshot's day) for its replication
@@ -153,7 +153,7 @@ defaults (`data/output`, `<output-dir>/../node_positions.cache` =
 | `--way-batch-mb <mb>` | Import only, way-pass lookup batch budget in MiB (default: `512`) |
 | `--h3-resolution <r>` | Resolution of the data cells, 0-13 (default: `9`); must match between import, prepare-update and update (the caches encode cells at this resolution) |
 | `--change-group-rows <n>` | Target rows per Parquet row group of the changes dataset (`changes/*/year=*/data.parquet`) (default: `10000`); smaller row groups keep `h3_cell`/`change_date` min-max compact so range-pruning clients download only the pages they need |
-| `--indicators-group-rows <n>` | Target rows per Parquet row group of `user_indicators.parquet` (default: `10000`) |
+| `--users-history-group-rows <n>` | Target rows per Parquet row group of `users_history.parquet` (default: `10000`) |
 | `--reputation-group-rows <n>` | Target rows per Parquet row group of `user_reputation.parquet` (default: `1000`) |
 
 ### Running
@@ -227,7 +227,7 @@ Then open `http://localhost:8080/`.
   day-by-day histogram. Pan/zoom and the date range re-query automatically
   (debounced).
 - **`/users/`** — the users viewer: look up an OSM username to see their
-  OSMPatrol reputation (0-100), per-user indicator totals and an edit-activity
+  OSMPatrol reputation (0-100), per-user history totals and an edit-activity
   timeline.
 
 Clients read the files with byte-range requests: hyparquet's

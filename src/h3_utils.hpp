@@ -19,7 +19,7 @@ inline int32_t timestamp_to_utc_day(int64_t epoch_seconds) {
 }
 
 // UTC minutes since the Unix epoch, the value stored in the vandalism
-// indicator minute columns.
+// minute-store columns.
 inline uint32_t timestamp_to_utc_minute(int64_t epoch_seconds) {
     return static_cast<uint32_t>(epoch_seconds / 60);
 }

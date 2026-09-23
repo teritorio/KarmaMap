@@ -1,4 +1,4 @@
-#include "user_indicators.hpp"
+#include "users_history.hpp"
 
 #include <osmium/handler.hpp>
 #include <osmium/io/any_input.hpp>
@@ -33,7 +33,7 @@
 #include "reputation.hpp"
 #include "vandalism.hpp"
 
-namespace user_indicators {
+namespace users_history {
 
 namespace {
 
@@ -81,11 +81,11 @@ void write_stage_file(const std::string& path,
 
     if (!uid_builder.Reserve(n).ok() || !username_builder.Reserve(n).ok() ||
         !date_builder.Reserve(n).ok()) {
-        throw std::runtime_error("Reserve() failed while flushing user-indicator stage");
+        throw std::runtime_error("Reserve() failed while flushing users-history stage");
     }
     for (size_t i = 0; i < kCounterCount; ++i) {
         if (!counter_builders[i].Reserve(n).ok()) {
-            throw std::runtime_error("Reserve() failed while flushing user-indicator stage");
+            throw std::runtime_error("Reserve() failed while flushing users-history stage");
         }
     }
 
@@ -234,7 +234,7 @@ private:
 // three relation counters (created, modified, deleted). The per-day tag_*
 // counters are not consumed by the users viewer (the reputation's tag aspects
 // come from the per-user totals below), so they are aggregated internally but
-// never written to the indicator file.
+// never written to the history file.
 constexpr size_t kLiveCounterCount = 9;
 
 // Concatenates the (single-chunk) columns of one stage table into `columns`.
@@ -287,7 +287,7 @@ constexpr auto counter_index = [](std::string_view name) -> size_t {
     return kCounterCount;
 };
 
-// Writes user_reputation.parquet (next to `indicators_path`) from per-uid
+// Writes user_reputation.parquet (next to `history_path`) from per-uid
 // identity, first-seen day and the 21 counter totals, ranked exactly over the
 // whole contributor population by reputation::compute. The dataset-wide
 // active/max stats land in the Parquet footer key_value_metadata; sorting is
@@ -296,7 +296,7 @@ void build_reputation_table(const std::vector<int64_t>& rep_uids,
                             const std::vector<std::string>& rep_usernames,
                             const std::vector<uint16_t>& rep_first_seen,
                             const std::array<std::vector<uint64_t>, kCounterCount>& counter_sums,
-                            const std::string& indicators_path, int64_t reputation_group_rows) {
+                            const std::string& history_path, int64_t reputation_group_rows) {
     std::array<size_t, kRepAspectCount> rep_counter_idx = {
         counter_index("node_created"), counter_index("way_created"),
         counter_index("relation_created")};
@@ -397,10 +397,10 @@ void build_reputation_table(const std::vector<int64_t>& rep_uids,
     rep_table = arrow_table_io::sort_by_keys(
         rep_table, {arrow::compute::SortKey("username"), arrow::compute::SortKey("uid")});
 
-    const std::filesystem::path indicators_parent =
-        std::filesystem::path(indicators_path).parent_path();
+    const std::filesystem::path history_parent =
+        std::filesystem::path(history_path).parent_path();
     const std::string reputation_path =
-        (indicators_parent / "user_reputation.parquet").string();
+        (history_parent / "user_reputation.parquet").string();
     const std::string reputation_tmp = reputation_path + ".tmp";
     // The viewer filters on username (exact); uid is kept too as the stable
     // identity key. Only those two columns keep row-group min/max statistics
@@ -437,16 +437,16 @@ void run_scan(const std::string& input_path, const std::string& stage_dir) {
     auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                        std::chrono::steady_clock::now() - start)
                        .count();
-    std::cerr << "[user indicators] scan done in " << elapsed << "s\n";
+    std::cerr << "[users history] scan done in " << elapsed << "s\n";
     // INSTR
-    std::cerr << "[user indicators] objects=" << handler.objects()
+    std::cerr << "[users history] objects=" << handler.objects()
               << " versions=" << handler.versions()
               << " stage_rows=" << handler.stage_rows()
               << " stage_files=" << handler.stage_files() << "\n";
 }
 
-void run_finalize(const std::string& stage_dir, const std::string& indicators_path,
-                  int64_t indicators_group_rows, int64_t reputation_group_rows) {
+void run_finalize(const std::string& stage_dir, const std::string& history_path,
+                  int64_t users_history_group_rows, int64_t reputation_group_rows) {
     // Registers Arrow's compute kernels (sort_indices, take), required even
     // when the finalize runs without any of passes 1-3 / a diff scan.
     auto init_status = arrow::compute::Initialize();
@@ -465,7 +465,7 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
         std::sort(stage_paths.begin(), stage_paths.end());
     }
     if (stage_paths.empty()) {
-        std::cerr << "[user indicators] no stage files under " << stage_dir
+        std::cerr << "[users history] no stage files under " << stage_dir
                   << ", nothing to finalize\n";
         return;
     }
@@ -511,7 +511,7 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
     }
 
     // One derived pass over the (uid, change_date)-sorted rows computes the
-    // indicator rows.
+    // history rows.
     arrow::Int64Builder ind_uid_builder;
     arrow::UInt16Builder ind_day_builder;
     arrow::UInt32Builder ind_count_builder;
@@ -546,28 +546,28 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
     finish_checked(ind_count_builder, &ind_count);
     finish_checked(ind_flag_builder, &ind_flag);
 
-    std::vector<std::shared_ptr<arrow::Field>> indicator_fields = {
+    std::vector<std::shared_ptr<arrow::Field>> history_fields = {
         arrow::field("uid", arrow::int64(), false),
         arrow::field("change_date", arrow::uint16(), false),
         arrow::field("count", arrow::uint32(), false),
         arrow::field("vandalism_flag", arrow::uint8(), false),
     };
-    std::vector<std::shared_ptr<arrow::Array>> indicator_columns = {
+    std::vector<std::shared_ptr<arrow::Array>> history_columns = {
         ind_uid, ind_day, ind_count, ind_flag};
-    auto indicator_schema = arrow::schema(indicator_fields);
-    // The indicator rows were appended in (uid, change_date) order while
+    auto history_schema = arrow::schema(history_fields);
+    // The history rows were appended in (uid, change_date) order while
     // walking the sorted combined table, so no re-sort is needed.
-    auto indicator_table = arrow::Table::Make(indicator_schema, indicator_columns);
+    auto history_table = arrow::Table::Make(history_schema, history_columns);
 
-    const std::string indicators_tmp = indicators_path + ".tmp";
+    const std::string history_tmp = history_path + ".tmp";
     // The viewer filters on uid; only that column keeps row-group min/max
     // statistics in the footer.
-    arrow_table_io::write_table(indicators_tmp, indicator_table, indicators_group_rows,
+    arrow_table_io::write_table(history_tmp, history_table, users_history_group_rows,
                                 {"uid"});
-    std::filesystem::rename(indicators_tmp, indicators_path);
+    std::filesystem::rename(history_tmp, history_path);
 
-    // Per-uid sums of all 21 indicator counters, in the (uid) order of the
-    // sorted indicator table. The aspect mapping lives in
+    // Per-uid sums of all 21 history counters, in the (uid) order of the
+    // sorted history table. The aspect mapping lives in
     // build_reputation_table; storing every counter total (not just the
     // reputation aspects) keeps the per-user totals complete in this file.
     std::vector<int64_t> rep_uids;
@@ -602,7 +602,7 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
                 group_first_seen = day;
                 group_username.clear();
             }
-            // Combined rows are index-aligned with the indicator rows, so the
+            // Combined rows are index-aligned with the history rows, so the
             // row's username is the last (current) username seen for the uid.
             group_username = user_array->GetView(i);
             for (size_t c = 0; c < kCounterCount; ++c) {
@@ -615,12 +615,12 @@ void run_finalize(const std::string& stage_dir, const std::string& indicators_pa
     }
 
     build_reputation_table(rep_uids, rep_usernames, rep_first_seen, counter_sums,
-                           indicators_path, reputation_group_rows);
+                           history_path, reputation_group_rows);
 
     std::filesystem::remove_all(stage_dir);
 
-    std::cerr << "[user indicators] finalized " << indicator_table->num_rows()
-              << " indicator rows, " << rep_uids.size() << " reputation rows\n";
+    std::cerr << "[users history] finalized " << history_table->num_rows()
+              << " history rows, " << rep_uids.size() << " reputation rows\n";
 }
 
 void run_scan_diff(const std::string& diff_path, const std::string& stage_dir) {
@@ -639,14 +639,14 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir) {
     reader.close();
     handler.finish();
 
-    std::cerr << "[user indicators] diff scan objects=" << handler.objects()
+    std::cerr << "[users history] diff scan objects=" << handler.objects()
               << " versions=" << handler.versions()
               << " stage_rows=" << handler.stage_rows()
               << " stage_files=" << handler.stage_files() << "\n";
 }
 
-void run_update_finalize(const std::string& stage_root, const std::string& indicators_path,
-                         int64_t indicators_group_rows, int64_t reputation_group_rows,
+void run_update_finalize(const std::string& stage_root, const std::string& history_path,
+                         int64_t users_history_group_rows, int64_t reputation_group_rows,
                          const std::string& minutes_path,
                          const std::map<std::pair<int64_t, uint16_t>, uint8_t>& move_flags) {
     // Registers Arrow's compute kernels (sort_indices, take).
@@ -658,7 +658,7 @@ void run_update_finalize(const std::string& stage_root, const std::string& indic
 
     std::vector<std::string> stage_paths = collect_parquet_recursive(stage_root);
     if (stage_paths.empty()) {
-        std::cerr << "[user indicators] no update stage files under " << stage_root
+        std::cerr << "[users history] no update stage files under " << stage_root
                   << ", nothing to finalize\n";
         std::filesystem::remove_all(stage_root);
         return;
@@ -719,15 +719,15 @@ void run_update_finalize(const std::string& stage_root, const std::string& indic
         if (it == delta_first_seen.end() || day < it->second) delta_first_seen[uid] = day;
     }
 
-    // User indicators: base file plus deltas, summed per (uid, change_date)
+    // Users history: base file plus deltas, summed per (uid, change_date)
     // and written sorted, once. The vandalism flags are monotonic bits carried
     // forward from the base rows and ORed with this run's screens.
     std::map<std::pair<int64_t, uint16_t>, uint32_t> merged_counts;
     std::map<std::pair<int64_t, uint16_t>, uint8_t> merged_flags;
-    if (std::filesystem::exists(indicators_path)) {
-        auto base_result = arrow_table_io::read_table(indicators_path)->CombineChunks();
+    if (std::filesystem::exists(history_path)) {
+        auto base_result = arrow_table_io::read_table(history_path)->CombineChunks();
         if (!base_result.ok()) {
-            throw std::runtime_error("CombineChunks failed on " + indicators_path + ": " +
+            throw std::runtime_error("CombineChunks failed on " + history_path + ": " +
                                      base_result.status().ToString());
         }
         const std::shared_ptr<arrow::Table> base_table = *base_result;
@@ -770,27 +770,27 @@ void run_update_finalize(const std::string& stage_root, const std::string& indic
     finish_checked(ind_count_builder, &ind_count);
     finish_checked(ind_flag_builder, &ind_flag);
     // The merged map iterates in (uid, change_date) order, so no re-sort.
-    auto indicator_table = arrow::Table::Make(
+    auto history_table = arrow::Table::Make(
         arrow::schema({arrow::field("uid", arrow::int64(), false),
                        arrow::field("change_date", arrow::uint16(), false),
                        arrow::field("count", arrow::uint32(), false),
                        arrow::field("vandalism_flag", arrow::uint8(), false)}),
         {ind_uid, ind_day, ind_count, ind_flag});
 
-    const std::string indicators_tmp = indicators_path + ".tmp";
+    const std::string history_tmp = history_path + ".tmp";
     // The viewer filters on uid; only that column keeps row-group min/max
     // statistics in the footer.
-    arrow_table_io::write_table(indicators_tmp, indicator_table, indicators_group_rows,
+    arrow_table_io::write_table(history_tmp, history_table, users_history_group_rows,
                                 {"uid"});
-    std::filesystem::rename(indicators_tmp, indicators_path);
+    std::filesystem::rename(history_tmp, history_path);
 
     // Reputation: the existing per-uid totals (whose new first-seen day and
     // username, if touched by the diffs, are merged in) plus the diff totals,
     // then ranked exactly over the whole population again.
-    const std::filesystem::path indicators_parent =
-        std::filesystem::path(indicators_path).parent_path();
+    const std::filesystem::path history_parent =
+        std::filesystem::path(history_path).parent_path();
     const std::string reputation_path =
-        (indicators_parent / "user_reputation.parquet").string();
+        (history_parent / "user_reputation.parquet").string();
     std::vector<int64_t> rep_uids;
     std::vector<std::string> rep_usernames;
     std::vector<uint16_t> rep_first_seen;
@@ -841,13 +841,13 @@ void run_update_finalize(const std::string& stage_root, const std::string& indic
             }
         }
         build_reputation_table(rep_uids, rep_usernames, rep_first_seen, counter_sums,
-                               indicators_path, reputation_group_rows);
+                               history_path, reputation_group_rows);
     }
 
     std::filesystem::remove_all(stage_root);
 
-    std::cerr << "[user indicators] update finalized " << indicator_table->num_rows()
-              << " indicator rows, " << rep_uids.size() << " reputation rows\n";
+    std::cerr << "[users history] update finalized " << history_table->num_rows()
+              << " history rows, " << rep_uids.size() << " reputation rows\n";
 }
 
-}  // namespace user_indicators
+}  // namespace users_history

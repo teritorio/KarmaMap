@@ -6,7 +6,7 @@
 
 inline constexpr size_t kDefaultWayBatchBytes = 512ULL * 1024 * 1024;
 inline constexpr int64_t kDefaultChangeGroupRows = 10'000;
-inline constexpr int64_t kDefaultIndicatorsGroupRows = 10'000;
+inline constexpr int64_t kDefaultUsersHistoryGroupRows = 10'000;
 inline constexpr int64_t kDefaultReputationGroupRows = 1'000;
 
 struct Options {
@@ -29,7 +29,7 @@ struct Options {
     int h3_resolution = 9;
     size_t way_batch_bytes = kDefaultWayBatchBytes;
     int64_t change_group_rows = kDefaultChangeGroupRows;
-    int64_t indicators_group_rows = kDefaultIndicatorsGroupRows;
+    int64_t users_history_group_rows = kDefaultUsersHistoryGroupRows;
     int64_t reputation_group_rows = kDefaultReputationGroupRows;
     bool run_node_pass = true;
     bool run_way_pass = true;

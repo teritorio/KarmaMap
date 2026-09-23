@@ -142,7 +142,7 @@ void write_counts_stage_file(
 }
 
 // Streaming scan over one replication diff: classifies every object the same
-// way the user-indicator diff scan does and feeds the per-(uid, minute)
+// way the users-history diff scan does and feeds the per-(uid, minute)
 // counter.
 class VandalScanHandler : public osmium::handler::Handler {
 public:

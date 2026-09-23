@@ -1,9 +1,9 @@
 #pragma once
 
-// Vandalism indicators computed from the osmosis replication diffs applied by
+// Vandalism history computed from the osmosis replication diffs applied by
 // "karmamap update", following two of the OSMPatrol filters of Neis, Goetz &
 // Zipf (2012) — see docs/osmpatrol-neis-2012.md. Both filters collapse into
-// the per-day `vandalism_flag` bits field of user_indicators.parquet:
+// the per-day `vandalism_flag` bits field of users_history.parquet:
 //
 //   bit 0 (kFlagFilter2)  a day minute's trailing 60-minute modified+deleted
 //                         span exceeds kFilter2Threshold (paper: "modified
@@ -17,8 +17,8 @@
 //                         merges each update run's staged buckets into it,
 //                         summed per (uid, minute), exactly once. It is the
 //                         source of truth behind the bit-0 flag: flagged_days()
-//                         reads it and the user-indicators update finalize
-//                         writes its bits into user_indicators.parquet.
+//                         reads it and the users-history update finalize
+//                         writes its bits into users_history.parquet.
 //
 // Buckets are UTC minutes since the epoch. A minute's trailing 60-minute span
 // is the sum of its modified_deleted plus the previous 59 minutes'. Folding is
@@ -62,7 +62,7 @@ inline constexpr uint32_t kFilter2Threshold = 500;
 // Filter 3 flag threshold: "nodes moved more than 500 metres" (paper sec. 5).
 inline constexpr double kFilter3Threshold = 500.0;
 
-// Bits of the user_indicators.parquet vandalism_flag column.
+// Bits of the users_history.parquet vandalism_flag column.
 inline constexpr uint8_t kFlagFilter2 = 0x01;
 inline constexpr uint8_t kFlagFilter3 = 0x02;
 
@@ -185,7 +185,7 @@ private:
 
 // Scans one replication diff (.osc.gz change file) into a fresh stage_dir,
 // counting modified+deleted objects per (uid, minute) (filter 2). Mirrors the
-// user-indicator diff classification (visible version 1 = created, later
+// users-history diff classification (visible version 1 = created, later
 // versions = modified, invisible = deleted).
 void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
 
@@ -205,7 +205,7 @@ void fold_minute_counts(const std::string& counts_root, const std::string& minut
 // Reads the persisted minute store and returns one (uid, day) -> kFlagFilter2
 // entry for every day holding at least one minute whose trailing-hour span
 // exceeds kFilter2Threshold; day = minute / 1440 (UTC). Feeds the
-// vandalism_flag bits the user-indicators update finalize writes into the
+// vandalism_flag bits the users-history update finalize writes into the
 // daily history.
 std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_days(const std::string& minutes_path);
 

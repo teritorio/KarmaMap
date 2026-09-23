@@ -30,7 +30,7 @@ TEST(Options, ImportDefaultsPreserved) {
     EXPECT_EQ(opts.h3_resolution, 9);
     EXPECT_EQ(opts.way_batch_bytes, kDefaultWayBatchBytes);
     EXPECT_EQ(opts.change_group_rows, kDefaultChangeGroupRows);
-    EXPECT_EQ(opts.indicators_group_rows, kDefaultIndicatorsGroupRows);
+    EXPECT_EQ(opts.users_history_group_rows, kDefaultUsersHistoryGroupRows);
     EXPECT_EQ(opts.reputation_group_rows, kDefaultReputationGroupRows);
     EXPECT_TRUE(opts.run_node_pass);
     EXPECT_TRUE(opts.run_way_pass);
@@ -215,22 +215,22 @@ TEST(Options, ChangeGroupRowsTooSmallThrows) {
                  std::runtime_error);
 }
 
-TEST(Options, IndicatorsGroupRowsDefault) {
+TEST(Options, UsersHistoryGroupRowsDefault) {
     Options opts;
     ASSERT_TRUE(parse({"prog", "import", "in.pbf"}, &opts));
-    EXPECT_EQ(opts.indicators_group_rows, kDefaultIndicatorsGroupRows);
+    EXPECT_EQ(opts.users_history_group_rows, kDefaultUsersHistoryGroupRows);
 }
 
-TEST(Options, IndicatorsGroupRowsValid) {
+TEST(Options, UsersHistoryGroupRowsValid) {
     Options opts;
-    ASSERT_TRUE(parse({"prog", "import", "in.pbf", "--indicators-group-rows", "1234"},
+    ASSERT_TRUE(parse({"prog", "import", "in.pbf", "--users-history-group-rows", "1234"},
                       &opts));
-    EXPECT_EQ(opts.indicators_group_rows, 1234);
+    EXPECT_EQ(opts.users_history_group_rows, 1234);
 }
 
-TEST(Options, IndicatorsGroupRowsTooSmallThrows) {
+TEST(Options, UsersHistoryGroupRowsTooSmallThrows) {
     Options opts;
-    EXPECT_THROW(parse({"prog", "import", "in.pbf", "--indicators-group-rows", "999"},
+    EXPECT_THROW(parse({"prog", "import", "in.pbf", "--users-history-group-rows", "999"},
                        &opts),
                  std::runtime_error);
 }
