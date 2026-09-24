@@ -219,6 +219,7 @@ void run_users_history_pass(const Options& opts) {
     std::filesystem::remove_all(stage_dir);
     std::filesystem::remove(history_path);
     std::filesystem::remove(opts.output_dir + "/user_reputation.parquet");
+    std::filesystem::remove(opts.output_dir + "/vandalism.parquet");
 
     users_history::run_scan(opts.input_path, stage_dir);
     users_history::run_finalize(stage_dir, history_path, opts.users_history_group_rows,

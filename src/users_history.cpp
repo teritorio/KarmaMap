@@ -850,6 +850,12 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     arrow::UInt16Builder ind_day_builder;
     arrow::UInt32Builder ind_count_builder;
     arrow::UInt8Builder ind_flag_builder;
+    // Vandalism export: the same merged flags, one (uid, change_date) row per
+    // day carrying any bit, with the current username resolved inline.
+    arrow::Int64Builder v_uid_builder;
+    arrow::StringBuilder v_user_builder;
+    arrow::UInt16Builder v_day_builder;
+    arrow::UInt8Builder v_flag_builder;
     for (const auto& [key, count] : merged_counts) {
         append_checked(ind_uid_builder, key.first);
         append_checked(ind_day_builder, key.second);
@@ -858,8 +864,19 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
         // up the low-reputation bit; a day already present in the base file
         // keeps its carried flags untouched.
         const auto it = base_keys.count(key) ? filter1_uid.end() : filter1_uid.find(key.first);
-        append_checked(ind_flag_builder,
-                       merged_flags[key] | (it != filter1_uid.end() ? it->second : 0));
+        const uint8_t flag =
+            merged_flags[key] | (it != filter1_uid.end() ? it->second : 0);
+        append_checked(ind_flag_builder, flag);
+        if (flag != 0) {
+            append_checked(v_uid_builder, key.first);
+            append_checked(v_day_builder, key.second);
+            append_checked(v_flag_builder, flag);
+            const auto ui = uid_index.find(key.first);
+            append_checked(v_user_builder,
+                           ui != uid_index.end()
+                               ? rep_usernames[ui->second]
+                               : "<" + std::to_string(key.first) + ">");
+        }
     }
     std::shared_ptr<arrow::Array> ind_uid, ind_day, ind_count, ind_flag;
     finish_checked(ind_uid_builder, &ind_uid);
@@ -881,10 +898,39 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
                                 {"uid"});
     std::filesystem::rename(history_tmp, history_path);
 
+    // The vandalism export: every (uid, change_date) carrying any flag bit,
+    // with the current username, sorted by (change_date, uid). The flag set
+    // is exactly the users-history flags (the merged state above), so the
+    // two outputs always agree. The file is update-only: import writes no
+    // flags and never produces it; an update with no flagged day writes an
+    // empty file.
+    std::shared_ptr<arrow::Array> v_uid, v_user, v_day, v_flag;
+    finish_checked(v_uid_builder, &v_uid);
+    finish_checked(v_user_builder, &v_user);
+    finish_checked(v_day_builder, &v_day);
+    finish_checked(v_flag_builder, &v_flag);
+    auto vandalism_table = arrow::Table::Make(
+        arrow::schema({arrow::field("uid", arrow::int64(), false),
+                       arrow::field("username", arrow::utf8(), false),
+                       arrow::field("change_date", arrow::uint16(), false),
+                       arrow::field("vandalism_flag", arrow::uint8(), false)}),
+        {v_uid, v_user, v_day, v_flag});
+    // Day-first order makes change_date (the pruning column) the compact
+    // footer statistics key.
+    vandalism_table = arrow_table_io::sort_by_keys(
+        vandalism_table,
+        {arrow::compute::SortKey("change_date"), arrow::compute::SortKey("uid")});
+    const std::string vandalism_path = (history_parent / "vandalism.parquet").string();
+    const std::string vandalism_tmp = vandalism_path + ".tmp";
+    arrow_table_io::write_table(vandalism_tmp, vandalism_table, reputation_group_rows,
+                                {"change_date"});
+    std::filesystem::rename(vandalism_tmp, vandalism_path);
+
     std::filesystem::remove_all(stage_root);
 
     std::cerr << "[users history] update finalized " << history_table->num_rows()
-              << " history rows, " << rep_uids.size() << " reputation rows\n";
+              << " history rows, " << rep_uids.size() << " reputation rows, "
+              << vandalism_table->num_rows() << " vandalism rows\n";
 }
 
 }  // namespace users_history

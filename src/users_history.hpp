@@ -29,11 +29,19 @@
 //                            (uid, username, first_seen_day, reputation,
 //                             21 counter totals, per-aspect pct;
 //                             active/max in file metadata)
+//   vandalism.parquet  update-only; the flagged (uid, change_date) rows
+//                      of users_history.parquet, re-joined with the current
+//                      username (uid, username, change_date, vandalism_flag),
+//                      sorted by (change_date, uid). Written by the update
+//                      finalize from the same merged flag state as the
+//                      history file, so the two always agree; a pure import
+//                      writes no flags and produces no vandalism.parquet.
 //
-// Both are non-partitioned, with users_history sorted by (uid,
-// change_date) and user_reputation.parquet by username (uid tie-break), so
-// an exact username filter in the users viewer prunes to the matching pages;
-// the per-day history table still joins on uid for the timeline.
+// users_history.parquet and user_reputation.parquet are non-partitioned,
+// with users_history sorted by (uid, change_date) and user_reputation.parquet
+// by username (uid tie-break), so an exact username filter in the users viewer
+// prunes to the matching pages; the per-day history table still joins on uid
+// for the timeline.
 //
 // The scan is a single streaming pass over the history (entity bits
 // node|way|relation). OSM full-history files are sorted by (object id,
@@ -264,7 +272,9 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
 // reputation drop never re-flags the base rows and a once-set bit is never
 // masked out. Called once per update run. The existing files must carry the
 // schemas written by run_finalize (full-run datasets) or a previous update
-// finalize.
+// finalize. Alongside the history rewrite it also writes vandalism.parquet
+// (one row per flagged (uid, change_date) with the current username, sorted
+// by (change_date, uid)); a pure import never produces it.
 void run_update_finalize(const std::string& stage_root, const std::string& history_path,
                          int64_t users_history_group_rows, int64_t reputation_group_rows,
                          const std::string& minutes_path,
