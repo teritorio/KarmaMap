@@ -26,7 +26,7 @@ export const ALL_COUNTERS = [...CHANGE_COUNTERS, 'relation_created', ...TAG_COUN
 
 // Bits of the daily vandalism_flag column of users_history.parquet,
 // mirroring src/vandalism.hpp. Filter 2/3 are per-day occurrences; filter 1
-// is user-wide (every day of a below-threshold contributor trips it).
+// is forward-only, set on new rows for a below-threshold contributor.
 export const FLAG_FILTER_2 = 0x01
 export const FLAG_FILTER_3 = 0x02
 export const FLAG_FILTER_1 = 0x04
@@ -34,7 +34,7 @@ export const FLAG_FILTER_1 = 0x04
 export const FLAG_LABELS = [
   { mask: FLAG_FILTER_2, label: 'Filter 2: >500 modified/deleted in one hour' },
   { mask: FLAG_FILTER_3, label: 'Filter 3: node moved >500 m' },
-  { mask: FLAG_FILTER_1, label: 'Filter 1: reputation <5% (user-wide)' },
+  { mask: FLAG_FILTER_1, label: 'Filter 1: reputation <5% (set on new edits)' },
 ]
 
 // OSMPatrol reputation caps (Neis, Goetz & Zipf 2012, §4). The reputation is

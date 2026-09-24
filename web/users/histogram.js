@@ -5,7 +5,7 @@
 // counts the nine history counters: the six node/way changes plus the three
 // relation counters. The y-axis is logarithmic by default.
 //
-// Days carrying vandalism_flag bits (users_history.parquet) get a translucent
+// Days carrying vandalism_flag bits (users_history.parquet) get a solid
 // full-height red markArea band and an altered blue volume bar; the tooltip
 // lists the activated screens (paper sec. 5).
 
@@ -13,11 +13,11 @@ import * as echarts from 'echarts'
 import { FLAG_LABELS } from './reputation.js'
 
 // Volume bars: normal blue, altered blue on flagged days. The flag band's
-// translucent red wash spans the full y-axis behind the volume bar, so a
+// solid red fill spans the full y-axis behind the volume bar, so a
 // flagged day reads red at full height even where its volume is small.
 const VOLUME_COLOR = '#5470c6'
 const FLAGGED_VOLUME_COLOR = '#3b5998'
-const FLAG_COLOR = 'rgba(214, 60, 60, 0.45)'
+const FLAG_COLOR = '#d63c3c'
 
 const DAY_MS = 86400000
 
