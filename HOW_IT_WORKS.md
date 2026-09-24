@@ -211,8 +211,9 @@ load-bearing:
    `vandalism::flagged_days` plus this run's `vandalism::flagged_move_days`
    and recomputes the `vandalism_flag` column of `users_history.parquet`
    (bits 0/1 base flags carried forward, ORed with this run's filter-2 and
-   filter-3 bits; bit 2, the reputation-based filter 1, is recomputed fresh —
-   see the users-history pass below).
+   filter-3 bits; bit 2, the reputation-based filter 1, is forward-only —
+   set only on the rows this run newly writes, see the users-history pass
+   below).
 3. `vandalism::flagged_move_days` folds the staged node moves (> 500 m) into
    those same per-day bits (filter 3); its stage is transient and removed, so
    every finalize is idempotent. `vandalism_minutes.bin` likewise folds
@@ -289,9 +290,10 @@ dataset** — filter 3 survives only as the carried/ORed day bit in
 center to the new point, within one res-9 cell radius (~175 m) of the true
 prior: fine for the 500 m screen, not for the paper's finer 11 m
 edit-analysis flag. Filter 1 (new users / reputation < 5%) is a reputation
-bit (`kFlagFilter1`) recomputed into every history row by the users-history
-finalize from `user_reputation.parquet`'s ranking, instead of a diff-based
-screen.
+bit (`kFlagFilter1`) that the users-history update finalize sets forward-only
+on the rows it newly writes, from `user_reputation.parquet`'s ranking,
+instead of a diff-based screen; base rows are never re-flagged, so the bit
+is monotonic.
 
 ## Web viewer queries
 

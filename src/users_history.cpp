@@ -22,6 +22,7 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -292,8 +293,9 @@ constexpr auto counter_index = [](std::string_view name) -> size_t {
 // whole contributor population by reputation::compute. The dataset-wide
 // active/max stats land in the Parquet footer key_value_metadata; sorting is
 // by (username, uid) so an exact username filter prunes to matching pages.
-// Returns the reputation::Result, reused by the callers for the filter-1 flag
-// so the ranking is computed exactly once per finalize.
+// Returns the reputation::Result, reused by the update finalize for the
+// filter-1 flag on newly-written rows so the ranking is computed exactly once
+// per finalize.
 reputation::Result build_reputation_table(
     const std::vector<int64_t>& rep_uids,
     const std::vector<std::string>& rep_usernames,
@@ -516,9 +518,10 @@ void run_finalize(const std::string& stage_dir, const std::string& history_path,
 
     // Per-uid sums of all 21 history counters, in the (uid) order of the
     // sorted history table — an index-aligned walk over the combined rows that
-    // both feeds the reputation and the filter-1 flag. The aspect mapping
-    // lives in build_reputation_table; storing every counter total (not just
-    // the reputation aspects) keeps the per-user totals complete in this file.
+    // feeds the reputation (and, in the update finalize, the filter-1 flag on
+    // newly-written rows). The aspect mapping lives in
+    // build_reputation_table; storing every counter total (not just the
+    // reputation aspects) keeps the per-user totals complete in this file.
     std::vector<int64_t> rep_uids;
     std::vector<std::string> rep_usernames;
     std::vector<uint16_t> rep_first_seen;
@@ -563,20 +566,10 @@ void run_finalize(const std::string& stage_dir, const std::string& history_path,
         flush();
     }
 
-    // Filter 1 (paper sec. 5): every (uid, change_date) row of a contributor
-    // whose reputation is below kFilter1ReputationThreshold carries
-    // kFlagFilter1. The bit derives from the same reputation::Result that
-    // writes user_reputation.parquet; a contributor who created nothing has
-    // reputation 0, which covers the paper's "new users" half of the screen.
-    const reputation::Result rep = build_reputation_table(
-        rep_uids, rep_usernames, rep_first_seen, counter_sums, history_path,
-        reputation_group_rows);
-    std::unordered_map<int64_t, uint8_t> filter1_uid;
-    for (size_t i = 0; i < rep_uids.size() && i < rep.reputation.size(); ++i) {
-        if (rep.reputation[i] < vandalism::kFilter1ReputationThreshold) {
-            filter1_uid[rep_uids[i]] = vandalism::kFlagFilter1;
-        }
-    }
+    // Writes user_reputation.parquet for every contributor (identity, current
+    // username, the exact per-aspect percentile scores).
+    build_reputation_table(rep_uids, rep_usernames, rep_first_seen, counter_sums,
+                           history_path, reputation_group_rows);
 
     // One derived pass over the (uid, change_date)-sorted rows computes the
     // history rows.
@@ -602,12 +595,11 @@ void run_finalize(const std::string& stage_dir, const std::string& history_path,
         append_checked(ind_uid_builder, uid);
         append_checked(ind_day_builder, day);
         append_checked(ind_count_builder, count);
-        // Import's history rows carry the reputation-based filter-1 bit only:
-        // the object hours precede the replication stream's minute buckets, so
-        // the filter-2/3 bits that the update finalize fills from the
-        // persisted store stay 0 here.
-        const auto it = filter1_uid.find(uid);
-        append_checked(ind_flag_builder, it != filter1_uid.end() ? it->second : 0);
+        // Import writes no vandalism flags: the object hours precede the
+        // replication stream's minute buckets (filters 2/3), and filter 1 is
+        // forward-only, marking rows written after a low reputation is
+        // detected rather than retroactively over the whole history.
+        append_checked(ind_flag_builder, 0);
     }
 
     std::shared_ptr<arrow::Array> ind_uid, ind_day, ind_count, ind_flag;
@@ -742,7 +734,7 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     // username, if touched by the diffs, are merged in) plus the diff totals,
     // then ranked exactly over the whole population again. The ranking is
     // computed here, before the history write, because it also yields the
-    // filter-1 flag set that every history row below is screened against.
+    // filter-1 flag set that this run's newly-written rows are screened with.
     const std::filesystem::path history_parent =
         std::filesystem::path(history_path).parent_path();
     const std::string reputation_path =
@@ -777,6 +769,11 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
         }
         have_base_rep = true;
     }
+    // Filter 1 (paper sec. 5): users whose current reputation is below
+    // kFilter1ReputationThreshold. Unlike the diff-based screens this is a
+    // forward-only flag: it is applied to the run's newly-written rows and
+    // never re-derived over the base history. A contributor who created
+    // nothing scores reputation 0, which covers the paper's "new users" half.
     std::unordered_map<int64_t, uint8_t> filter1_uid;
     if (have_base_rep || !delta_totals.empty()) {
         for (const auto& [uid, sum] : delta_totals) {
@@ -808,14 +805,15 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     }
 
     // Users history: base file plus deltas, summed per (uid, change_date)
-    // and written sorted, once. The filter-2 and filter-3 bits are monotonic
-    // ORs (base-carried, the minute store, and this run's move flags), but the
-    // filter-1 bit is recomputed here from the current reputation: the base
-    // rows have it masked out and the fresh set is ORed in per row below, so a
-    // contributor whose reputation rises above the threshold loses the bit
-    // again, while the historical filter-2/3 bits persist.
+    // and written sorted, once. All three filter bits are monotonic: the base
+    // row's flags are carried forward unchanged, bits 0/1 are ORed with this
+    // run's minute-store and move-flagged days, and bit 2 (filter 1) is set on
+    // the run's newly-written rows whose user's current reputation is below
+    // the threshold. Base rows are never masked or re-flagged, so a flag once
+    // written persists and a reputation drop is never applied retroactively.
     std::map<std::pair<int64_t, uint16_t>, uint32_t> merged_counts;
     std::map<std::pair<int64_t, uint16_t>, uint8_t> merged_flags;
+    std::set<std::pair<int64_t, uint16_t>> base_keys;
     if (std::filesystem::exists(history_path)) {
         auto base_result = arrow_table_io::read_table(history_path)->CombineChunks();
         if (!base_result.ok()) {
@@ -828,15 +826,10 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
         const auto* b_counts = typed_column<arrow::UInt32Array>(base_table, "count");
         const auto* b_flags = typed_column<arrow::UInt8Array>(base_table, "vandalism_flag");
         for (int64_t i = 0; i < base_table->num_rows(); ++i) {
-            merged_counts[{b_uids->Value(i), b_days->Value(i)}] += b_counts->Value(i);
-            // Mask the base rows' filter-1 bit only when the fresh set below
-            // is authoritative (user_reputation.parquet present, i.e. it
-            // covers every base uid). With the reputation file absent the
-            // fresh set covers just this run's deltas; carry the stale bits
-            // rather than silently lose them.
-            const uint8_t b = b_flags->Value(i);
-            merged_flags[{b_uids->Value(i), b_days->Value(i)}] |=
-                have_base_rep ? static_cast<uint8_t>(b & ~vandalism::kFlagFilter1) : b;
+            const auto key = std::make_pair(b_uids->Value(i), b_days->Value(i));
+            merged_counts[key] += b_counts->Value(i);
+            merged_flags[key] |= b_flags->Value(i);
+            base_keys.insert(key);
         }
     }
     for (const auto& [key, count] : delta_counts) merged_counts[key] += count;
@@ -861,7 +854,10 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
         append_checked(ind_uid_builder, key.first);
         append_checked(ind_day_builder, key.second);
         append_checked(ind_count_builder, count);
-        const auto it = filter1_uid.find(key.first);
+        // Forward-only filter 1: only the rows this run newly writes may pick
+        // up the low-reputation bit; a day already present in the base file
+        // keeps its carried flags untouched.
+        const auto it = base_keys.count(key) ? filter1_uid.end() : filter1_uid.find(key.first);
         append_checked(ind_flag_builder,
                        merged_flags[key] | (it != filter1_uid.end() ? it->second : 0));
     }

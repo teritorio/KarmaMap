@@ -30,7 +30,9 @@ reputation scoring follows [Neis, Goetz & Zipf, *ISPRS Int. J. Geo-Inf.*
   `users_history.parquet` (bit 0 = filter 2, bit 1 = filter-3 node moves
   over 500 m, bit 2 = filter 1, a reputation below 5%; filters 2/3 have no
   persisted node-moves dataset — they survive only as carried day bits,
-  while bit 2 is recomputed from the current reputation on every run).
+  and bit 2 is forward-only too: import writes 0 and updates set it only
+  on the new rows they write for a below-threshold contributor (once set,
+  never removed).
 
 ![Changes H3](changes-h3.webp)
 

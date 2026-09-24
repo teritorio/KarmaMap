@@ -12,8 +12,10 @@
 //   bit 2 (kFlagFilter1)  the editing user's reputation is below
 //                         kFilter1ReputationThreshold (paper: "Show all edits
 //                         of new users and/or users with a very low reputation
-//                         (<5%)"). "New users" are covered implicitly: a
-//                         contributor who created nothing has reputation 0.
+//                         (<5%)"); set forward-only on rows the users-history
+//                         update finalize newly writes (0 on import).
+//                         "New users" are covered implicitly: a contributor
+//                         who created nothing has reputation 0.
 //
 //   vandalism_minutes.bin per-(uid, minute) count of modified+deleted objects
 //                         over the whole update period, persisted as a binary
@@ -37,14 +39,14 @@
 // period after the recorded replication sequence (the diffs applied by update
 // runs); import writes them as 0.
 //
-// Bit 2 is unlike the other two: it is not monotonic and not diff-based. It is
+// Bit 2 is likewise monotonic and forward-only, but not diff-based. It is
 // derived from the user's current reputation (below
-// kFilter1ReputationThreshold), which every finalize recomputes over the
-// whole history, so import fills it too and an update run whose merge raises a
-// user above the threshold clears the bit again (the update finalize masks the
-// carried bit-2 out before ORing the fresh set). The users-history finalize
-// builds the bit from the same reputation::Result that writes
-// user_reputation.parquet.
+// kFilter1ReputationThreshold): import writes it as 0, and the users-history
+// update finalize sets it only on the run's newly-written rows for a
+// below-threshold contributor. Base rows' bit-2 is carried unchanged, so a
+// flag once written persists and a reputation drop never re-flags the past.
+// The users-history finalize builds the bit from the same reputation::Result
+// that writes user_reputation.parquet.
 //
 // Filter 3's prior position is the center of the node's last known H3 cell
 // (NodeState overlay from an earlier diff of the run, else the flat
