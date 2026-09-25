@@ -6,7 +6,7 @@
 // changes viewer (page + app + query + histogram + permalink modules over the
 // shared data-access lib in web/lib), but no spatial component.
 
-import { loadManifest, dayKey } from '../lib/api.js'
+import { loadManifest, dayKey, userProfileUrls } from '../lib/api.js'
 import { readPermalink, writePermalink } from './permalink.js'
 import { queryReputationByUsername, queryHistory } from './query.js'
 import { computeScores, TAG_COUNTERS, REP_CAPS, REP_FORMULA } from './reputation.js'
@@ -31,6 +31,13 @@ function escapeHtml(text) {
   return text.replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   })[c])
+}
+
+function renderUserLinks(name) {
+  if (name.startsWith('<') && name.endsWith('>')) return escapeHtml(name)
+  const { osm, hdyc } = userProfileUrls(name)
+  return `<a href="${osm}" target="_blank" rel="noopener noreferrer">${escapeHtml(name)}</a> ` +
+    `(<a href="${hdyc}" target="_blank" rel="noopener noreferrer">hdyc➚</a>)`
 }
 
 // Score tables grouped by reputation-formula aspect (paper §4), plus the
@@ -74,12 +81,12 @@ const DETAIL_COUNTER = { node: 'node_created', way: 'way_created', relation: 're
 
 function renderProfile(name, scores) {
   const fields = [
-    ['OSM user', name],
-    ['uid', String(scores.uid)],
-    ['First seen', dayKey(scores.firstSeenDay)],
+    ['OSM user', renderUserLinks(name)],
+    ['uid', escapeHtml(String(scores.uid))],
+    ['First seen', escapeHtml(dayKey(scores.firstSeenDay))],
   ]
     .map(([label, value]) =>
-      `<div class="field"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(value)}</span></div>`)
+      `<div class="field"><strong>${escapeHtml(label)}</strong><span>${value}</span></div>`)
     .join('')
   profileEl.innerHTML = `${fields}`
 }

@@ -34,3 +34,11 @@ export function epochDay(date) {
 export function dayKey(changeDate) {
   return new Date(Number(changeDate) * 86400000).toISOString().slice(0, 10)
 }
+
+export function userProfileUrls(username) {
+  const encodedUsername = encodeURIComponent(username)
+  return {
+    osm: `https://www.openstreetmap.org/user/${encodedUsername}`,
+    hdyc: `https://hdyc.neis-one.org/?${encodedUsername}`,
+  }
+}

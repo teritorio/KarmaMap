@@ -7,7 +7,7 @@
 // the day's first flag. Same architecture as the users/changes viewers (page +
 // app + query over the shared lib in web/lib).
 
-import { loadManifest, dayKey } from '../lib/api.js'
+import { loadManifest, dayKey, userProfileUrls } from '../lib/api.js'
 import { queryVandalismLatest } from './query.js'
 import { FLAG_LABELS } from '../users/reputation.js'
 
@@ -30,6 +30,13 @@ function escapeHtml(text) {
   })[c])
 }
 
+function renderUserLinks(name) {
+  if (name.startsWith('<') && name.endsWith('>')) return escapeHtml(name)
+  const { osm, hdyc } = userProfileUrls(name)
+  return `<a href="${osm}" target="_blank" rel="noopener noreferrer">${escapeHtml(name)}</a> ` +
+    `(<a href="${hdyc}" target="_blank" rel="noopener noreferrer">hdyc➚</a>)`
+}
+
 // One chip per active flag bit, colored by filter (mirrors the users
 // viewer's history-chart labels). Both the chip title and the flags column
 // list the screen names.
@@ -48,12 +55,12 @@ function renderRows(rows) {
     const flags = Number(row.vandalism_flag ?? 0)
     return `<tr>` +
       `<td>${escapeHtml(dayKey(row.change_date))}</td>` +
-      `<td class="user">${escapeHtml(row.username)}</td>` +
+      `<td class="value"><a href="../users/#user=${row.username}">#${Number(row.reputation_at_day ?? 0)}</a></td>` +
+      `<td class="user">${renderUserLinks(row.username)}</td>` +
       `<td class="value">${Number(row.uid)}</td>` +
       `<td class="value">${Number(row.changes ?? 0).toLocaleString()}</td>` +
       `<td>${flagChips(flags)}</td>` +
       `<td class="value">${Number(row.far_move_count ?? 0).toLocaleString()}</td>` +
-      `<td class="value">${Number(row.reputation_at_day ?? 0)}</td>` +
       `</tr>`
   }).join('')
 }
