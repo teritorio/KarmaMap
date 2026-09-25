@@ -302,30 +302,51 @@ TEST(NodeState, RebuildMergesOverlayAndDropsDeleted) {
     const std::string out = dir.join("incr.last");
     {
         node_cache::incremental::Writer w(path, 9);
-        w.add(1, cell(0xAAAA));
-        w.add(2, cell(0xBBBB));
-        w.add(5, cell(0xCCCC));
+        w.add(10, cell(0xAAAA));
+        w.add(20, cell(0xBBBB));
+        w.add(30, cell(0xCCCC));
+        w.add(40, cell(0x5555));
+        w.add(50, cell(0xFFFF));
         w.finish();
     }
     {
         update_pass::NodeState state(path, 9);
-        state.set_position(2, cell(0xDDDD));   // modify base node
-        state.remove_node(5);                  // delete base node
-        state.set_position(7, cell(0xEEEE));   // new node
-        state.set_position(9, cell(0xFFFF));   // new node
+        EXPECT_EQ(state.pre(20), cell(0xBBBB));
+        EXPECT_EQ(state.pre(25), 0);
+        state.set_position(60, cell(0x6666));
+        state.set_position(25, cell(0xEEEE));
+        state.set_position(20, cell(0xDDDD));
+        state.remove_node(30);
+        state.set_position(-5, cell(0xA5A5));
+        state.remove_node(40);
+        state.set_position(40, cell(0x1010));
+        state.set_position(15, cell(0xCCCC));
+        state.set_position(5, cell(0xD00D));
+        EXPECT_EQ(state.deleted_size(), 1);
+        EXPECT_EQ(state.overlay_size(), 7);
         state.rebuild(out, 9);
     }
     node_cache::incremental::Reader r(out, 9);
-    EXPECT_EQ(r.size(), 4);
-    EXPECT_EQ(r.node_at(0), 1);
-    EXPECT_EQ(r.node_at(1), 2);
-    EXPECT_EQ(r.node_at(2), 7);
-    EXPECT_EQ(r.node_at(3), 9);
-    EXPECT_EQ(r.lookup(1), cell(0xAAAA));
-    EXPECT_EQ(r.lookup(2), cell(0xDDDD));  // overridden
-    EXPECT_EQ(r.lookup(5), 0);             // deleted
-    EXPECT_EQ(r.lookup(7), cell(0xEEEE));  // interleaved sorted
-    EXPECT_EQ(r.lookup(9), cell(0xFFFF));
+    EXPECT_EQ(r.size(), 9);
+    EXPECT_EQ(r.node_at(0), -5);
+    EXPECT_EQ(r.node_at(1), 5);
+    EXPECT_EQ(r.node_at(2), 10);
+    EXPECT_EQ(r.node_at(3), 15);
+    EXPECT_EQ(r.node_at(4), 20);
+    EXPECT_EQ(r.node_at(5), 25);
+    EXPECT_EQ(r.node_at(6), 40);
+    EXPECT_EQ(r.node_at(7), 50);
+    EXPECT_EQ(r.node_at(8), 60);
+    EXPECT_EQ(r.lookup(-5), cell(0xA5A5));
+    EXPECT_EQ(r.lookup(5), cell(0xD00D));
+    EXPECT_EQ(r.lookup(10), cell(0xAAAA));
+    EXPECT_EQ(r.lookup(15), cell(0xCCCC));
+    EXPECT_EQ(r.lookup(20), cell(0xDDDD));
+    EXPECT_EQ(r.lookup(25), cell(0xEEEE));
+    EXPECT_EQ(r.lookup(30), 0);
+    EXPECT_EQ(r.lookup(40), cell(0x1010));
+    EXPECT_EQ(r.lookup(50), cell(0xFFFF));
+    EXPECT_EQ(r.lookup(60), cell(0x6666));
 }
 
 }  // namespace

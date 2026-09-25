@@ -123,17 +123,23 @@ public:
     size_t overlay_size() const { return overlay_.size(); }
     size_t deleted_size() const { return deleted_.size(); }
 
-    // Rewrites the incremental cache as base + overlay, minus deletions. The
-    // base records stream in sorted order with overlay overrides applied;
-    // overlay nodes absent from the base are sorted and interleaved, so the
-    // incremental writer sees strictly ascending node ids.
+    // Rewrites the incremental cache as base + overlay, minus deletions. Overlay
+    // keys are sorted before base classification so the reader's single
+    // decompressed block advances forward; base records then stream in sorted
+    // order with overlay overrides applied and new nodes interleaved.
     void rebuild(const std::string& output_path, int h3_resolution) const {
         node_cache::incremental::Writer writer(output_path, h3_resolution);
-        std::vector<std::pair<int64_t, uint64_t>> extra;
-        for (const auto& [node, cell] : overlay_) {
-            if (base_.lookup(node) == 0) extra.emplace_back(node, cell);
+        std::vector<int64_t> overlay_nodes;
+        overlay_nodes.reserve(overlay_.size());
+        for (const auto& entry : overlay_) {
+            overlay_nodes.push_back(entry.first);
         }
-        std::sort(extra.begin(), extra.end());
+        std::sort(overlay_nodes.begin(), overlay_nodes.end());
+
+        std::vector<std::pair<int64_t, uint64_t>> extra;
+        for (int64_t node : overlay_nodes) {
+            if (base_cell(node) == 0) extra.emplace_back(node, overlay_.at(node));
+        }
 
         size_t b = 0;
         const size_t n = base_.size();
