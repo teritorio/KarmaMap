@@ -32,12 +32,18 @@ async function maybeParseMetadata(file, footerSize, always) {
 // Runs a hyparquet query over one non-partitioned file, returning the
 // matching rows. A failed or absent file yields []. Range filters prune row
 // groups and pages on the server side; exact membership is left to the
-// caller.
-export async function queryRows(baseUrl, path, filter, columns, footerSize) {
+// caller. `rowLimit` caps the returned rows to the first N physical rows
+// (rowEnd), which a caller combines with a known physical sort (e.g. the
+// vandalism file's newest-first change_date order) to read only the leading
+// pages.
+export async function queryRows(baseUrl, path, filter, columns, footerSize, rowLimit) {
   const file = await fetchFile(baseUrl, path)
   if (!file) return []
   const metadata = await maybeParseMetadata(file, footerSize, false)
-  return parquetQuery({ file, compressors, filter, columns, metadata })
+  return parquetQuery({
+    file, compressors, filter, columns, metadata,
+    ...(rowLimit ? { rowEnd: rowLimit } : {}),
+  })
 }
 
 // Like queryRows, but also returns the parsed metadata for callers that read

@@ -200,8 +200,8 @@ The vandalism engine (OSMPatrol filters 2 and 3, see
 into per-`(uid, minute)` modified+deleted buckets under
 `vandalism_update_stage/counts/seq_<n>/`, and modified nodes with a known
 prior position are recorded by the update node pass into
-`vandalism_update_stage/moves/seq_<n>/`. The finalize three-step ordering is
-load-bearing:
+`vandalism_update_stage/moves/seq_<n>/` as `(uid, minute)` rows.
+The finalize three-step ordering is load-bearing:
 
 1. `fold_minute_counts` merges the run's staged buckets into the persisted
    binary store `vandalism_minutes.bin` (`vandalism_store.hpp`), summing
@@ -213,12 +213,16 @@ load-bearing:
    (bits 0/1 base flags carried forward, ORed with this run's filter-2 and
    filter-3 bits; bit 2, the reputation-based filter 1, is forward-only —
    set only on the rows this run newly writes, see the users-history pass
-   below).
+   below). It also writes `vandalism.parquet`, one row per flagged day with
+   the day's total change count, its far-move count and the reputation
+   frozen at the day's first flag.
 3. `vandalism::flagged_move_days` folds the staged node moves (> 500 m) into
-   those same per-day bits (filter 3); its stage is transient and removed, so
-   every finalize is idempotent. `vandalism_minutes.bin` likewise folds
-   minutes (filter 2). There is no persisted move dataset — both filters land
-   only in `users_history.parquet`'s `vandalism_flag` bits.
+   those same per-day bits (filter 3) and a per-day far-move count; its
+   stage is transient and removed, so every finalize is idempotent.
+   `vandalism_minutes.bin` likewise folds minutes (filter 2). There is no
+   persisted move dataset beyond the carried `far_move_count` column of
+   `vandalism.parquet` — both filters land in `users_history.parquet`'s
+   `vandalism_flag` bits and only the flagged days are re-exported.
 
 ## Users-history pass
 
@@ -283,10 +287,11 @@ detected move beyond the 500 m screen to `vandalism::NodeMoveSink`, which
 stages `(uid, minute)` rows under
 `vandalism_update_stage/moves/seq_<n>/` (rows that do not clear the screen
 are dropped before staging). `flagged_move_days` folds them straight into
-this run's `(uid, day) -> filter-3 bit` flags used by the users-history
-finalize and removes the stage root, so there is **no persisted move
-dataset** — filter 3 survives only as the carried/ORed day bit in
-`users_history.parquet`. The distance is measured from the prior cell
+this run's `(uid, day) -> filter-3 bit` flags and per-day far-move count used
+by the users-history finalize and removes the stage root, so there is **no
+persisted move dataset** — filter 3 survives only as the carried/ORed day bit
+in `users_history.parquet` and the frozen per-day `far_move_count` column of
+`vandalism.parquet`. The distance is measured from the prior cell
 center to the new point, within one res-9 cell radius (~175 m) of the true
 prior: fine for the 500 m screen, not for the paper's finer 11 m
 edit-analysis flag. Filter 1 (new users / reputation < 5%) is a reputation
@@ -329,3 +334,15 @@ uid-sorted file to the pages holding that user, with exact membership kept
 client-side. Each day's `count` column already totals the six node/way change
 counters plus the three relation counters; the per-uid edit total stays
 node/way-only (relations are reputation-only).
+
+### Vandalism viewer
+
+`web/vandalism/query.js` reads the 100 latest flagged days from
+`vandalism.parquet`. Because the update finalize writes that file newest-first
+(`change_date` descending), the page issues a plain `rowEnd`-capped query (no
+date filter): hyparquet fetches only the leading row groups' pages, so the
+"100 last" table never scans the whole file. Each row is one flagged
+`(uid, change_date)` with the username, the combined `vandalism_flag` bits,
+the day's total change count, its far-move count and the reputation frozen at
+the day's first flag; the flag bits are labelled from the same
+`FLAG_LABELS` the users viewer uses.

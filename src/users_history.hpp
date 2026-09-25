@@ -30,12 +30,31 @@
 //                             21 counter totals, per-aspect pct;
 //                             active/max in file metadata)
 //   vandalism.parquet  update-only; the flagged (uid, change_date) rows
-//                      of users_history.parquet, re-joined with the current
-//                      username (uid, username, change_date, vandalism_flag),
-//                      sorted by (change_date, uid). Written by the update
-//                      finalize from the same merged flag state as the
-//                      history file, so the two always agree; a pure import
-//                      writes no flags and produces no vandalism.parquet.
+//                      of users_history.parquet, re-joined with the
+//                      username and the day's derived values
+//                      (uid, username, change_date, vandalism_flag,
+//                      changes = the day's total change count (node/way/
+//                      relation created+modified+deleted, the same value as
+//                      the users_history count column, 0 otherwise),
+//                      far_move_count = the count of that day's staged moves
+//                      beyond the filter-3 threshold at the run that first
+//                      flagged the day (see the frozen note below),
+//                      reputation_at_day = the contributor's reputation as of
+//                      the day's first flag), sorted by (change_date, uid)
+//                      with change_date descending (newest first).
+//                      Written by the update finalize from the same merged
+//                      flag state as the history file, so the two always
+//                      agree; a pure import writes no flags and produces no
+//                      vandalism.parquet. changes is re-derived from the
+//                      merged per-day counts each run (an appended-to history
+//                      yields the same sum, so it never drifts and never
+//                      touches other days); far_move_count and
+//                      reputation_at_day are frozen when a day is first
+//                      flagged and carried unchanged on every later update,
+//                      never recalculated. Because a day first flagged by
+//                      another filter keeps its frozen far_move_count, that
+//                      column can be 0 even when bit 1 (filter-3) is set:
+//                      moves staged on later runs are not re-merged into it.
 //
 // users_history.parquet and user_reputation.parquet are non-partitioned,
 // with users_history sorted by (uid, change_date) and user_reputation.parquet
@@ -73,6 +92,10 @@
 #include <string_view>
 #include <unordered_map>
 #include <utility>
+
+namespace vandalism {
+struct MoveDay;
+}  // namespace vandalism
 
 namespace users_history {
 
@@ -273,11 +296,14 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
 // masked out. Called once per update run. The existing files must carry the
 // schemas written by run_finalize (full-run datasets) or a previous update
 // finalize. Alongside the history rewrite it also writes vandalism.parquet
-// (one row per flagged (uid, change_date) with the current username, sorted
-// by (change_date, uid)); a pure import never produces it.
+// (one row per flagged (uid, change_date) with the username, the day's total
+// change count, the day's far-move count and the reputation frozen at the
+// day's first flag, sorted by (change_date, uid) with change_date descending
+// (newest first)); a pure import never produces it.
 void run_update_finalize(const std::string& stage_root, const std::string& history_path,
                          int64_t users_history_group_rows, int64_t reputation_group_rows,
                          const std::string& minutes_path,
-                         const std::map<std::pair<int64_t, uint16_t>, uint8_t>& move_flags);
+                         const std::map<std::pair<int64_t, uint16_t>, vandalism::MoveDay>&
+                             move_flags);
 
 }  // namespace users_history

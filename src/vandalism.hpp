@@ -165,7 +165,7 @@ inline std::vector<MinuteSpanRow> hour_spans(
 
 // Collects modified-node moves during the update node pass (filter 3). Rows
 // are written into per-diff stage dirs under <stage_root>/seq_<seq> and folded
-// by flagged_move_days into the day-level bit-1 flag.
+// by flagged_move_days into the day-level bit-1 flag and far-move count.
 class NodeMoveSink {
 public:
     explicit NodeMoveSink(std::string stage_root);
@@ -180,8 +180,9 @@ public:
 
     // Records a visible version>1 node with a valid new location and a known
     // prior cell. The move distance is computed from the prior cell center and
-    // only a move beyond kFilter3Threshold is staged, as (uid, minute). Callers
-    // must read the prior cell from NodeState::pre() before set_position().
+    // only a move beyond kFilter3Threshold is staged, as a (uid, minute) row.
+    // Callers must read the prior cell from NodeState::pre() before
+    // set_position().
     void record(int64_t uid, int64_t ts_seconds, uint64_t prev_cell, double new_lat,
                 double new_lon);
 
@@ -219,20 +220,31 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
 void fold_minute_counts(const std::string& counts_root, const std::string& minutes_path,
                         uint64_t applied_seq);
 
-// Reads the persisted minute store and returns one (uid, day) -> kFlagFilter2
-// entry for every day holding at least one minute whose trailing-hour span
-// exceeds kFilter2Threshold; day = minute / 1440 (UTC). Feeds the
-// vandalism_flag bits the users-history update finalize writes into the
-// daily history.
+// Reads the persisted minute store and returns one (uid, day) -> flag entry
+// for every day holding at least one minute whose trailing-hour span exceeds
+// kFilter2Threshold; day = minute / 1440 (UTC) and the flag is kFlagFilter2.
+// Feeds the vandalism_flag bits the users-history update finalize writes into
+// the daily history.
 std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_days(const std::string& minutes_path);
 
+// One (uid, day) filter-3 result: the day's flag plus the number of staged
+// moves beyond kFilter3Threshold folded into that day.
+struct MoveDay {
+    uint8_t flags = 0;
+    uint32_t far_move_count = 0;
+
+    bool operator==(const MoveDay& o) const {
+        return flags == o.flags && far_move_count == o.far_move_count;
+    }
+};
+
 // Folds one update run's staged >kFilter3Threshold node moves under
-// `stage_root` (moves/ sub-tree) into this run's (uid, day) -> kFlagFilter3
-// set: each staged (uid, minute) row becomes a flag on day = minute / 1440.
-// Removes the stage root (and therefore the counts/ sub-tree already consumed
-// by fold_minute_counts) afterwards. Flags are ORed by the caller, so folding
-// a rerun's regenerated stages is a no-op.
-std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_move_days(
+// `stage_root` (moves/ sub-tree) into this run's (uid, day) -> MoveDay set:
+// each staged (uid, minute) row becomes a flag and an added far-move count on
+// day = minute / 1440. Removes the stage root (and therefore the counts/
+// sub-tree already consumed by fold_minute_counts) afterwards. Flags are ORed
+// by the caller, so folding a rerun's regenerated stages is a no-op.
+std::map<std::pair<int64_t, uint16_t>, MoveDay> flagged_move_days(
     const std::string& stage_root);
 
 }  // namespace vandalism

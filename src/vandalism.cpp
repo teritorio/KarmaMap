@@ -392,8 +392,8 @@ void fold_minute_counts(const std::string& counts_root, const std::string& minut
 }
 
 std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_days(const std::string& minutes_path) {
-    std::map<std::pair<int64_t, uint16_t>, uint8_t> flags;
-    if (!std::filesystem::exists(minutes_path)) return flags;
+    std::map<std::pair<int64_t, uint16_t>, uint8_t> days;
+    if (!std::filesystem::exists(minutes_path)) return days;
     vandalism_store::Reader reader(minutes_path);
 
     // The store is grouped by uid in (uid, minute) order, so each uid's series
@@ -409,7 +409,7 @@ std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_days(const std::string& 
             if (day > h3_utils::kMaxUint16Day) {
                 throw std::runtime_error("Minute bucket day out of uint16 range");
             }
-            flags[{cur_uid, static_cast<uint16_t>(day)}] |= kFlagFilter2;
+            days[{cur_uid, static_cast<uint16_t>(day)}] = kFlagFilter2;
         }
         series.clear();
     };
@@ -421,12 +421,12 @@ std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_days(const std::string& 
         series.emplace_back(reader.minute_at(i), reader.count_at(i));
     }
     flush();
-    return flags;
+    return days;
 }
 
-std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_move_days(
+std::map<std::pair<int64_t, uint16_t>, MoveDay> flagged_move_days(
     const std::string& stage_root) {
-    std::map<std::pair<int64_t, uint16_t>, uint8_t> flags;
+    std::map<std::pair<int64_t, uint16_t>, MoveDay> days;
 
     const std::string moves_root = stage_root + "/moves";
     const std::vector<std::string> move_stage = collect_parquet_recursive(moves_root);
@@ -443,17 +443,19 @@ std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_move_days(
             if (day > h3_utils::kMaxUint16Day) {
                 throw std::runtime_error("Move minute day out of uint16 range");
             }
-            flags[{uids->Value(i), static_cast<uint16_t>(day)}] |= kFlagFilter3;
+            MoveDay& entry = days[{uids->Value(i), static_cast<uint16_t>(day)}];
+            entry.flags = static_cast<uint8_t>(entry.flags | kFlagFilter3);
+            entry.far_move_count++;
         }
     }
     if (!move_stage.empty()) {
-        std::cerr << "[vandalism] folded " << flags.size() << " move-flagged days\n";
+        std::cerr << "[vandalism] folded " << days.size() << " move-flagged days\n";
     }
 
     // The run's staging is now folded into the day flags; the counts/ sub-tree
     // was already consumed by fold_minute_counts, so remove the whole root.
     std::filesystem::remove_all(stage_root);
-    return flags;
+    return days;
 }
 
 }  // namespace vandalism

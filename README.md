@@ -26,13 +26,15 @@ reputation scoring follows [Neis, Goetz & Zipf, *ISPRS Int. J. Geo-Inf.*
   `vandalism_flag` column).
 - Vandalism outputs of every `update` run: `vandalism_minutes.bin` (the
   persisted per-`(uid, minute)` modified+deleted bucket store behind the
-  flag) and the bit-coded per-day `vandalism_flag` in
+  flag), the bit-coded per-day `vandalism_flag` in
   `users_history.parquet` (bit 0 = filter 2, bit 1 = filter-3 node moves
   over 500 m, bit 2 = filter 1, a reputation below 5%; filters 2/3 have no
   persisted node-moves dataset — they survive only as carried day bits,
   and bit 2 is forward-only too: import writes 0 and updates set it only
   on the new rows they write for a below-threshold contributor (once set,
-  never removed).
+  never removed), and `vandalism.parquet` — an update-only re-export of
+  the flagged days carrying each day's total change count, its far-move
+  count and the reputation frozen at the day's first flag.
 
 ![Changes H3](changes-h3.webp)
 
@@ -235,6 +237,10 @@ Then open `http://localhost:8080/`.
 - **`/users/`** — the users viewer: look up an OSM username to see their
   OSMPatrol reputation (0-100), per-user history totals and an edit-activity
   timeline.
+- **`/vandalism/`** — the vandalism viewer: the 100 latest flagged
+  `(uid, change_date)` days from `vandalism.parquet` (update-only), with each
+  day's OSMPatrol filter bits, total change count, far-move count and
+  reputation.
 
 Clients read the files with byte-range requests: hyparquet's
 `asyncBufferFromUrl` opens each file and fetches the footer, row-group

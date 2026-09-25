@@ -293,7 +293,7 @@ TEST(VandalismFlaggedDays, ThresholdAcrossDays) {
     const std::map<std::pair<int64_t, uint16_t>, uint8_t> flags =
         vandalism::flagged_days(minutes);
     const std::map<std::pair<int64_t, uint16_t>, uint8_t> exp_flags = {
-        {{7, 0}, 1}, {{8, 2}, 1},
+        {{7, 0}, vandalism::kFlagFilter2}, {{8, 2}, vandalism::kFlagFilter2},
     };
     EXPECT_EQ(flags, exp_flags);
 }
@@ -337,11 +337,12 @@ TEST(VandalismMoveDays, FoldsStagedMovesIntoDayFlags) {
     EXPECT_FALSE(std::filesystem::exists(stage_root));
 
     // day = minute / 1440: uid 10's 1440 -> day 1, 2880/2881 -> day 2; uid
-    // 12's 1445 falls into day 1.
-    const std::map<std::pair<int64_t, uint16_t>, uint8_t> exp = {
-        {{10, 1}, vandalism::kFlagFilter3},
-        {{10, 2}, vandalism::kFlagFilter3},
-        {{12, 1}, vandalism::kFlagFilter3},
+    // 12's 1445 falls into day 1. far_move_count is the number of staged
+    // moves folded into that day.
+    const std::map<std::pair<int64_t, uint16_t>, vandalism::MoveDay> exp = {
+        {{10, 1}, {vandalism::kFlagFilter3, 1}},
+        {{10, 2}, {vandalism::kFlagFilter3, 2}},
+        {{12, 1}, {vandalism::kFlagFilter3, 1}},
     };
     EXPECT_EQ(flags, exp);
 }
@@ -356,12 +357,12 @@ TEST(VandalismMoveDays, RerunRefoldsSameFlags) {
                           {{10, 1440 * 1000 + 30}});
         return vandalism::flagged_move_days(stage_root);
     };
-    EXPECT_EQ(run(), (std::map<std::pair<int64_t, uint16_t>, uint8_t>{
-        {{10, 1000}, vandalism::kFlagFilter3}}));
+    EXPECT_EQ(run(), (std::map<std::pair<int64_t, uint16_t>, vandalism::MoveDay>{
+        {{10, 1000}, {vandalism::kFlagFilter3, 1}}}));
     // A rerun regenerates the same staged rows; flags are monotonic ORs, so
     // the result is identical.
-    EXPECT_EQ(run(), (std::map<std::pair<int64_t, uint16_t>, uint8_t>{
-        {{10, 1000}, vandalism::kFlagFilter3}}));
+    EXPECT_EQ(run(), (std::map<std::pair<int64_t, uint16_t>, vandalism::MoveDay>{
+        {{10, 1000}, {vandalism::kFlagFilter3, 1}}}));
 }
 
 TEST(VandalismMoveDays, NoStageIsEmptyAndRemovesRoot) {

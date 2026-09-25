@@ -356,7 +356,7 @@ std::optional<replication_state::State> run_update_mode(
     // are consumed here.
     const std::string minutes_path = opts.vandalism_minutes_path;
     vandalism::fold_minute_counts(vandalism_stage_root + "/counts", minutes_path, applied);
-    const std::map<std::pair<int64_t, uint16_t>, uint8_t> move_flags =
+    const std::map<std::pair<int64_t, uint16_t>, vandalism::MoveDay> move_flags =
         vandalism::flagged_move_days(vandalism_stage_root);
 
     users_history::run_update_finalize(history_stage_root,

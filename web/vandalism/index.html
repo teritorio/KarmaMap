@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>KarmaMap vandalism</title>
+  <link rel="icon" type="image/svg+xml" href="../icon.svg" />
+  <link rel="stylesheet" href="../base.css" />
+
+  <script type="importmap">
+  {
+    "imports": {
+      "hyparquet": "https://cdn.jsdelivr.net/npm/hyparquet@1.30.1/+esm",
+      "hyparquet-compressors": "https://cdn.jsdelivr.net/npm/hyparquet-compressors@1.1.1/+esm"
+    }
+  }
+  </script>
+
+  <style>
+    html, body { background: var(--page-bg); }
+
+    #table-wrap {
+      margin: 1rem; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 8px; overflow: auto;
+    }
+    table {
+      width: 100%; border-collapse: collapse; font-size: 0.85rem;
+    }
+    th {
+      text-align: left; font-size: 0.7rem; text-transform: uppercase;
+      color: var(--label); padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--border);
+      background: var(--surface-alt); position: sticky; top: 0; white-space: nowrap;
+    }
+    th.value, td.value { text-align: right; white-space: nowrap; }
+    td { padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--border-light); white-space: nowrap; }
+    tbody tr:last-child td { border-bottom: none; }
+    td.user { font-weight: 600; }
+
+    .flags { display: inline-flex; gap: 0.25rem; }
+    .flag-chip {
+      font-size: 0.68rem; font-weight: 600; padding: 0.1rem 0.4rem;
+      border-radius: 999px; color: #fff; background: var(--flag2, #334155);
+    }
+    .flag-chip.f2 { background: #b45309; }
+    .flag-chip.f3 { background: #b91c1c; }
+    .flag-chip.f1 { background: #6d28d9; }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <img src="../icon.svg" alt="" width="32" height="32" />
+    <strong>KarmaMap</strong>
+
+    <a href="../changes/">changes</a>
+    <a href="../users/">users</a>
+    <a href="../vandalism/">vandalism</a>
+
+    <span class="divider"></span>
+
+    <span id="status">Loading...</span>
+  </div>
+
+  <div id="table-wrap">
+    <table id="vandalism">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>User</th>
+          <th class="value">uid</th>
+          <th class="value">Changes</th>
+          <th>Vandalism</th>
+          <th class="value">Far moves</th>
+          <th class="value">Rep at day</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

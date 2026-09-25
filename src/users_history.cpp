@@ -659,7 +659,7 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir) {
 void run_update_finalize(const std::string& stage_root, const std::string& history_path,
                          int64_t users_history_group_rows, int64_t reputation_group_rows,
                          const std::string& minutes_path,
-                         const std::map<std::pair<int64_t, uint16_t>, uint8_t>& move_flags) {
+                         const std::map<std::pair<int64_t, uint16_t>, vandalism::MoveDay>& move_flags) {
     // Registers Arrow's compute kernels (sort_indices, take).
     auto init_status = arrow::compute::Initialize();
     if (!init_status.ok()) {
@@ -739,6 +739,7 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
         std::filesystem::path(history_path).parent_path();
     const std::string reputation_path =
         (history_parent / "user_reputation.parquet").string();
+    const std::string vandalism_path = (history_parent / "vandalism.parquet").string();
     std::vector<int64_t> rep_uids;
     std::vector<std::string> rep_usernames;
     std::vector<uint16_t> rep_first_seen;
@@ -775,6 +776,7 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     // never re-derived over the base history. A contributor who created
     // nothing scores reputation 0, which covers the paper's "new users" half.
     std::unordered_map<int64_t, uint8_t> filter1_uid;
+    reputation::Result rep;
     if (have_base_rep || !delta_totals.empty()) {
         for (const auto& [uid, sum] : delta_totals) {
             auto it = uid_index.find(uid);
@@ -794,7 +796,7 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
                 for (size_t c = 0; c < kCounterCount; ++c) counter_sums[c].push_back(sum[c]);
             }
         }
-        const reputation::Result rep = build_reputation_table(
+        rep = build_reputation_table(
             rep_uids, rep_usernames, rep_first_seen, counter_sums, history_path,
             reputation_group_rows);
         for (size_t i = 0; i < rep_uids.size() && i < rep.reputation.size(); ++i) {
@@ -836,14 +838,43 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
 
     // Rebuild the whole-history flags from the persisted sources: bit 0 from
     // the minute store, bit 1 from the run's folded move-flagged days. Every
-    // flagged_days value already carries kFlagFilter2 and every move_flags
-    // entry kFlagFilter3, so ORing them into the carried-forward base bits
-    // yields the combined per-day field.
-    for (const auto& [key, value] : vandalism::flagged_days(minutes_path)) {
-        merged_flags[key] |= value;
+    // filter2_days value is kFlagFilter2 and every move_flags entry carries
+    // kFlagFilter3, so ORing them into the carried-forward base bits yields
+    // the combined per-day field.
+    const auto filter2_days = vandalism::flagged_days(minutes_path);
+    for (const auto& [key, flag] : filter2_days) {
+        merged_flags[key] |= flag;
     }
     for (const auto& [key, value] : move_flags) {
-        merged_flags[key] |= value;
+        merged_flags[key] |= value.flags;
+    }
+
+    // The vandalism file freezes each flagged day's filter-1 reputation and
+    // far-move count. vandalism_base maps every previously flagged
+    // (uid, change_date) to those carried values; the base reads below that
+    // the export loop writes over must stay in lockstep (far_move_count,
+    // reputation_at_day are the only carried columns).
+    struct VandalBaseRow {
+        uint32_t far_move_count = 0;
+        uint8_t reputation_at_day = 0;
+    };
+    std::map<std::pair<int64_t, uint16_t>, VandalBaseRow> vandalism_base;
+    if (std::filesystem::exists(vandalism_path)) {
+        auto base_result = arrow_table_io::read_table(vandalism_path)->CombineChunks();
+        if (!base_result.ok()) {
+            throw std::runtime_error("CombineChunks failed on " + vandalism_path + ": " +
+                                     base_result.status().ToString());
+        }
+        const std::shared_ptr<arrow::Table> base_v = *base_result;
+        const auto* bv_uids = typed_column<arrow::Int64Array>(base_v, "uid");
+        const auto* bv_days = typed_column<arrow::UInt16Array>(base_v, "change_date");
+        const auto* bv_moves = typed_column<arrow::UInt32Array>(base_v, "far_move_count");
+        const auto* bv_rep = typed_column<arrow::UInt8Array>(base_v, "reputation_at_day");
+        for (int64_t i = 0; i < base_v->num_rows(); ++i) {
+            VandalBaseRow& row = vandalism_base[{bv_uids->Value(i), bv_days->Value(i)}];
+            row.far_move_count = bv_moves->Value(i);
+            row.reputation_at_day = bv_rep->Value(i);
+        }
     }
 
     arrow::Int64Builder ind_uid_builder;
@@ -851,11 +882,18 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     arrow::UInt32Builder ind_count_builder;
     arrow::UInt8Builder ind_flag_builder;
     // Vandalism export: the same merged flags, one (uid, change_date) row per
-    // day carrying any bit, with the current username resolved inline.
+    // day carrying any bit, plus the day's total change count (created +
+    // modified + deleted, the same value as the count column written above),
+    // the count of that day's staged moves beyond kFilter3Threshold and the
+    // reputation frozen at the day's first flag, with the username resolved
+    // inline.
     arrow::Int64Builder v_uid_builder;
     arrow::StringBuilder v_user_builder;
     arrow::UInt16Builder v_day_builder;
     arrow::UInt8Builder v_flag_builder;
+    arrow::UInt32Builder v_changes_builder;
+    arrow::UInt32Builder v_moves_builder;
+    arrow::UInt8Builder v_rep_builder;
     for (const auto& [key, count] : merged_counts) {
         append_checked(ind_uid_builder, key.first);
         append_checked(ind_day_builder, key.second);
@@ -876,6 +914,28 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
                            ui != uid_index.end()
                                ? rep_usernames[ui->second]
                                : "<" + std::to_string(key.first) + ">");
+            // changes is the day's own total re-derived from the merged counts
+            // each run (an appended-to history yields the same sum, so the
+            // value never drifts and never touches other days). far_move_count
+            // is the day's count of moves beyond kFilter3Threshold: carried
+            // from the base file when the day was already flagged (the move
+            // stage is transient), taken from this run's folded staged moves
+            // when the day is newly flagged. reputation_at_day is stamped once:
+            // carried from the base file when the day was already flagged,
+            // taken from this run's current reputation when the day is newly
+            // flagged, and never recalculated.
+            append_checked(v_changes_builder, count);
+            const auto carried = vandalism_base.find(key);
+            const auto mv = move_flags.find(key);
+            if (carried != vandalism_base.end()) {
+                append_checked(v_moves_builder, carried->second.far_move_count);
+                append_checked(v_rep_builder, carried->second.reputation_at_day);
+            } else {
+                append_checked(v_moves_builder,
+                               mv != move_flags.end() ? mv->second.far_move_count : 0);
+                append_checked(v_rep_builder,
+                               ui != uid_index.end() ? rep.reputation[ui->second] : 0);
+            }
         }
     }
     std::shared_ptr<arrow::Array> ind_uid, ind_day, ind_count, ind_flag;
@@ -899,28 +959,38 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     std::filesystem::rename(history_tmp, history_path);
 
     // The vandalism export: every (uid, change_date) carrying any flag bit,
-    // with the current username, sorted by (change_date, uid). The flag set
-    // is exactly the users-history flags (the merged state above), so the
-    // two outputs always agree. The file is update-only: import writes no
-    // flags and never produces it; an update with no flagged day writes an
+    // with the username, the day's total change count, the count of that day's
+    // far moves and the reputation frozen at the day's first flag, sorted by
+    // (change_date, uid) with change_date descending (newest first) so a client
+    // reading the 100 latest flagged days fetches only the leading row groups.
+    // The flag set is exactly the users-history flags (the merged state above),
+    // so the two outputs always agree. The file is update-only: import writes
+    // no flags and never produces it; an update with no flagged day writes an
     // empty file.
-    std::shared_ptr<arrow::Array> v_uid, v_user, v_day, v_flag;
+    std::shared_ptr<arrow::Array> v_uid, v_user, v_day, v_flag, v_changes, v_moves, v_rep;
     finish_checked(v_uid_builder, &v_uid);
     finish_checked(v_user_builder, &v_user);
     finish_checked(v_day_builder, &v_day);
     finish_checked(v_flag_builder, &v_flag);
+    finish_checked(v_changes_builder, &v_changes);
+    finish_checked(v_moves_builder, &v_moves);
+    finish_checked(v_rep_builder, &v_rep);
     auto vandalism_table = arrow::Table::Make(
         arrow::schema({arrow::field("uid", arrow::int64(), false),
                        arrow::field("username", arrow::utf8(), false),
                        arrow::field("change_date", arrow::uint16(), false),
-                       arrow::field("vandalism_flag", arrow::uint8(), false)}),
-        {v_uid, v_user, v_day, v_flag});
-    // Day-first order makes change_date (the pruning column) the compact
-    // footer statistics key.
+                       arrow::field("vandalism_flag", arrow::uint8(), false),
+                       arrow::field("changes", arrow::uint32(), false),
+                       arrow::field("far_move_count", arrow::uint32(), false),
+                       arrow::field("reputation_at_day", arrow::uint8(), false)}),
+        {v_uid, v_user, v_day, v_flag, v_changes, v_moves, v_rep});
+    // Newest-first order makes change_date (the pruning column) the compact
+    // footer statistics key, with the most recent days' min/max in the first
+    // row groups.
     vandalism_table = arrow_table_io::sort_by_keys(
         vandalism_table,
-        {arrow::compute::SortKey("change_date"), arrow::compute::SortKey("uid")});
-    const std::string vandalism_path = (history_parent / "vandalism.parquet").string();
+        {arrow::compute::SortKey("change_date", arrow::compute::SortOrder::Descending),
+         arrow::compute::SortKey("uid")});
     const std::string vandalism_tmp = vandalism_path + ".tmp";
     arrow_table_io::write_table(vandalism_tmp, vandalism_table, reputation_group_rows,
                                 {"change_date"});
