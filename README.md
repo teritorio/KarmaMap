@@ -239,8 +239,8 @@ Then open `http://localhost:8080/`.
   timeline.
 - **`/vandalism/`** — the vandalism viewer: the 100 latest flagged
   `(uid, change_date)` days from `vandalism.parquet` (update-only), with each
-  day's OSMPatrol filter bits, total change count, far-move count and
-  reputation.
+  day's total change count, an edit-burst marker (>500 modified/deleted objects
+  in one hour), far-move count and reputation.
 
 Clients read the files with byte-range requests: hyparquet's
 `asyncBufferFromUrl` opens each file and fetches the footer, row-group

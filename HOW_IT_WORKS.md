@@ -344,5 +344,6 @@ date filter): hyparquet fetches only the leading row groups' pages, so the
 "100 last" table never scans the whole file. Each row is one flagged
 `(uid, change_date)` with the username, the combined `vandalism_flag` bits,
 the day's total change count, its far-move count and the reputation frozen at
-the day's first flag; the flag bits are labelled from the same
-`FLAG_LABELS` the users viewer uses.
+the day's first flag. Of the flags the table shows one: a day carrying bit 0
+(`kFlagFilter2`, the >500 modified/deleted objects in one hour filter) is marked
+as an edit burst.

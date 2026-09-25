@@ -2,14 +2,15 @@
 // vandalism.parquet, the update-only re-export of the non-zero vandalism_flag
 // rows of users_history.parquet. The file is written newest-first (change_date
 // descending), so this page reads only the leading rows/pages for the 100 most
-// recent flagged days — one row per day carrying the combined flag bits, the
-// day's total change count, its far-move count and the reputation frozen at
-// the day's first flag. Same architecture as the users/changes viewers (page +
-// app + query over the shared lib in web/lib).
+// recent flagged days — one row per day with the day's total change count, the
+// edit-burst marker (filter 2: more than 500 modified/deleted objects in one
+// hour), its far-move count and the reputation frozen at the day's first flag.
+// Same architecture as the users/changes viewers (page + app + query over the
+// shared lib in web/lib).
 
 import { loadManifest, dayKey, userProfileUrls } from '../lib/api.js'
 import { queryVandalismLatest } from './query.js'
-import { FLAG_LABELS } from '../users/reputation.js'
+import { FLAG_FILTER_2 } from '../users/reputation.js'
 
 // Data root: the data/ directory one level above the viewer pages.
 const BASE_URL = '../data'
@@ -37,29 +38,16 @@ function renderUserLinks(name) {
     `(<a href="${hdyc}" target="_blank" rel="noopener noreferrer">hdyc➚</a>)`
 }
 
-// One chip per active flag bit, colored by filter (mirrors the users
-// viewer's history-chart labels). Both the chip title and the flags column
-// list the screen names.
-function flagChips(flags) {
-  const active = FLAG_LABELS.filter((f) => flags & f.mask)
-  if (active.length === 0) return '<span class="flags"></span>'
-  const cls = { 0x01: 'f2', 0x02: 'f3', 0x04: 'f1' }
-  return `<span class="flags">` +
-    active.map((f) =>
-      `<span class="flag-chip ${cls[f.mask]}" title="${escapeHtml(f.label)}">${f.label.split(':')[0]}</span>`).join('') +
-    `</span>`
-}
-
 function renderRows(rows) {
   tbodyEl.innerHTML = rows.map((row) => {
-    const flags = Number(row.vandalism_flag ?? 0)
+    const editBurst = (Number(row.vandalism_flag ?? 0) & FLAG_FILTER_2) !== 0
     return `<tr>` +
       `<td>${escapeHtml(dayKey(row.change_date))}</td>` +
       `<td class="value"><a href="../users/#user=${row.username}">#${Number(row.reputation_at_day ?? 0)}</a></td>` +
       `<td class="user">${renderUserLinks(row.username)}</td>` +
       `<td class="value">${Number(row.uid)}</td>` +
       `<td class="value">${Number(row.changes ?? 0).toLocaleString()}</td>` +
-      `<td>${flagChips(flags)}</td>` +
+      `<td>${editBurst ? 'Yes' : ''}</td>` +
       `<td class="value">${Number(row.far_move_count ?? 0).toLocaleString()}</td>` +
       `</tr>`
   }).join('')

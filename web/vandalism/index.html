@@ -35,15 +35,6 @@
     td { padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--border-light); white-space: nowrap; }
     tbody tr:last-child td { border-bottom: none; }
     td.user { font-weight: 600; }
-
-    .flags { display: inline-flex; gap: 0.25rem; }
-    .flag-chip {
-      font-size: 0.68rem; font-weight: 600; padding: 0.1rem 0.4rem;
-      border-radius: 999px; color: #fff; background: var(--flag2, #334155);
-    }
-    .flag-chip.f2 { background: #b45309; }
-    .flag-chip.f3 { background: #b91c1c; }
-    .flag-chip.f1 { background: #6d28d9; }
   </style>
 </head>
 <body>
@@ -69,7 +60,7 @@
           <th>User</th>
           <th class="value">uid</th>
           <th class="value">Changes</th>
-          <th>Vandalism</th>
+          <th title="&gt;500 modified/deleted in one hour">Edit burst</th>
           <th class="value">Far moves</th>
         </tr>
       </thead>
