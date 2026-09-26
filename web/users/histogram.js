@@ -10,7 +10,7 @@
 // lists the activated screens (paper sec. 5).
 
 import * as echarts from 'echarts'
-import { FLAG_LABELS } from './reputation.js'
+import { FLAG_LABELS } from './ranking.js'
 
 // Volume bars: normal blue, altered blue on flagged days. The flag band's
 // solid red fill spans the full y-axis behind the volume bar, so a

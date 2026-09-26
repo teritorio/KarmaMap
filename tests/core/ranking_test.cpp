@@ -107,7 +107,7 @@ void write_stage(const std::string& path,
     write_stage_named(path, named);
 }
 
-TEST(ReputationFile, WritesExactWidePerUidTable) {
+TEST(RankingFile, WritesExactWidePerUidTable) {
     TempDir dir;
     const std::string stage = dir.join("stage");
     const std::string history = dir.join("users_history.parquet");
@@ -142,13 +142,13 @@ TEST(ReputationFile, WritesExactWidePerUidTable) {
                 });
 
     users_history::run_finalize(stage, history, kDefaultUsersHistoryGroupRows,
-                                kDefaultReputationGroupRows);
+                                kDefaultRankingGroupRows);
 
-    const std::string rep = dir.join("user_reputation.parquet");
-    EXPECT_TRUE(std::filesystem::exists(rep));
-    EXPECT_FALSE(std::filesystem::exists(rep + ".tmp"));
+    const std::string rank = dir.join("user_ranking.parquet");
+    EXPECT_TRUE(std::filesystem::exists(rank));
+    EXPECT_FALSE(std::filesystem::exists(rank + ".tmp"));
 
-    auto combined_result = read_parquet(rep)->CombineChunks();
+    auto combined_result = read_parquet(rank)->CombineChunks();
     ASSERT_TRUE(combined_result.ok());
     const auto& t = *combined_result;
     ASSERT_EQ(t->num_columns(), 40);
@@ -160,7 +160,7 @@ TEST(ReputationFile, WritesExactWidePerUidTable) {
         return idx >= 0 ? t->column(idx)->chunk(0) : nullptr;
     };
     const auto uid_arr = std::static_pointer_cast<arrow::Int64Array>(col("uid"));
-    const auto score_arr = std::static_pointer_cast<arrow::UInt8Array>(col("reputation"));
+    const auto score_arr = std::static_pointer_cast<arrow::UInt8Array>(col("ranking"));
     const auto double_col = [&](const std::string& name) {
         return std::static_pointer_cast<arrow::DoubleArray>(col(name));
     };
@@ -182,7 +182,7 @@ TEST(ReputationFile, WritesExactWidePerUidTable) {
     const std::vector<uint16_t> exp_first_seen = {100, 102, 103, 104};
     for (int64_t i = 0; i < 4; ++i) EXPECT_EQ(first_seen_arr->Value(i), exp_first_seen[i]);
 
-    // Reputations: uid1 = node 20 + tag_building 4; uid3 takes the way cap;
+    // Rankings: uid1 = node 20 + tag_building 4; uid3 takes the way cap;
     // uid4 takes the relation cap; uid2 only tag_highway 4.
     const std::vector<uint8_t> exp_score = {24, 4, 20, 12};
     for (int64_t i = 0; i < 4; ++i) EXPECT_EQ(score_arr->Value(i), exp_score[i]);
@@ -221,9 +221,9 @@ TEST(ReputationFile, WritesExactWidePerUidTable) {
     EXPECT_DOUBLE_EQ(tag_highway_pct->Value(1), 100.0);
     EXPECT_DOUBLE_EQ(tag_amenity_pct->Value(0), 0.0);
 
-    auto rep_file_result = arrow::io::ReadableFile::Open(rep);
-    ASSERT_TRUE(rep_file_result.ok()) << rep_file_result.status();
-    const auto file_meta = parquet::ReadMetaData(*rep_file_result);
+    auto rank_file_result = arrow::io::ReadableFile::Open(rank);
+    ASSERT_TRUE(rank_file_result.ok()) << rank_file_result.status();
+    const auto file_meta = parquet::ReadMetaData(*rank_file_result);
     const auto meta = file_meta->key_value_metadata();
     ASSERT_NE(meta, nullptr);
     const auto meta_val = [&](const std::string& key) -> std::string {
@@ -245,7 +245,7 @@ TEST(ReputationFile, WritesExactWidePerUidTable) {
     EXPECT_EQ(meta_val("tag_amenity_max"), "0");
 }
 
-TEST(ReputationFile, SortsByUsernameThenUid) {
+TEST(RankingFile, SortsByUsernameThenUid) {
     TempDir dir;
     const std::string stage = dir.join("stage");
     const std::string history = dir.join("users_history.parquet");
@@ -268,11 +268,11 @@ TEST(ReputationFile, SortsByUsernameThenUid) {
                       });
 
     users_history::run_finalize(stage, history, kDefaultUsersHistoryGroupRows,
-                                kDefaultReputationGroupRows);
+                                kDefaultRankingGroupRows);
 
-    const std::string rep = dir.join("user_reputation.parquet");
-    EXPECT_TRUE(std::filesystem::exists(rep));
-    auto combined_result = read_parquet(rep)->CombineChunks();
+    const std::string rank = dir.join("user_ranking.parquet");
+    EXPECT_TRUE(std::filesystem::exists(rank));
+    auto combined_result = read_parquet(rank)->CombineChunks();
     ASSERT_TRUE(combined_result.ok());
     const auto& t = *combined_result;
     ASSERT_EQ(t->num_rows(), 5);

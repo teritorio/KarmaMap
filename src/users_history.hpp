@@ -14,8 +14,8 @@
 //                            objects in a one-hour window; bit 1
 //                            (kFlagFilter3): a modified node was moved
 //                            > 500 m that day; bit 2 (kFlagFilter1): the day's
-//                            user has reputation below 5% ("new users or low
-//                            reputation"). Bits 0/1 are filled from
+//                            user has ranking below 5% ("new users or low
+//                            ranking"). Bits 0/1 are filled from
 //                            the persisted minute store and the run's move
 //                            stages by the update finalize, 0 on import;
 //                            bit 2 is forward-only, set only on rows the
@@ -24,9 +24,9 @@
 //                            base rows are carried unchanged, so a flag once
 //                            written persists. The per-day
 //                            tag_* counters are aggregated in finalize and
-//                            surface only as reputation totals below)
-//   user_reputation.parquet  per-uid reputation + full history totals
-//                            (uid, username, first_seen_day, reputation,
+//                            surface only as ranking totals below)
+//   user_ranking.parquet  per-uid ranking + full history totals
+//                            (uid, username, first_seen_day, ranking,
 //                             21 counter totals, per-aspect pct;
 //                             active/max in file metadata)
 //   vandalism.parquet  update-only; the flagged (uid, change_date) rows
@@ -39,7 +39,7 @@
 //                      far_move_count = the count of that day's staged moves
 //                      beyond the filter-3 threshold at the run that first
 //                      flagged the day (see the frozen note below),
-//                      reputation_at_day = the contributor's reputation as of
+//                      ranking_at_day = the contributor's ranking as of
 //                      the day's first flag), sorted by (change_date, uid)
 //                      with change_date descending (newest first).
 //                      Written by the update finalize from the same merged
@@ -49,15 +49,15 @@
 //                      merged per-day counts each run (an appended-to history
 //                      yields the same sum, so it never drifts and never
 //                      touches other days); far_move_count and
-//                      reputation_at_day are frozen when a day is first
+//                      ranking_at_day are frozen when a day is first
 //                      flagged and carried unchanged on every later update,
 //                      never recalculated. Because a day first flagged by
 //                      another filter keeps its frozen far_move_count, that
 //                      column can be 0 even when bit 1 (filter-3) is set:
 //                      moves staged on later runs are not re-merged into it.
 //
-// users_history.parquet and user_reputation.parquet are non-partitioned,
-// with users_history sorted by (uid, change_date) and user_reputation.parquet
+// users_history.parquet and user_ranking.parquet are non-partitioned,
+// with users_history sorted by (uid, change_date) and user_ranking.parquet
 // by username (uid tie-break), so an exact username filter in the users viewer
 // prunes to the matching pages; the per-day history table still joins on uid
 // for the timeline.
@@ -71,18 +71,18 @@
 //
 // Relations obey the same node/way classification (visible version 1 =
 // created, visible later versions = modified, invisible = deleted). Following
-// the OSMPatrol model (Neis, Goetz & Zipf 2012), the per-user reputation is
+// the OSMPatrol model (Neis, Goetz & Zipf 2012), the per-user ranking is
 // built from the objects a contributor created, so relation modifies/deletes
 // (and the node/way ones) feed only the per-day activity count, never the
-// reputation.
+// ranking.
 //
-// The reputation's tag aspect counts the "Top12" most-used tags (up to 4
+// The ranking's tag aspect counts the "Top12" most-used tags (up to 4
 // points each, paper sec. 4) on created objects, one counter per tag (see
 // kTop12TagKeys below: bit i of a created object's tag mask maps to the
 // i-th tag_* DayRow member and the i-th trailing entry in kCounters).
 // The paper's "address" key is replaced by "place", since OSM address
 // tagging uses the addr: prefix. Like relation_created, tag usage is
-// reputation-only and never part of the node/way activity totals.
+// ranking-only and never part of the node/way activity totals.
 
 #include <array>
 #include <cstddef>
@@ -129,7 +129,7 @@ struct DayRow {
     uint32_t tag_waterway = 0;
 };
 
-// Top12 tag keys in reputation-aspect order (bit i of a created object's
+// Top12 tag keys in ranking-aspect order (bit i of a created object's
 // tag mask ↔ kTop12TagKeys[i] ↔ the i-th trailing tag entry in kCounters).
 // "address" from the paper is replaced by "place" (OSM addr: prefix).
 constexpr size_t kTagCount = 12;
@@ -233,7 +233,7 @@ public:
                     r.relation_deleted++;
                 } else if (version == 1) {
                     r.relation_created++;
-                    // Reputation's tag aspect counts the Top12 tags used
+                    // Ranking's tag aspect counts the Top12 tags used
                     // during the creation only (paper sec. 4).
                     apply_created_tags(r, created_tag_bits);
                 } else {
@@ -269,7 +269,7 @@ private:
 void run_scan(const std::string& input_path, const std::string& stage_dir);
 
 void run_finalize(const std::string& stage_dir, const std::string& history_path,
-                  int64_t users_history_group_rows, int64_t reputation_group_rows);
+                  int64_t users_history_group_rows, int64_t ranking_group_rows);
 
 // Update mode: scans one replication diff (an .osc.gz change file) into a
 // fresh stage_dir. The scan handler classifies diff objects the same way the
@@ -281,7 +281,7 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
 // Merges the per-diff update stage dirs under `stage_root` (each
 // stage_root/seq_<n>/stage_*.parquet) into the existing datasets: the per
 // (uid, change_date) deltas are summed into users_history.parquet, and
-// user_reputation.parquet is recomputed from the existing per-uid totals plus
+// user_ranking.parquet is recomputed from the existing per-uid totals plus
 // the diff totals (so newly appeared contributors join the ranking). The
 // vandalism_flag bits are rebuilt over the whole history: bit 0 (kFlagFilter2)
 // from the persisted minute store at `minutes_path` (vandalism::flagged_days),
@@ -289,19 +289,19 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
 // kFlagFilter3 set produced by vandalism::flagged_move_days, which the caller
 // must have folded first. All bits are monotonic and forward-only: the
 // existing file's flags are carried forward unchanged (import writes 0), this
-// run's bit-0/1 sets are ORed in, and bit 2 (kFlagFilter1, low reputation) is
+// run's bit-0/1 sets are ORed in, and bit 2 (kFlagFilter1, low ranking) is
 // set only on the run's newly-written rows (keys absent from the base
-// history) whose user's current reputation is below the threshold. A
-// reputation drop never re-flags the base rows and a once-set bit is never
+// history) whose user's current ranking is below the threshold. A
+// ranking drop never re-flags the base rows and a once-set bit is never
 // masked out. Called once per update run. The existing files must carry the
 // schemas written by run_finalize (full-run datasets) or a previous update
 // finalize. Alongside the history rewrite it also writes vandalism.parquet
 // (one row per flagged (uid, change_date) with the username, the day's total
-// change count, the day's far-move count and the reputation frozen at the
+// change count, the day's far-move count and the ranking frozen at the
 // day's first flag, sorted by (change_date, uid) with change_date descending
 // (newest first)); a pure import never produces it.
 void run_update_finalize(const std::string& stage_root, const std::string& history_path,
-                         int64_t users_history_group_rows, int64_t reputation_group_rows,
+                         int64_t users_history_group_rows, int64_t ranking_group_rows,
                          const std::string& minutes_path,
                          const std::map<std::pair<int64_t, uint16_t>, vandalism::MoveDay>&
                              move_flags);

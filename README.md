@@ -9,32 +9,32 @@ bbox + date-range queries (e.g. with DuckDB or the included web frontend).
 The `count` of a cell on a day sums the node changes and the way changes, in
 the same file per year so a client reads one dataset per year. The
 users-history pass adds the karma layer: per-user, per-day activity
-and a 0-100 reputation per contributor.
+and a 0-100 ranking per contributor.
 
 The output is queried directly in the browser by two static viewers shipped
-in `web/`: a changes map + histogram, and a per-user reputation viewer. The
-reputation scoring follows [Neis, Goetz & Zipf, *ISPRS Int. J. Geo-Inf.*
+in `web/`: a changes map + histogram, and a per-user ranking viewer. The
+ranking scoring follows [Neis, Goetz & Zipf, *ISPRS Int. J. Geo-Inf.*
 2012, 1(3), 315-332](https://www.mdpi.com/2220-9964/1/3/315).
 
 ## What it produces
 
 - `changes/` — `(h3_cell, change_date, count)` counts (node + way changes
   merged per cell per day), partitioned by calendar year.
-- `users_history.parquet` and `user_reputation.parquet` — per-user, per-day
-  activity and reputation, built by every run; the history file also
+- `users_history.parquet` and `user_ranking.parquet` — per-user, per-day
+  activity and ranking, built by every run; the history file also
   carries the per-day vandalism flags of all three OSMPatrol screens (a
   `vandalism_flag` column).
 - Vandalism outputs of every `update` run: `vandalism_minutes.bin` (the
   persisted per-`(uid, minute)` modified+deleted bucket store behind the
   flag), the bit-coded per-day `vandalism_flag` in
   `users_history.parquet` (bit 0 = filter 2, bit 1 = filter-3 node moves
-  over 500 m, bit 2 = filter 1, a reputation below 5%; filters 2/3 have no
+  over 500 m, bit 2 = filter 1, a ranking below 5%; filters 2/3 have no
   persisted node-moves dataset — they survive only as carried day bits,
   and bit 2 is forward-only too: import writes 0 and updates set it only
   on the new rows they write for a below-threshold contributor (once set,
   never removed), and `vandalism.parquet` — an update-only re-export of
   the flagged days carrying each day's total change count, its far-move
-  count and the reputation frozen at the day's first flag.
+  count and the ranking frozen at the day's first flag.
 
 ![Changes H3](changes-h3.webp)
 
@@ -159,7 +159,7 @@ defaults (`data/output`, `<output-dir>/../node_positions.cache` =
 | `--h3-resolution <r>` | Resolution of the data cells, 0-13 (default: `9`); must match between import, prepare-update and update (the caches encode cells at this resolution) |
 | `--change-group-rows <n>` | Target rows per Parquet row group of the changes dataset (`changes/*/year=*/data.parquet`) (default: `10000`); smaller row groups keep `h3_cell`/`change_date` min-max compact so range-pruning clients download only the pages they need |
 | `--users-history-group-rows <n>` | Target rows per Parquet row group of `users_history.parquet` (default: `10000`) |
-| `--reputation-group-rows <n>` | Target rows per Parquet row group of `user_reputation.parquet` (default: `1000`) |
+| `--ranking-group-rows <n>` | Target rows per Parquet row group of `user_ranking.parquet` (default: `1000`) |
 
 ### Running
 
@@ -235,12 +235,12 @@ Then open `http://localhost:8080/`.
   day-by-day histogram. Pan/zoom and the date range re-query automatically
   (debounced).
 - **`/users/`** — the users viewer: look up an OSM username to see their
-  OSMPatrol reputation (0-100), per-user history totals and an edit-activity
+  OSMPatrol ranking (0-100), per-user history totals and an edit-activity
   timeline.
 - **`/vandalism/`** — the vandalism viewer: the 100 latest flagged
   `(uid, change_date)` days from `vandalism.parquet` (update-only), with each
   day's total change count, an edit-burst marker (>500 modified/deleted objects
-  in one hour), far-move count and reputation.
+  in one hour), far-move count and ranking.
 
 Clients read the files with byte-range requests: hyparquet's
 `asyncBufferFromUrl` opens each file and fetches the footer, row-group

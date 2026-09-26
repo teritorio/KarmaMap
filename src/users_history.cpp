@@ -31,7 +31,7 @@
 
 #include "arrow_table_io.hpp"
 #include "h3_utils.hpp"
-#include "reputation.hpp"
+#include "ranking.hpp"
 #include "vandalism.hpp"
 
 namespace users_history {
@@ -139,7 +139,7 @@ public:
 
     // Relations feed the same per-(uid, day) counters as nodes/ways, so
     // created/modified/deleted changes all contribute to a day's activity
-    // total. Only the created counter and its tags carry reputation value.
+    // total. Only the created counter and its tags carry ranking points.
     void relation(const osmium::Relation& relation) {
         add_version(static_cast<int64_t>(relation.uid()), object_user(relation),
                     version_day(relation.timestamp()), relation.visible(),
@@ -233,7 +233,7 @@ private:
 
 // Live per-day output counters: the six node/way change counters plus the
 // three relation counters (created, modified, deleted). The per-day tag_*
-// counters are not consumed by the users viewer (the reputation's tag aspects
+// counters are not consumed by the users viewer (the ranking's tag aspects
 // come from the per-user totals below), so they are aggregated internally but
 // never written to the history file.
 constexpr size_t kLiveCounterCount = 9;
@@ -253,11 +253,14 @@ void append_stage_columns(const std::shared_ptr<arrow::Table>& table,
 }
 
 // The single-chunk typed column of a (combined) table, by column name.
+// `what` names the file for the error, so a base file with a foreign schema
+// does not read as a stage file.
 template <typename T>
-const T* typed_column(const std::shared_ptr<arrow::Table>& table, const std::string& name) {
+const T* typed_column(const std::shared_ptr<arrow::Table>& table, const std::string& name,
+                      const std::string& what = "stage table") {
     const int idx = table->schema()->GetFieldIndex(name);
     if (idx < 0) {
-        throw std::runtime_error("Stage table is missing the '" + name + "' column");
+        throw std::runtime_error(what + " is missing the '" + name + "' column");
     }
     return static_cast<const T*>(table->column(idx)->chunk(0).get());
 }
@@ -276,10 +279,10 @@ std::vector<std::string> collect_parquet_recursive(const std::string& root) {
     return paths;
 }
 
-// Reputation aspect layout: the three created-counter sums followed by the
+// Ranking aspect layout: the three created-counter sums followed by the
 // Top12 tag sums (kCounterCount - kTagCount .. kCounterCount - 1), aligned
 // with the per-uid totals vectors.
-constexpr size_t kRepAspectCount = 3 + kTagCount;
+constexpr size_t kRankAspectCount = 3 + kTagCount;
 constexpr size_t kFirstTag = kCounterCount - kTagCount;
 constexpr auto counter_index = [](std::string_view name) -> size_t {
     for (size_t i = 0; i < kCounterCount; ++i) {
@@ -288,132 +291,131 @@ constexpr auto counter_index = [](std::string_view name) -> size_t {
     return kCounterCount;
 };
 
-// Writes user_reputation.parquet (next to `history_path`) from per-uid
+// Writes user_ranking.parquet (next to `history_path`) from per-uid
 // identity, first-seen day and the 21 counter totals, ranked exactly over the
-// whole contributor population by reputation::compute. The dataset-wide
+// whole contributor population by ranking::compute. The dataset-wide
 // active/max stats land in the Parquet footer key_value_metadata; sorting is
 // by (username, uid) so an exact username filter prunes to matching pages.
-// Returns the reputation::Result, reused by the update finalize for the
+// Returns the ranking::Result, reused by the update finalize for the
 // filter-1 flag on newly-written rows so the ranking is computed exactly once
 // per finalize.
-reputation::Result build_reputation_table(
-    const std::vector<int64_t>& rep_uids,
-    const std::vector<std::string>& rep_usernames,
-    const std::vector<uint16_t>& rep_first_seen,
+ranking::Result build_ranking_table(
+    const std::vector<int64_t>& rank_uids,
+    const std::vector<std::string>& rank_usernames,
+    const std::vector<uint16_t>& rank_first_seen,
     const std::array<std::vector<uint64_t>, kCounterCount>& counter_sums,
-    const std::string& history_path, int64_t reputation_group_rows) {
-    std::array<size_t, kRepAspectCount> rep_counter_idx = {
+    const std::string& history_path, int64_t ranking_group_rows) {
+    std::array<size_t, kRankAspectCount> rank_counter_idx = {
         counter_index("node_created"), counter_index("way_created"),
         counter_index("relation_created")};
-    for (size_t i = 0; i < kTagCount; ++i) rep_counter_idx[3 + i] = kFirstTag + i;
-    if (rep_counter_idx[0] >= kCounterCount || rep_counter_idx[1] >= kCounterCount ||
-        rep_counter_idx[2] >= kCounterCount) {
-        throw std::runtime_error("Counter schema changed: reputation aspects missing");
+    for (size_t i = 0; i < kTagCount; ++i) rank_counter_idx[3 + i] = kFirstTag + i;
+    if (rank_counter_idx[0] >= kCounterCount || rank_counter_idx[1] >= kCounterCount ||
+        rank_counter_idx[2] >= kCounterCount) {
+        throw std::runtime_error("Counter schema changed: ranking aspects missing");
     }
 
-    // Exact reputation: each aspect is ranked over the whole contributor
+    // Exact ranking: each aspect is ranked over the whole contributor
     // population (no sampling), computed in C++ so clients need no
     // distribution file or ranking math.
-    std::array<std::vector<uint64_t>, kRepAspectCount> rep_totals;
-    for (size_t a = 0; a < kRepAspectCount; ++a) {
-        rep_totals[a].resize(rep_uids.size());
-        for (size_t i = 0; i < rep_uids.size(); ++i) {
-            rep_totals[a][i] = counter_sums[rep_counter_idx[a]][i];
+    std::array<std::vector<uint64_t>, kRankAspectCount> rank_totals;
+    for (size_t a = 0; a < kRankAspectCount; ++a) {
+        rank_totals[a].resize(rank_uids.size());
+        for (size_t i = 0; i < rank_uids.size(); ++i) {
+            rank_totals[a][i] = counter_sums[rank_counter_idx[a]][i];
         }
     }
-    const reputation::Result rep = reputation::compute(rep_uids, rep_totals);
+    const ranking::Result rank = ranking::compute(rank_uids, rank_totals);
 
-    std::array<std::string, kRepAspectCount> rep_aspect_names = {"node", "way",
-                                                                  "relation"};
+    std::array<std::string, kRankAspectCount> rank_aspect_names = {"node", "way",
+                                                                    "relation"};
     for (size_t i = 0; i < kTagCount; ++i) {
-        rep_aspect_names[3 + i] = "tag_" + std::string(kTop12TagKeys[i]);
+        rank_aspect_names[3 + i] = "tag_" + std::string(kTop12TagKeys[i]);
     }
 
     // Wide one-row-per-uid table (see the header for the column layout).
-    arrow::Int64Builder rep_uid_builder;
-    arrow::StringBuilder rep_username_builder;
-    arrow::UInt16Builder rep_first_seen_builder;
-    arrow::UInt8Builder rep_score_builder;
-    std::array<arrow::UInt32Builder, kCounterCount> rep_counter_builders;
-    std::array<arrow::DoubleBuilder, kRepAspectCount> rep_pct_builders;
-    for (size_t i = 0; i < rep_uids.size(); ++i) {
-        append_checked(rep_uid_builder, rep_uids[i]);
-        append_checked(rep_username_builder, rep_usernames[i]);
-        append_checked(rep_first_seen_builder, rep_first_seen[i]);
-        append_checked(rep_score_builder, rep.reputation[i]);
+    arrow::Int64Builder rank_uid_builder;
+    arrow::StringBuilder rank_username_builder;
+    arrow::UInt16Builder rank_first_seen_builder;
+    arrow::UInt8Builder rank_score_builder;
+    std::array<arrow::UInt32Builder, kCounterCount> rank_counter_builders;
+    std::array<arrow::DoubleBuilder, kRankAspectCount> rank_pct_builders;
+    for (size_t i = 0; i < rank_uids.size(); ++i) {
+        append_checked(rank_uid_builder, rank_uids[i]);
+        append_checked(rank_username_builder, rank_usernames[i]);
+        append_checked(rank_first_seen_builder, rank_first_seen[i]);
+        append_checked(rank_score_builder, rank.ranking[i]);
         for (size_t c = 0; c < kCounterCount; ++c) {
-            append_checked(rep_counter_builders[c], counter_sums[c][i]);
+            append_checked(rank_counter_builders[c], counter_sums[c][i]);
         }
-        for (size_t a = 0; a < kRepAspectCount; ++a) {
-            append_checked(rep_pct_builders[a], rep.pct[a][i]);
+        for (size_t a = 0; a < kRankAspectCount; ++a) {
+            append_checked(rank_pct_builders[a], rank.pct[a][i]);
         }
     }
 
-    std::vector<std::shared_ptr<arrow::Field>> rep_fields = {
+    std::vector<std::shared_ptr<arrow::Field>> rank_fields = {
         arrow::field("uid", arrow::int64(), false),
         arrow::field("username", arrow::utf8(), false),
         arrow::field("first_seen_day", arrow::uint16(), false),
-        arrow::field("reputation", arrow::uint8(), false),
+        arrow::field("ranking", arrow::uint8(), false),
     };
     for (const auto& c : kCounters) {
-        rep_fields.push_back(arrow::field(c.name, arrow::uint32(), false));
+        rank_fields.push_back(arrow::field(c.name, arrow::uint32(), false));
     }
-    for (size_t a = 0; a < kRepAspectCount; ++a) {
-        rep_fields.push_back(
-            arrow::field(rep_aspect_names[a] + "_pct", arrow::float64(), false));
+    for (size_t a = 0; a < kRankAspectCount; ++a) {
+        rank_fields.push_back(
+            arrow::field(rank_aspect_names[a] + "_pct", arrow::float64(), false));
     }
 
-    std::vector<std::shared_ptr<arrow::Array>> rep_columns;
-    rep_columns.reserve(4 + kCounterCount + kRepAspectCount);
-    std::shared_ptr<arrow::Array> rep_uid, rep_username_arr, rep_first_seen_arr, rep_score;
-    finish_checked(rep_uid_builder, &rep_uid);
-    finish_checked(rep_username_builder, &rep_username_arr);
-    finish_checked(rep_first_seen_builder, &rep_first_seen_arr);
-    finish_checked(rep_score_builder, &rep_score);
-    rep_columns.push_back(rep_uid);
-    rep_columns.push_back(rep_username_arr);
-    rep_columns.push_back(rep_first_seen_arr);
-    rep_columns.push_back(rep_score);
+    std::vector<std::shared_ptr<arrow::Array>> rank_columns;
+    rank_columns.reserve(4 + kCounterCount + kRankAspectCount);
+    std::shared_ptr<arrow::Array> rank_uid, rank_username_arr, rank_first_seen_arr, rank_score;
+    finish_checked(rank_uid_builder, &rank_uid);
+    finish_checked(rank_username_builder, &rank_username_arr);
+    finish_checked(rank_first_seen_builder, &rank_first_seen_arr);
+    finish_checked(rank_score_builder, &rank_score);
+    rank_columns.push_back(rank_uid);
+    rank_columns.push_back(rank_username_arr);
+    rank_columns.push_back(rank_first_seen_arr);
+    rank_columns.push_back(rank_score);
     for (size_t c = 0; c < kCounterCount; ++c) {
         std::shared_ptr<arrow::Array> arr;
-        finish_checked(rep_counter_builders[c], &arr);
-        rep_columns.push_back(arr);
+        finish_checked(rank_counter_builders[c], &arr);
+        rank_columns.push_back(arr);
     }
-    for (size_t a = 0; a < kRepAspectCount; ++a) {
+    for (size_t a = 0; a < kRankAspectCount; ++a) {
         std::shared_ptr<arrow::Array> arr;
-        finish_checked(rep_pct_builders[a], &arr);
-        rep_columns.push_back(arr);
+        finish_checked(rank_pct_builders[a], &arr);
+        rank_columns.push_back(arr);
     }
     // The dataset-wide active/max aspect stats are the same value for every
     // row, so they are attached once as file-level key_value_metadata rather
     // than written as 30 repeated columns.
-    std::vector<std::string> rep_meta_keys;
-    std::vector<std::string> rep_meta_values;
-    rep_meta_keys.reserve(2 * kRepAspectCount);
-    rep_meta_values.reserve(2 * kRepAspectCount);
-    for (size_t a = 0; a < kRepAspectCount; ++a) {
-        rep_meta_keys.push_back(rep_aspect_names[a] + "_active");
-        rep_meta_values.push_back(std::to_string(rep.active[a]));
-        rep_meta_keys.push_back(rep_aspect_names[a] + "_max");
-        rep_meta_values.push_back(std::to_string(rep.max[a]));
+    std::vector<std::string> rank_meta_keys;
+    std::vector<std::string> rank_meta_values;
+    rank_meta_keys.reserve(2 * kRankAspectCount);
+    rank_meta_values.reserve(2 * kRankAspectCount);
+    for (size_t a = 0; a < kRankAspectCount; ++a) {
+        rank_meta_keys.push_back(rank_aspect_names[a] + "_active");
+        rank_meta_values.push_back(std::to_string(rank.active[a]));
+        rank_meta_keys.push_back(rank_aspect_names[a] + "_max");
+        rank_meta_values.push_back(std::to_string(rank.max[a]));
     }
-    auto rep_meta = arrow::KeyValueMetadata::Make(rep_meta_keys, rep_meta_values);
-    auto rep_table = arrow::Table::Make(arrow::schema(rep_fields), rep_columns);
-    rep_table = arrow_table_io::sort_by_keys(
-        rep_table, {arrow::compute::SortKey("username"), arrow::compute::SortKey("uid")});
+    auto rank_meta = arrow::KeyValueMetadata::Make(rank_meta_keys, rank_meta_values);
+    auto rank_table = arrow::Table::Make(arrow::schema(rank_fields), rank_columns);
+    rank_table = arrow_table_io::sort_by_keys(
+        rank_table, {arrow::compute::SortKey("username"), arrow::compute::SortKey("uid")});
 
     const std::filesystem::path history_parent =
         std::filesystem::path(history_path).parent_path();
-    const std::string reputation_path =
-        (history_parent / "user_reputation.parquet").string();
-    const std::string reputation_tmp = reputation_path + ".tmp";
+    const std::string ranking_path = (history_parent / "user_ranking.parquet").string();
+    const std::string ranking_tmp = ranking_path + ".tmp";
     // The viewer filters on username (exact); uid is kept too as the stable
     // identity key. Only those two columns keep row-group min/max statistics
     // in the footer.
-    arrow_table_io::write_table(reputation_tmp, rep_table, rep_meta, reputation_group_rows,
+    arrow_table_io::write_table(ranking_tmp, rank_table, rank_meta, ranking_group_rows,
                                 {"username", "uid"});
-    std::filesystem::rename(reputation_tmp, reputation_path);
-    return rep;
+    std::filesystem::rename(ranking_tmp, ranking_path);
+    return rank;
 }
 
 }  // namespace
@@ -452,7 +454,7 @@ void run_scan(const std::string& input_path, const std::string& stage_dir) {
 }
 
 void run_finalize(const std::string& stage_dir, const std::string& history_path,
-                  int64_t users_history_group_rows, int64_t reputation_group_rows) {
+                  int64_t users_history_group_rows, int64_t ranking_group_rows) {
     // Registers Arrow's compute kernels (sort_indices, take), required even
     // when the finalize runs without any of passes 1-3 / a diff scan.
     auto init_status = arrow::compute::Initialize();
@@ -518,13 +520,13 @@ void run_finalize(const std::string& stage_dir, const std::string& history_path,
 
     // Per-uid sums of all 21 history counters, in the (uid) order of the
     // sorted history table — an index-aligned walk over the combined rows that
-    // feeds the reputation (and, in the update finalize, the filter-1 flag on
+    // feeds the ranking (and, in the update finalize, the filter-1 flag on
     // newly-written rows). The aspect mapping lives in
-    // build_reputation_table; storing every counter total (not just the
-    // reputation aspects) keeps the per-user totals complete in this file.
-    std::vector<int64_t> rep_uids;
-    std::vector<std::string> rep_usernames;
-    std::vector<uint16_t> rep_first_seen;
+    // build_ranking_table; storing every counter total (not just the
+    // ranking aspects) keeps the per-user totals complete in this file.
+    std::vector<int64_t> rank_uids;
+    std::vector<std::string> rank_usernames;
+    std::vector<uint16_t> rank_first_seen;
     std::array<std::vector<uint64_t>, kCounterCount> counter_sums;
     {
         std::array<uint64_t, kCounterCount> acc{};
@@ -535,10 +537,10 @@ void run_finalize(const std::string& stage_dir, const std::string& history_path,
         const auto* uid_arr = static_cast<const arrow::Int64Array*>(uid_array);
         const auto flush = [&]() {
             if (!in) return;
-            rep_uids.push_back(cur);
+            rank_uids.push_back(cur);
             if (group_username.empty()) group_username = "<" + std::to_string(cur) + ">";
-            rep_usernames.push_back(group_username);
-            rep_first_seen.push_back(group_first_seen);
+            rank_usernames.push_back(group_username);
+            rank_first_seen.push_back(group_first_seen);
             for (size_t c = 0; c < kCounterCount; ++c) {
                 counter_sums[c].push_back(acc[c]);
             }
@@ -566,10 +568,10 @@ void run_finalize(const std::string& stage_dir, const std::string& history_path,
         flush();
     }
 
-    // Writes user_reputation.parquet for every contributor (identity, current
+    // Writes user_ranking.parquet for every contributor (identity, current
     // username, the exact per-aspect percentile scores).
-    build_reputation_table(rep_uids, rep_usernames, rep_first_seen, counter_sums,
-                           history_path, reputation_group_rows);
+    build_ranking_table(rank_uids, rank_usernames, rank_first_seen, counter_sums,
+                        history_path, ranking_group_rows);
 
     // One derived pass over the (uid, change_date)-sorted rows computes the
     // history rows.
@@ -597,7 +599,7 @@ void run_finalize(const std::string& stage_dir, const std::string& history_path,
         append_checked(ind_count_builder, count);
         // Import writes no vandalism flags: the object hours precede the
         // replication stream's minute buckets (filters 2/3), and filter 1 is
-        // forward-only, marking rows written after a low reputation is
+        // forward-only, marking rows written after a low ranking is
         // detected rather than retroactively over the whole history.
         append_checked(ind_flag_builder, 0);
     }
@@ -631,7 +633,7 @@ void run_finalize(const std::string& stage_dir, const std::string& history_path,
     std::filesystem::remove_all(stage_dir);
 
     std::cerr << "[users history] finalized " << history_table->num_rows()
-              << " history rows, " << rep_uids.size() << " reputation rows\n";
+              << " history rows, " << rank_uids.size() << " ranking rows\n";
 }
 
 void run_scan_diff(const std::string& diff_path, const std::string& stage_dir) {
@@ -657,7 +659,7 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir) {
 }
 
 void run_update_finalize(const std::string& stage_root, const std::string& history_path,
-                         int64_t users_history_group_rows, int64_t reputation_group_rows,
+                         int64_t users_history_group_rows, int64_t ranking_group_rows,
                          const std::string& minutes_path,
                          const std::map<std::pair<int64_t, uint16_t>, vandalism::MoveDay>& move_flags) {
     // Registers Arrow's compute kernels (sort_indices, take).
@@ -730,89 +732,89 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
         if (it == delta_first_seen.end() || day < it->second) delta_first_seen[uid] = day;
     }
 
-    // Reputation: the existing per-uid totals (whose new first-seen day and
-    // username, if touched by the diffs, are merged in) plus the diff totals,
-    // then ranked exactly over the whole population again. The ranking is
-    // computed here, before the history write, because it also yields the
-    // filter-1 flag set that this run's newly-written rows are screened with.
     const std::filesystem::path history_parent =
         std::filesystem::path(history_path).parent_path();
-    const std::string reputation_path =
-        (history_parent / "user_reputation.parquet").string();
+    const std::string ranking_path = (history_parent / "user_ranking.parquet").string();
     const std::string vandalism_path = (history_parent / "vandalism.parquet").string();
-    std::vector<int64_t> rep_uids;
-    std::vector<std::string> rep_usernames;
-    std::vector<uint16_t> rep_first_seen;
-    std::array<std::vector<uint64_t>, kCounterCount> counter_sums;
-    std::unordered_map<int64_t, size_t> uid_index;
-    bool have_base_rep = false;
-    if (std::filesystem::exists(reputation_path)) {
-        auto base_result = arrow_table_io::read_table(reputation_path)->CombineChunks();
+
+    // The vandalism file freezes each flagged day's filter-1 ranking and
+    // far-move count. vandalism_base maps every previously flagged
+    // (uid, change_date) to those carried values; the base read and the export
+    // loop below that writes over it must stay in lockstep (far_move_count,
+    // ranking_at_day are the only carried columns).
+    struct VandalBaseRow {
+        uint32_t far_move_count = 0;
+        uint8_t ranking_at_day = 0;
+    };
+    std::map<std::pair<int64_t, uint16_t>, VandalBaseRow> vandalism_base;
+    if (std::filesystem::exists(vandalism_path)) {
+        auto base_result = arrow_table_io::read_table(vandalism_path)->CombineChunks();
         if (!base_result.ok()) {
-            throw std::runtime_error("CombineChunks failed on " + reputation_path + ": " +
+            throw std::runtime_error("CombineChunks failed on " + vandalism_path + ": " +
                                      base_result.status().ToString());
         }
-        const std::shared_ptr<arrow::Table> base_rep = *base_result;
-        const auto* r_uids = typed_column<arrow::Int64Array>(base_rep, "uid");
-        const auto* r_users = typed_column<arrow::StringArray>(base_rep, "username");
-        const auto* r_seen = typed_column<arrow::UInt16Array>(base_rep, "first_seen_day");
-        for (int64_t i = 0; i < base_rep->num_rows(); ++i) {
+        const std::shared_ptr<arrow::Table> base_v = *base_result;
+        const auto* bv_uids = typed_column<arrow::Int64Array>(base_v, "uid", vandalism_path);
+        const auto* bv_days =
+            typed_column<arrow::UInt16Array>(base_v, "change_date", vandalism_path);
+        const auto* bv_moves =
+            typed_column<arrow::UInt32Array>(base_v, "far_move_count", vandalism_path);
+        const auto* bv_rank =
+            typed_column<arrow::UInt8Array>(base_v, "ranking_at_day", vandalism_path);
+        for (int64_t i = 0; i < base_v->num_rows(); ++i) {
+            VandalBaseRow& row = vandalism_base[{bv_uids->Value(i), bv_days->Value(i)}];
+            row.far_move_count = bv_moves->Value(i);
+            row.ranking_at_day = bv_rank->Value(i);
+        }
+    }
+    std::vector<int64_t> rank_uids;
+    std::vector<std::string> rank_usernames;
+    std::vector<uint16_t> rank_first_seen;
+    std::array<std::vector<uint64_t>, kCounterCount> counter_sums;
+    std::unordered_map<int64_t, size_t> uid_index;
+    // The base ranking rows: identity columns and the 21 counter totals, which
+    // the run's delta totals are added to below. Together with the diff totals
+    // they are ranked exactly over the whole population again, before the
+    // history write, because the ranking also yields the filter-1 flag set
+    // that this run's newly-written rows are screened with.
+    bool have_base_rank = false;
+    if (std::filesystem::exists(ranking_path)) {
+        auto base_result = arrow_table_io::read_table(ranking_path)->CombineChunks();
+        if (!base_result.ok()) {
+            throw std::runtime_error("CombineChunks failed on " + ranking_path + ": " +
+                                     base_result.status().ToString());
+        }
+        const std::shared_ptr<arrow::Table> base_rank = *base_result;
+        const auto* r_uids = typed_column<arrow::Int64Array>(base_rank, "uid", ranking_path);
+        const auto* r_users =
+            typed_column<arrow::StringArray>(base_rank, "username", ranking_path);
+        const auto* r_seen =
+            typed_column<arrow::UInt16Array>(base_rank, "first_seen_day", ranking_path);
+        for (int64_t i = 0; i < base_rank->num_rows(); ++i) {
             const int64_t uid = r_uids->Value(i);
-            uid_index[uid] = rep_uids.size();
-            rep_uids.push_back(uid);
-            rep_usernames.push_back(r_users->GetString(i));
-            rep_first_seen.push_back(r_seen->Value(i));
+            uid_index[uid] = rank_uids.size();
+            rank_uids.push_back(uid);
+            rank_usernames.push_back(r_users->GetString(i));
+            rank_first_seen.push_back(r_seen->Value(i));
         }
         for (size_t c = 0; c < kCounterCount; ++c) {
-            const auto* arr = typed_column<arrow::UInt32Array>(base_rep, kCounters[c].name);
-            counter_sums[c].resize(rep_uids.size());
-            for (size_t i = 0; i < rep_uids.size(); ++i) counter_sums[c][i] = arr->Value(i);
+            const auto* arr =
+                typed_column<arrow::UInt32Array>(base_rank, kCounters[c].name, ranking_path);
+            counter_sums[c].resize(rank_uids.size());
+            for (size_t i = 0; i < rank_uids.size(); ++i) counter_sums[c][i] = arr->Value(i);
         }
-        have_base_rep = true;
-    }
-    // Filter 1 (paper sec. 5): users whose current reputation is below
-    // kFilter1ReputationThreshold. Unlike the diff-based screens this is a
-    // forward-only flag: it is applied to the run's newly-written rows and
-    // never re-derived over the base history. A contributor who created
-    // nothing scores reputation 0, which covers the paper's "new users" half.
-    std::unordered_map<int64_t, uint8_t> filter1_uid;
-    reputation::Result rep;
-    if (have_base_rep || !delta_totals.empty()) {
-        for (const auto& [uid, sum] : delta_totals) {
-            auto it = uid_index.find(uid);
-            if (it != uid_index.end()) {
-                const size_t idx = it->second;
-                for (size_t c = 0; c < kCounterCount; ++c) counter_sums[c][idx] += sum[c];
-                const auto us = delta_username.find(uid);
-                if (us != delta_username.end() && !us->second.empty()) rep_usernames[idx] = us->second;
-                rep_first_seen[idx] = std::min(rep_first_seen[idx], delta_first_seen[uid]);
-            } else {
-                uid_index[uid] = rep_uids.size();
-                rep_uids.push_back(uid);
-                std::string name = delta_username[uid];
-                if (name.empty()) name = "<" + std::to_string(uid) + ">";
-                rep_usernames.push_back(std::move(name));
-                rep_first_seen.push_back(delta_first_seen[uid]);
-                for (size_t c = 0; c < kCounterCount; ++c) counter_sums[c].push_back(sum[c]);
-            }
-        }
-        rep = build_reputation_table(
-            rep_uids, rep_usernames, rep_first_seen, counter_sums, history_path,
-            reputation_group_rows);
-        for (size_t i = 0; i < rep_uids.size() && i < rep.reputation.size(); ++i) {
-            if (rep.reputation[i] < vandalism::kFilter1ReputationThreshold) {
-                filter1_uid[rep_uids[i]] = vandalism::kFlagFilter1;
-            }
-        }
+        have_base_rank = true;
     }
 
-    // Users history: base file plus deltas, summed per (uid, change_date)
-    // and written sorted, once. All three filter bits are monotonic: the base
+    // Users history base, read with the two bases above so that a base which
+    // does not match this build aborts the run before its first file is
+    // replaced. It is folded with this run's deltas and flag sources below
+    // into one sorted rewrite. All three filter bits are monotonic: the base
     // row's flags are carried forward unchanged, bits 0/1 are ORed with this
     // run's minute-store and move-flagged days, and bit 2 (filter 1) is set on
-    // the run's newly-written rows whose user's current reputation is below
+    // the run's newly-written rows whose user's current ranking is below
     // the threshold. Base rows are never masked or re-flagged, so a flag once
-    // written persists and a reputation drop is never applied retroactively.
+    // written persists and a ranking drop is never applied retroactively.
     std::map<std::pair<int64_t, uint16_t>, uint32_t> merged_counts;
     std::map<std::pair<int64_t, uint16_t>, uint8_t> merged_flags;
     std::set<std::pair<int64_t, uint16_t>> base_keys;
@@ -823,10 +825,13 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
                                      base_result.status().ToString());
         }
         const std::shared_ptr<arrow::Table> base_table = *base_result;
-        const auto* b_uids = typed_column<arrow::Int64Array>(base_table, "uid");
-        const auto* b_days = typed_column<arrow::UInt16Array>(base_table, "change_date");
-        const auto* b_counts = typed_column<arrow::UInt32Array>(base_table, "count");
-        const auto* b_flags = typed_column<arrow::UInt8Array>(base_table, "vandalism_flag");
+        const auto* b_uids = typed_column<arrow::Int64Array>(base_table, "uid", history_path);
+        const auto* b_days =
+            typed_column<arrow::UInt16Array>(base_table, "change_date", history_path);
+        const auto* b_counts =
+            typed_column<arrow::UInt32Array>(base_table, "count", history_path);
+        const auto* b_flags =
+            typed_column<arrow::UInt8Array>(base_table, "vandalism_flag", history_path);
         for (int64_t i = 0; i < base_table->num_rows(); ++i) {
             const auto key = std::make_pair(b_uids->Value(i), b_days->Value(i));
             merged_counts[key] += b_counts->Value(i);
@@ -834,6 +839,42 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
             base_keys.insert(key);
         }
     }
+    // Filter 1 (paper sec. 5): users whose current ranking is below
+    // kFilter1RankingThreshold. Unlike the diff-based screens this is a
+    // forward-only flag: it is applied to the run's newly-written rows and
+    // never re-derived over the base history. A contributor who created
+    // nothing ranks 0, which covers the paper's "new users" half.
+    std::unordered_map<int64_t, uint8_t> filter1_uid;
+    ranking::Result rank;
+    if (have_base_rank || !delta_totals.empty()) {
+        for (const auto& [uid, sum] : delta_totals) {
+            auto it = uid_index.find(uid);
+            if (it != uid_index.end()) {
+                const size_t idx = it->second;
+                for (size_t c = 0; c < kCounterCount; ++c) counter_sums[c][idx] += sum[c];
+                const auto us = delta_username.find(uid);
+                if (us != delta_username.end() && !us->second.empty()) rank_usernames[idx] = us->second;
+                rank_first_seen[idx] = std::min(rank_first_seen[idx], delta_first_seen[uid]);
+            } else {
+                uid_index[uid] = rank_uids.size();
+                rank_uids.push_back(uid);
+                std::string name = delta_username[uid];
+                if (name.empty()) name = "<" + std::to_string(uid) + ">";
+                rank_usernames.push_back(std::move(name));
+                rank_first_seen.push_back(delta_first_seen[uid]);
+                for (size_t c = 0; c < kCounterCount; ++c) counter_sums[c].push_back(sum[c]);
+            }
+        }
+        rank = build_ranking_table(
+            rank_uids, rank_usernames, rank_first_seen, counter_sums, history_path,
+            ranking_group_rows);
+        for (size_t i = 0; i < rank_uids.size() && i < rank.ranking.size(); ++i) {
+            if (rank.ranking[i] < vandalism::kFilter1RankingThreshold) {
+                filter1_uid[rank_uids[i]] = vandalism::kFlagFilter1;
+            }
+        }
+    }
+
     for (const auto& [key, count] : delta_counts) merged_counts[key] += count;
 
     // Rebuild the whole-history flags from the persisted sources: bit 0 from
@@ -849,34 +890,6 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
         merged_flags[key] |= value.flags;
     }
 
-    // The vandalism file freezes each flagged day's filter-1 reputation and
-    // far-move count. vandalism_base maps every previously flagged
-    // (uid, change_date) to those carried values; the base reads below that
-    // the export loop writes over must stay in lockstep (far_move_count,
-    // reputation_at_day are the only carried columns).
-    struct VandalBaseRow {
-        uint32_t far_move_count = 0;
-        uint8_t reputation_at_day = 0;
-    };
-    std::map<std::pair<int64_t, uint16_t>, VandalBaseRow> vandalism_base;
-    if (std::filesystem::exists(vandalism_path)) {
-        auto base_result = arrow_table_io::read_table(vandalism_path)->CombineChunks();
-        if (!base_result.ok()) {
-            throw std::runtime_error("CombineChunks failed on " + vandalism_path + ": " +
-                                     base_result.status().ToString());
-        }
-        const std::shared_ptr<arrow::Table> base_v = *base_result;
-        const auto* bv_uids = typed_column<arrow::Int64Array>(base_v, "uid");
-        const auto* bv_days = typed_column<arrow::UInt16Array>(base_v, "change_date");
-        const auto* bv_moves = typed_column<arrow::UInt32Array>(base_v, "far_move_count");
-        const auto* bv_rep = typed_column<arrow::UInt8Array>(base_v, "reputation_at_day");
-        for (int64_t i = 0; i < base_v->num_rows(); ++i) {
-            VandalBaseRow& row = vandalism_base[{bv_uids->Value(i), bv_days->Value(i)}];
-            row.far_move_count = bv_moves->Value(i);
-            row.reputation_at_day = bv_rep->Value(i);
-        }
-    }
-
     arrow::Int64Builder ind_uid_builder;
     arrow::UInt16Builder ind_day_builder;
     arrow::UInt32Builder ind_count_builder;
@@ -885,7 +898,7 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     // day carrying any bit, plus the day's total change count (created +
     // modified + deleted, the same value as the count column written above),
     // the count of that day's staged moves beyond kFilter3Threshold and the
-    // reputation frozen at the day's first flag, with the username resolved
+    // ranking frozen at the day's first flag, with the username resolved
     // inline.
     arrow::Int64Builder v_uid_builder;
     arrow::StringBuilder v_user_builder;
@@ -893,13 +906,13 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     arrow::UInt8Builder v_flag_builder;
     arrow::UInt32Builder v_changes_builder;
     arrow::UInt32Builder v_moves_builder;
-    arrow::UInt8Builder v_rep_builder;
+    arrow::UInt8Builder v_rank_builder;
     for (const auto& [key, count] : merged_counts) {
         append_checked(ind_uid_builder, key.first);
         append_checked(ind_day_builder, key.second);
         append_checked(ind_count_builder, count);
         // Forward-only filter 1: only the rows this run newly writes may pick
-        // up the low-reputation bit; a day already present in the base file
+        // up the low-ranking bit; a day already present in the base file
         // keeps its carried flags untouched.
         const auto it = base_keys.count(key) ? filter1_uid.end() : filter1_uid.find(key.first);
         const uint8_t flag =
@@ -912,7 +925,7 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
             const auto ui = uid_index.find(key.first);
             append_checked(v_user_builder,
                            ui != uid_index.end()
-                               ? rep_usernames[ui->second]
+                               ? rank_usernames[ui->second]
                                : "<" + std::to_string(key.first) + ">");
             // changes is the day's own total re-derived from the merged counts
             // each run (an appended-to history yields the same sum, so the
@@ -920,21 +933,21 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
             // is the day's count of moves beyond kFilter3Threshold: carried
             // from the base file when the day was already flagged (the move
             // stage is transient), taken from this run's folded staged moves
-            // when the day is newly flagged. reputation_at_day is stamped once:
+            // when the day is newly flagged. ranking_at_day is stamped once:
             // carried from the base file when the day was already flagged,
-            // taken from this run's current reputation when the day is newly
+            // taken from this run's current ranking when the day is newly
             // flagged, and never recalculated.
             append_checked(v_changes_builder, count);
             const auto carried = vandalism_base.find(key);
             const auto mv = move_flags.find(key);
             if (carried != vandalism_base.end()) {
                 append_checked(v_moves_builder, carried->second.far_move_count);
-                append_checked(v_rep_builder, carried->second.reputation_at_day);
+                append_checked(v_rank_builder, carried->second.ranking_at_day);
             } else {
                 append_checked(v_moves_builder,
                                mv != move_flags.end() ? mv->second.far_move_count : 0);
-                append_checked(v_rep_builder,
-                               ui != uid_index.end() ? rep.reputation[ui->second] : 0);
+                append_checked(v_rank_builder,
+                               ui != uid_index.end() ? rank.ranking[ui->second] : 0);
             }
         }
     }
@@ -960,21 +973,21 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
 
     // The vandalism export: every (uid, change_date) carrying any flag bit,
     // with the username, the day's total change count, the count of that day's
-    // far moves and the reputation frozen at the day's first flag, sorted by
+    // far moves and the ranking frozen at the day's first flag, sorted by
     // (change_date, uid) with change_date descending (newest first) so a client
     // reading the 100 latest flagged days fetches only the leading row groups.
     // The flag set is exactly the users-history flags (the merged state above),
     // so the two outputs always agree. The file is update-only: import writes
     // no flags and never produces it; an update with no flagged day writes an
     // empty file.
-    std::shared_ptr<arrow::Array> v_uid, v_user, v_day, v_flag, v_changes, v_moves, v_rep;
+    std::shared_ptr<arrow::Array> v_uid, v_user, v_day, v_flag, v_changes, v_moves, v_rank;
     finish_checked(v_uid_builder, &v_uid);
     finish_checked(v_user_builder, &v_user);
     finish_checked(v_day_builder, &v_day);
     finish_checked(v_flag_builder, &v_flag);
     finish_checked(v_changes_builder, &v_changes);
     finish_checked(v_moves_builder, &v_moves);
-    finish_checked(v_rep_builder, &v_rep);
+    finish_checked(v_rank_builder, &v_rank);
     auto vandalism_table = arrow::Table::Make(
         arrow::schema({arrow::field("uid", arrow::int64(), false),
                        arrow::field("username", arrow::utf8(), false),
@@ -982,8 +995,8 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
                        arrow::field("vandalism_flag", arrow::uint8(), false),
                        arrow::field("changes", arrow::uint32(), false),
                        arrow::field("far_move_count", arrow::uint32(), false),
-                       arrow::field("reputation_at_day", arrow::uint8(), false)}),
-        {v_uid, v_user, v_day, v_flag, v_changes, v_moves, v_rep});
+                       arrow::field("ranking_at_day", arrow::uint8(), false)}),
+        {v_uid, v_user, v_day, v_flag, v_changes, v_moves, v_rank});
     // Newest-first order makes change_date (the pruning column) the compact
     // footer statistics key, with the most recent days' min/max in the first
     // row groups.
@@ -992,14 +1005,14 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
         {arrow::compute::SortKey("change_date", arrow::compute::SortOrder::Descending),
          arrow::compute::SortKey("uid")});
     const std::string vandalism_tmp = vandalism_path + ".tmp";
-    arrow_table_io::write_table(vandalism_tmp, vandalism_table, reputation_group_rows,
+    arrow_table_io::write_table(vandalism_tmp, vandalism_table, ranking_group_rows,
                                 {"change_date"});
     std::filesystem::rename(vandalism_tmp, vandalism_path);
 
     std::filesystem::remove_all(stage_root);
 
     std::cerr << "[users history] update finalized " << history_table->num_rows()
-              << " history rows, " << rep_uids.size() << " reputation rows, "
+              << " history rows, " << rank_uids.size() << " ranking rows, "
               << vandalism_table->num_rows() << " vandalism rows\n";
 }
 

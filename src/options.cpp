@@ -71,8 +71,8 @@ void print_usage(const char* argv0) {
         << "  --users-history-group-rows <n>\n"
         << "                            Target rows per Parquet row group of\n"
         << "                            users_history.parquet (default: 10000)\n"
-        << "  --reputation-group-rows <n> Target rows per Parquet row group of\n"
-        << "                            user_reputation.parquet (default: 1000)\n";
+        << "  --ranking-group-rows <n> Target rows per Parquet row group of\n"
+        << "                            user_ranking.parquet (default: 1000)\n";
 }
 
 bool parse_args(int argc, char** argv, Options* opts) {
@@ -167,12 +167,12 @@ bool parse_args(int argc, char** argv, Options* opts) {
                 throw std::runtime_error("--users-history-group-rows must be at least 1000");
             }
             opts->users_history_group_rows = rows;
-        } else if (arg == "--reputation-group-rows") {
-            const long long rows = std::stoll(next_value("--reputation-group-rows"));
+        } else if (arg == "--ranking-group-rows") {
+            const long long rows = std::stoll(next_value("--ranking-group-rows"));
             if (rows < 1'000) {
-                throw std::runtime_error("--reputation-group-rows must be at least 1000");
+                throw std::runtime_error("--ranking-group-rows must be at least 1000");
             }
-            opts->reputation_group_rows = rows;
+            opts->ranking_group_rows = rows;
         } else if (arg == "--pass") {
             const std::string v = next_value("--pass");
             opts->pass_given = true;

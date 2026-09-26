@@ -218,12 +218,12 @@ void run_users_history_pass(const Options& opts) {
     // scanning, so an empty scan cannot leave last run's rows behind.
     std::filesystem::remove_all(stage_dir);
     std::filesystem::remove(history_path);
-    std::filesystem::remove(opts.output_dir + "/user_reputation.parquet");
+    std::filesystem::remove(opts.output_dir + "/user_ranking.parquet");
     std::filesystem::remove(opts.output_dir + "/vandalism.parquet");
 
     users_history::run_scan(opts.input_path, stage_dir);
     users_history::run_finalize(stage_dir, history_path, opts.users_history_group_rows,
-                                opts.reputation_group_rows);
+                                opts.ranking_group_rows);
 }
 
 // Update mode: advances an existing dataset along its replication diff stream
@@ -362,7 +362,7 @@ std::optional<replication_state::State> run_update_mode(
     users_history::run_update_finalize(history_stage_root,
                                        opts.output_dir + "/users_history.parquet",
                                        opts.users_history_group_rows,
-                                       opts.reputation_group_rows, minutes_path,
+                                       opts.ranking_group_rows, minutes_path,
                                        move_flags);
 
     // Provenance records the applied state: the sequence is the last applied

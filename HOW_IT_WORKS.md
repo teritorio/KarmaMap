@@ -54,7 +54,7 @@ alone. The manifest is rebuilt at the end of every run.
 | Deleted way with a previously known geometry | Counted on the last known geometry |
 | Deleted way with no previously known geometry | Skipped |
 | Visible way with no nodes | Skipped |
-| Relations | Out of scope for the change-counting passes; the users-history pass counts relation created/modified/deleted in a day's activity (relations feed the reputation only via creations) |
+| Relations | Out of scope for the change-counting passes; the users-history pass counts relation created/modified/deleted in a day's activity (relations feed the ranking only via creations) |
 | Node cells of a way | Each distinct node cell counted once per way version |
 | Time zone | Strict UTC |
 | Source file ordering | Assumed sorted by `(id, version)` ascending, as documented for OSM full-history files |
@@ -191,9 +191,18 @@ Each update diff additionally runs the users-history scan
 into `users_history_update_stage/seq_<n>/`; one finalize pass folds the
 per-`(uid, change_date)` activity deltas and per-uid counter totals into
 `users_history.parquet` (in place, sorted) and rebuilds
-`user_reputation.parquet` from the combined existing + delta totals. The
+`user_ranking.parquet` from the combined existing + delta totals. The
 manifest's source block is updated to reflect the highest applied sequence
 and its timestamp once per run.
+
+That merge is by file name and schema: the finalize reads the previous
+`users_history.parquet`, `user_ranking.parquet` (the base of the recomputed
+ranking) and `vandalism.parquet` (including its `ranking_at_day` column, the
+base of the carried flag values) as its three bases, and reads all of them
+before it writes the first file of the run, so a base that does not match the
+current schema aborts the update with nothing replaced. An output directory not
+written by this build is therefore not updatable: re-import the snapshot into a
+fresh output directory.
 
 The vandalism engine (OSMPatrol filters 2 and 3, see
 `docs/osmpatrol-neis-2012.md`) runs in the same loop. Every diff is scanned
@@ -211,10 +220,10 @@ The finalize three-step ordering is load-bearing:
    `vandalism::flagged_days` plus this run's `vandalism::flagged_move_days`
    and recomputes the `vandalism_flag` column of `users_history.parquet`
    (bits 0/1 base flags carried forward, ORed with this run's filter-2 and
-   filter-3 bits; bit 2, the reputation-based filter 1, is forward-only —
+   filter-3 bits; bit 2, the ranking-based filter 1, is forward-only —
    set only on the rows this run newly writes, see the users-history pass
    below). It also writes `vandalism.parquet`, one row per flagged day with
-   the day's total change count, its far-move count and the reputation
+   the day's total change count, its far-move count and the ranking
    frozen at the day's first flag.
 3. `vandalism::flagged_move_days` folds the staged node moves (> 500 m) into
    those same per-day bits (filter 3) and a per-day far-move count; its
@@ -233,8 +242,8 @@ is needed) and one in-memory finalize. OSM full history is
 `(id, version)`-sorted, so the scan is a running pass with O(1) object
 state, writing day-aggregates to a staged
 `users_history_stage/stage_*.parquet` directory that finalize merges, sorts
-by `(uid, change_date)`, derives the reputation rows, and removes.
-`user_reputation.parquet` is a pure derived view of that data: one row per
+by `(uid, change_date)`, derives the ranking rows, and removes.
+`user_ranking.parquet` is a pure derived view of that data: one row per
 user, so it grows with new users, not new edits, and can be rebuilt from the
 per-user totals without re-reading history. The non-partitioned single files
 keep the `uid` join cheap and the numerics-only history file small.
@@ -243,12 +252,13 @@ The `vandalism_flag` of each history row is a bit field. Bits 0 and 1
 (`kFlagFilter2`, `kFlagFilter3`) stay 0 on import and are monotonically ORed
 by every update finalize from the persisted minute store and the run's
 move-flagged days. Bit 2 (`kFlagFilter1`, the paper's "new users or
-reputation < 5%" filter) differs: import fills it too, and every finalize
-masks it out of the base rows and re-ORs it from the freshly ranked
-reputation, so a contributor who climbs above the threshold loses the bit
-again. Both finalizes derive it from the same `reputation::Result` written to
-`user_reputation.parquet`; a contributor who created nothing ranks 0, which
-covers the "new users" half of the screen without a separate rule.
+ranking < 5%" filter) differs: it is not diff-based, so import writes 0 and
+every update finalize sets it only on the rows it newly writes, from the
+ranking it just recomputed. Base rows are carried unchanged, so a contributor
+who later climbs above the threshold keeps the bit on the days already
+flagged. The update finalize derives it from the same `ranking::Result` it
+writes to `user_ranking.parquet`; a contributor who created nothing ranks 0,
+which covers the "new users" half of the screen without a separate rule.
 
 ## Vandalism pass
 
@@ -294,11 +304,10 @@ in `users_history.parquet` and the frozen per-day `far_move_count` column of
 `vandalism.parquet`. The distance is measured from the prior cell
 center to the new point, within one res-9 cell radius (~175 m) of the true
 prior: fine for the 500 m screen, not for the paper's finer 11 m
-edit-analysis flag. Filter 1 (new users / reputation < 5%) is a reputation
-bit (`kFlagFilter1`) that the users-history update finalize sets forward-only
-on the rows it newly writes, from `user_reputation.parquet`'s ranking,
-instead of a diff-based screen; base rows are never re-flagged, so the bit
-is monotonic.
+edit-analysis flag. Filter 1 (new users / ranking < 5%) is a `kFlagFilter1`
+bit that the users-history update finalize sets forward-only on the rows it
+newly writes, from the run's recomputed ranking, instead of a diff-based
+screen; base rows are never re-flagged, so the bit is monotonic.
 
 ## Web viewer queries
 
@@ -319,21 +328,21 @@ page URL (`../data`, see README, "Serving the web frontend").
 ### Users viewer
 
 `web/users/query.js` looks a user up by exact username on
-`user_reputation.parquet` (the pipeline stamps the current username per uid,
+`user_ranking.parquet` (the pipeline stamps the current username per uid,
 and the file is username-sorted with a uid tie-break, so the exact filter
-prunes straight to the matching pages). The reputation, identity fields and
+prunes straight to the matching pages). The ranking, identity fields and
 per-history totals all come from that same user row; the dataset-wide
 `active`/`max` aspect stats are read once from the file's
 `key_value_metadata` footer instead of repeated per-row columns, and the
 per-aspect points are recomputed from the stored `pct` and the constant paper
-caps — no ranking or percentile math runs in the browser.
+caps — no percentile math runs in the browser.
 
 Only the per-day activity timeline is then read from
 `users_history.parquet`: a `uid` `[min, max]` range filter prunes the
 uid-sorted file to the pages holding that user, with exact membership kept
 client-side. Each day's `count` column already totals the six node/way change
 counters plus the three relation counters; the per-uid edit total stays
-node/way-only (relations are reputation-only).
+node/way-only (relations are ranking-only).
 
 ### Vandalism viewer
 
@@ -343,7 +352,7 @@ node/way-only (relations are reputation-only).
 date filter): hyparquet fetches only the leading row groups' pages, so the
 "100 last" table never scans the whole file. Each row is one flagged
 `(uid, change_date)` with the username, the combined `vandalism_flag` bits,
-the day's total change count, its far-move count and the reputation frozen at
+the day's total change count, its far-move count and the ranking frozen at
 the day's first flag. Of the flags the table shows one: a day carrying bit 0
 (`kFlagFilter2`, the >500 modified/deleted objects in one hour filter) is marked
 as an edit burst.

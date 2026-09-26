@@ -9,13 +9,13 @@
 //                         or deleted more than 500 objects within one hour")
 //   bit 1 (kFlagFilter3)  any modified node moved more than kFilter3Threshold
 //                         metres that day
-//   bit 2 (kFlagFilter1)  the editing user's reputation is below
-//                         kFilter1ReputationThreshold (paper: "Show all edits
-//                         of new users and/or users with a very low reputation
+//   bit 2 (kFlagFilter1)  the editing user's ranking is below
+//                         kFilter1RankingThreshold (paper: "Show all edits
+//                         of new users and/or users with a very low ranking
 //                         (<5%)"); set forward-only on rows the users-history
 //                         update finalize newly writes (0 on import).
 //                         "New users" are covered implicitly: a contributor
-//                         who created nothing has reputation 0.
+//                         who created nothing ranks 0.
 //
 //   vandalism_minutes.bin per-(uid, minute) count of modified+deleted objects
 //                         over the whole update period, persisted as a binary
@@ -40,13 +40,13 @@
 // runs); import writes them as 0.
 //
 // Bit 2 is likewise monotonic and forward-only, but not diff-based. It is
-// derived from the user's current reputation (below
-// kFilter1ReputationThreshold): import writes it as 0, and the users-history
+// derived from the user's current ranking (below
+// kFilter1RankingThreshold): import writes it as 0, and the users-history
 // update finalize sets it only on the run's newly-written rows for a
 // below-threshold contributor. Base rows' bit-2 is carried unchanged, so a
-// flag once written persists and a reputation drop never re-flags the past.
-// The users-history finalize builds the bit from the same reputation::Result
-// that writes user_reputation.parquet.
+// flag once written persists and a ranking drop never re-flags the past.
+// The users-history finalize builds the bit from the same ranking::Result
+// that writes user_ranking.parquet.
 //
 // Filter 3's prior position is the center of the node's last known H3 cell
 // (NodeState overlay from an earlier diff of the run, else the flat
@@ -73,10 +73,10 @@ inline constexpr uint32_t kFilter2Threshold = 500;
 // Filter 3 flag threshold: "nodes moved more than 500 metres" (paper sec. 5).
 inline constexpr double kFilter3Threshold = 500.0;
 
-// Filter 1 flag threshold: "users with a very low reputation (<5%)" (paper
-// sec. 5). Reputation is stored as a 0-100 uint8, so a value below 5 triggers
-// the bit.
-inline constexpr uint8_t kFilter1ReputationThreshold = 5;
+// Filter 1 flag threshold: "users with a very low ranking (<5%)" (paper
+// sec. 5). The ranking is stored as a 0-100 uint8, so a value below 5
+// triggers the bit.
+inline constexpr uint8_t kFilter1RankingThreshold = 5;
 
 // Bits of the users_history.parquet vandalism_flag column.
 inline constexpr uint8_t kFlagFilter2 = 0x01;

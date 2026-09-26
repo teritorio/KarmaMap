@@ -21,7 +21,7 @@ add_executable(unit_tests
   unit/node_cache_test.cpp
   unit/incremental_cache_test.cpp
   unit/users_history_rules_test.cpp
-  unit/reputation_test.cpp
+  unit/ranking_test.cpp
   unit/options_test.cpp
   unit/state_test.cpp
   unit/vandalism_test.cpp
@@ -45,7 +45,7 @@ add_executable(core_tests
   core/manifest_test.cpp
   core/sort_pass_test.cpp
   core/users_history_finalize_test.cpp
-  core/reputation_test.cpp
+  core/ranking_test.cpp
   core/vandalism_finalize_test.cpp
   core/way_update_test.cpp
 )

@@ -1,15 +1,15 @@
-// Users viewer: looks up an OSM username directly in user_reputation.parquet
+// Users viewer: looks up an OSM username directly in user_ranking.parquet
 // (the pipeline stamps the current username per uid), fetches that user's
-// exact reputation row and their per-day rows from users_history.parquet,
-// and renders the OSMPatrol reputation, raw history totals, the profile
+// exact ranking row and their per-day rows from users_history.parquet,
+// and renders the OSMPatrol ranking, raw history totals, the profile
 // identity fields and an edit-activity timeline. Same architecture as the
 // changes viewer (page + app + query + histogram + permalink modules over the
 // shared data-access lib in web/lib), but no spatial component.
 
 import { loadManifest, dayKey, userProfileUrls } from '../lib/api.js'
 import { readPermalink, writePermalink } from './permalink.js'
-import { queryReputationByUsername, queryHistory } from './query.js'
-import { computeScores, TAG_COUNTERS, REP_CAPS, REP_FORMULA } from './reputation.js'
+import { queryRankingByUsername, queryHistory } from './query.js'
+import { computeScores, TAG_COUNTERS, RANK_CAPS, RANK_FORMULA } from './ranking.js'
 import { initHistogram, setHistogramData, setLogScale } from './histogram.js'
 
 // Data root: the data/ directory one level above the viewer pages.
@@ -40,33 +40,33 @@ function renderUserLinks(name) {
     `(<a href="${hdyc}" target="_blank" rel="noopener noreferrer">hdyc➚</a>)`
 }
 
-// Score tables grouped by reputation-formula aspect (paper §4), plus the
-// change counters that fall outside the reputation (mods/deletes). Each
+// Score tables grouped by ranking-formula aspect (paper §4), plus the
+// change counters that fall outside the ranking (mods/deletes). Each
 // item: [key, label, desc, role].
 const SCORE_GROUPS = [
   {
-    title: `Created objects — nodes (${REP_CAPS.node} pts)`,
-    desc: 'Visible version-1 nodes feed the reputation aspect, capped at the weight and scored by the user\u2019s percentile rank among contributors active on created nodes.',
-    cards: [['node_created', 'Node created', 'Visible nodes at their creation (version-1 versions).', `${REP_CAPS.node} pts`]],
+    title: `Created objects — nodes (${RANK_CAPS.node} pts)`,
+    desc: 'Visible version-1 nodes feed the ranking aspect, capped at the weight and scored by the user\u2019s percentile rank among contributors active on created nodes.',
+    cards: [['node_created', 'Node created', 'Visible nodes at their creation (version-1 versions).', `${RANK_CAPS.node} pts`]],
   },
   {
-    title: `Created objects — ways (${REP_CAPS.way} pts)`,
-    desc: 'Visible version-1 ways feed the reputation aspect, capped at the weight and scored by the user\u2019s percentile rank among contributors active on created ways.',
-    cards: [['way_created', 'Way created', 'Visible ways at their creation (version-1 versions).', `${REP_CAPS.way} pts`]],
+    title: `Created objects — ways (${RANK_CAPS.way} pts)`,
+    desc: 'Visible version-1 ways feed the ranking aspect, capped at the weight and scored by the user\u2019s percentile rank among contributors active on created ways.',
+    cards: [['way_created', 'Way created', 'Visible ways at their creation (version-1 versions).', `${RANK_CAPS.way} pts`]],
   },
   {
-    title: `Created objects — relations (${REP_CAPS.relation} pts)`,
-    desc: 'Visible version-1 relations. Reputation-only for the score (\u00a74); counted in the activity timeline.',
-    cards: [['relation_created', 'Relation created', 'Relations at their creation (visible, version 1). Reputation-only for the score, counted in the day timeline.', `${REP_CAPS.relation} pts`]],
+    title: `Created objects — relations (${RANK_CAPS.relation} pts)`,
+    desc: 'Visible version-1 relations. Ranking-only for the score (\u00a74); counted in the activity timeline.',
+    cards: [['relation_created', 'Relation created', 'Relations at their creation (visible, version 1). Ranking-only for the score, counted in the day timeline.', `${RANK_CAPS.relation} pts`]],
   },
   {
     title: 'Top12 tags \u2014 4 pts each',
     desc: 'Tags used at each object\u2019s creation (\u00a74; the paper\u2019s \u201caddress\u201d is replaced by \u201cplace\u201d). Each tag is capped at 4 points and scored by the user\u2019s percentile rank among contributors using that tag at creation.',
-    cards: TAG_COUNTERS.map((key) => [key, `Tag ${key.slice(4)}`, `Created nodes/ways/relations carrying the top-level key \u201c${key.slice(4)}\u201d (Top12 reputation aspect).`, '4 pts']),
+    cards: TAG_COUNTERS.map((key) => [key, `Tag ${key.slice(4)}`, `Created nodes/ways/relations carrying the top-level key \u201c${key.slice(4)}\u201d (Top12 ranking aspect).`, '4 pts']),
   },
   {
     title: 'Other counters',
-    desc: 'Modifications and deletions of nodes and ways. Not part of the reputation.',
+    desc: 'Modifications and deletions of nodes and ways. Not part of the ranking.',
     cards: [
       ['node_modified', 'Node modified', 'Visible node versions edited after creation (version > 1).', 'excluded'],
       ['node_deleted', 'Node deleted', 'Node versions deleted or hidden (invisible versions).', 'excluded'],
@@ -76,7 +76,7 @@ const SCORE_GROUPS = [
   },
 ]
 
-// Relative reputation-detail keys map to their full counter keys.
+// Relative ranking-detail keys map to their full counter keys.
 const DETAIL_COUNTER = { node: 'node_created', way: 'way_created', relation: 'relation_created' }
 
 function renderProfile(name, scores) {
@@ -92,23 +92,23 @@ function renderProfile(name, scores) {
 }
 
 function renderScore(scores) {
-  const { value, max, note } = scores.reputation
+  const { value, max, note } = scores.ranking
   scoreEl.innerHTML = `
     <div class="headline">
       <span class="value">${value}</span>
-      <span class="of">/ ${max} reputation</span>
+      <span class="of">/ ${max} ranking</span>
     </div>
     <div class="note">${escapeHtml(note)}</div>
-    <div class="formula">${escapeHtml(REP_FORMULA)}</div>
+    <div class="formula">${escapeHtml(RANK_FORMULA)}</div>
     <div class="formula-note">P(x) = percentile rank among contributors active on that aspect; each aspect is capped at its paper weight</div>`
 }
 
 function renderScores(scores) {
-  const repByCounter = new Map(
-    scores.reputation.details.map((d) => [DETAIL_COUNTER[d.key] ?? d.key, d]),
+  const rankByCounter = new Map(
+    scores.ranking.details.map((d) => [DETAIL_COUNTER[d.key] ?? d.key, d]),
   )
   const roleCell = (key, staticRole) => {
-    const d = repByCounter.get(key)
+    const d = rankByCounter.get(key)
     if (!d) return `<td class="role">${staticRole}</td>`
     const pct = Math.floor(d.pct)
     const pctLabel = d.raw <= 0 ? 'no activity'
@@ -129,9 +129,9 @@ function renderScores(scores) {
   const parts = [
     `<section class="score-group">` +
       `<h3>Activity</h3>` +
-      `<p class="desc">Sum of the six node/way change counters; the activity graph counts relation changes too, but relations score nothing in the reputation.</p>` +
+      `<p class="desc">Sum of the six node/way change counters; the activity graph counts relation changes too, but relations score nothing in the ranking.</p>` +
       `<table class="counter-table">` +
-      `<thead><tr><th>Counter</th><th class="value">Value</th><th class="role">Reputation</th></tr></thead>` +
+      `<thead><tr><th>Counter</th><th class="value">Value</th><th class="role">Ranking</th></tr></thead>` +
       `<tbody><tr>` +
       `<td class="name"><span class="counter-name">Total edits</span><span class="count-desc">Created + modified + deleted nodes and ways across the whole timeline.</span></td>` +
       `<td class="value">${scores.totalEdits.toLocaleString()}</td>` +
@@ -146,7 +146,7 @@ function renderScores(scores) {
     parts.push(
       `<section class="score-group"><h3>${group.title}</h3>` +
       `<p class="desc">${group.desc}</p>` +
-      `<table class="counter-table"><thead><tr><th>Counter</th><th class="value">Value</th><th class="role">Reputation</th></tr></thead>` +
+      `<table class="counter-table"><thead><tr><th>Counter</th><th class="value">Value</th><th class="role">Ranking</th></tr></thead>` +
       `<tbody>${rows}</tbody></table></section>`,
     )
   }
@@ -167,11 +167,11 @@ async function search(manifest) {
   setStatus(`Looking up user ${name}...`)
 
   try {
-    const repDataset = manifest.datasets.user_reputation
-    const { rows: reps, stats } = repDataset
-      ? await queryReputationByUsername(BASE_URL, repDataset.path, name, repDataset.footer_size)
+    const rankDataset = manifest.datasets.user_ranking
+    const { rows: ranks, stats } = rankDataset
+      ? await queryRankingByUsername(BASE_URL, rankDataset.path, name, rankDataset.footer_size)
       : { rows: [], stats: {} }
-    if (reps.length === 0) {
+    if (ranks.length === 0) {
       profileEl.innerHTML = ''
       scoreEl.innerHTML = ''
       scoresEl.innerHTML = ''
@@ -180,16 +180,16 @@ async function search(manifest) {
       return
     }
 
-    const uids = [...new Set(reps.map((p) => p.uid))]
+    const uids = [...new Set(ranks.map((p) => p.uid))]
     const historyDataset = manifest.datasets.users_history
     const history = await queryHistory(BASE_URL, historyDataset.path, uids, historyDataset.footer_size)
-    const scores = computeScores(reps, history, stats)
+    const scores = computeScores(ranks, history, stats)
 
     renderProfile(name, scores)
     renderScore(scores)
     renderScores(scores)
     setHistogramData(scores.byDay, scores.flagByDay)
-    setStatus(`${name}: reputation ${scores.reputation.value}, ${scores.totalEdits} edits across ${scores.byDay.size} active day${scores.byDay.size === 1 ? '' : 's'}.`)
+    setStatus(`${name}: ranking ${scores.ranking.value}, ${scores.totalEdits} edits across ${scores.byDay.size} active day${scores.byDay.size === 1 ? '' : 's'}.`)
   } catch (err) {
     console.error(err)
     setStatus(`Query failed: ${err.message}`)
@@ -215,8 +215,8 @@ async function main() {
   if (user) usernameEl.value = user
 
   const datasets = manifest.datasets ?? {}
-  if (!datasets.user_reputation || !datasets.users_history) {
-    setStatus('user_reputation/users_history not in manifest — the pipeline did not produce the user datasets.')
+  if (!datasets.user_ranking || !datasets.users_history) {
+    setStatus('user_ranking/users_history not in manifest — the pipeline did not produce the user datasets.')
     return
   }
 

@@ -1,9 +1,9 @@
 // User queries across the non-partitioned Parquet files written by the
 // users-history pass, served from data/ one directory above the viewers. Username
 // matching uses a direct exact-username lookup on
-// user_reputation.parquet (the pipeline stamps the current username per uid,
+// user_ranking.parquet (the pipeline stamps the current username per uid,
 // and that file is username-sorted with a uid tie-break, so the exact filter
-// prunes straight to the matching pages); the reputation and per-uid counter
+// prunes straight to the matching pages); the ranking and per-uid counter
 // totals come from the same row. Only the per-day activity timeline still
 // comes from users_history.parquet (uid-sorted, so a range filter prunes
 // pages, with exact membership kept client-side); the timeline reads each
@@ -13,9 +13,9 @@
 // the file's key_value_metadata footer instead of repeated per-row columns.
 
 import { queryRows, queryRowsWithMetadata } from '../lib/parquet.js'
-import { ALL_COUNTERS, TAG_COUNTERS } from './reputation.js'
+import { ALL_COUNTERS, TAG_COUNTERS } from './ranking.js'
 
-// The reputation aspects key the file-level key_value_metadata: one
+// The ranking aspects key the file-level key_value_metadata: one
 // <aspect>_active/_max pair per aspect, matching the C++ writer's stat keys.
 const ASPECT_KEYS = ['node', 'way', 'relation', ...TAG_COUNTERS]
 
@@ -36,12 +36,12 @@ function readAspectStats(metadata) {
   return stats
 }
 
-// Exact username match on user_reputation.parquet (the current username is
+// Exact username match on user_ranking.parquet (the current username is
 // stamped per uid), returning the whole wide per-uid row -- identity columns,
-// reputation and history totals -- plus the dataset-wide active/max stats
+// ranking and history totals -- plus the dataset-wide active/max stats
 // read from the file footer. uid and the day columns are small integers
 // (int64/uint16), so Number() conversion is lossless.
-export async function queryReputationByUsername(baseUrl, path, username, footerSize) {
+export async function queryRankingByUsername(baseUrl, path, username, footerSize) {
   const res = await queryRowsWithMetadata(baseUrl, path, { username: { $eq: username } }, undefined, footerSize)
   if (!res) return { rows: [], stats: {} }
   const stats = readAspectStats(res.metadata)
@@ -54,7 +54,7 @@ export async function queryReputationByUsername(baseUrl, path, username, footerS
         username: row.username,
         first_seen_day: Number(row.first_seen_day),
         counters,
-        reputation: row,
+        ranking: row,
       }
     }),
     stats,

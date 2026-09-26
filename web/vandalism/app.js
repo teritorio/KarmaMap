@@ -4,13 +4,13 @@
 // descending), so this page reads only the leading rows/pages for the 100 most
 // recent flagged days — one row per day with the day's total change count, the
 // edit-burst marker (filter 2: more than 500 modified/deleted objects in one
-// hour), its far-move count and the reputation frozen at the day's first flag.
+// hour), its far-move count and the ranking frozen at the day's first flag.
 // Same architecture as the users/changes viewers (page + app + query over the
 // shared lib in web/lib).
 
 import { loadManifest, dayKey, userProfileUrls } from '../lib/api.js'
 import { queryVandalismLatest } from './query.js'
-import { FLAG_FILTER_2 } from '../users/reputation.js'
+import { FLAG_FILTER_2 } from '../users/ranking.js'
 
 // Data root: the data/ directory one level above the viewer pages.
 const BASE_URL = '../data'
@@ -43,7 +43,7 @@ function renderRows(rows) {
     const editBurst = (Number(row.vandalism_flag ?? 0) & FLAG_FILTER_2) !== 0
     return `<tr>` +
       `<td>${escapeHtml(dayKey(row.change_date))}</td>` +
-      `<td class="value"><a href="../users/#user=${row.username}">#${Number(row.reputation_at_day ?? 0)}</a></td>` +
+      `<td class="value"><a href="../users/#user=${row.username}">#${Number(row.ranking_at_day ?? 0)}</a></td>` +
       `<td class="user">${renderUserLinks(row.username)}</td>` +
       `<td class="value">${Number(row.uid)}</td>` +
       `<td class="value">${Number(row.changes ?? 0).toLocaleString()}</td>` +

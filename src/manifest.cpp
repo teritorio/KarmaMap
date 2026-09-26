@@ -324,9 +324,9 @@ void write_manifest(const std::string& output_dir, int h3_resolution,
         write_dataset("users_history", "users_history.parquet", {},
                       single_file_field("users_history.parquet"));
     }
-    if (std::filesystem::exists(output_dir + "/user_reputation.parquet")) {
-        write_dataset("user_reputation", "user_reputation.parquet", {},
-                      single_file_field("user_reputation.parquet"));
+    if (std::filesystem::exists(output_dir + "/user_ranking.parquet")) {
+        write_dataset("user_ranking", "user_ranking.parquet", {},
+                      single_file_field("user_ranking.parquet"));
     }
     if (std::filesystem::exists(output_dir + "/vandalism.parquet")) {
         write_dataset("vandalism", "vandalism.parquet", {},

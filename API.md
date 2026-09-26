@@ -9,13 +9,13 @@ The two access parts:
 - **Changes** — `changes/`: yearly partitioned `(h3_cell, change_date,
   count)` change counts (node + way changes merged per cell per day).
 - **Users** — `users_history.parquet` and
-  `user_reputation.parquet`: per-user, per-day activity and reputation.
+  `user_ranking.parquet`: per-user, per-day activity and ranking.
 - **Vandalism** — `vandalism_minutes.bin` (binary, not Parquet): the
   update-only OSMPatrol filter-2 source; filter-3 fold stages are transient.
   The per-day flags (bits for filters 2 and 3) land in
   `users_history.parquet`, and `vandalism.parquet` (update-only) re-exports
   the flagged days with their daily change count, far-move count and frozen
-  reputation.
+  ranking.
 
 ## Output layout
 
@@ -23,7 +23,7 @@ The two access parts:
 output-dir/
 ├── manifest.json
 ├── users_history.parquet
-├── user_reputation.parquet
+├── user_ranking.parquet
 ├── vandalism.parquet      # update-only; flagged days, empty after no flags
 └── changes/
     └── year=2025/
@@ -60,7 +60,7 @@ row data exists yet):
       "partition_footer_sizes": { "2005": 41298, "2006": 39807, "..." }
     },
     "users_history": { "path": "users_history.parquet", "partitions": [], "footer_size": 35112 },
-    "user_reputation": { "path": "user_reputation.parquet", "partitions": [], "footer_size": 40894 }
+    "user_ranking": { "path": "user_ranking.parquet", "partitions": [], "footer_size": 40894 }
   }
 }
 ```
@@ -146,18 +146,18 @@ are two non-partitioned single files.
   | `uid` | `int64` | OSM user id |
   | `change_date` | `uint16` | UTC day (same encoding as `changes/`) |
   | `count` | `uint32` | Total activity that day: the six node/way change counters plus the three relation counters (created, modified, deleted) |
-  | `vandalism_flag` | `uint8` | Per-day OSMPatrol flag: bit 0 (`0x01`) = any of the day's minutes had > 500 modified+deleted objects within a one-hour window; bit 1 (`0x02`) = a modified node moved more than 500 m that day; bit 2 (`0x04`) = the day's user has reputation < 5% (filter 1, "new users or low reputation"; a contributor who created nothing ranks 0). All bits are monotonic and forward-only: import writes 0; bits 0/1 are ORed by every update finalize from `vandalism_minutes.bin` plus the run's move-flagged days, and bit 2 is set only on the rows that update run newly writes for a below-threshold contributor. Base rows are carried unchanged, so once set a bit persists and a reputation drop never re-flags the past |
+  | `vandalism_flag` | `uint8` | Per-day OSMPatrol flag: bit 0 (`0x01`) = any of the day's minutes had > 500 modified+deleted objects within a one-hour window; bit 1 (`0x02`) = a modified node moved more than 500 m that day; bit 2 (`0x04`) = the day's user has ranking < 5% (filter 1, "new users or low ranking"; a contributor who created nothing ranks 0). All bits are monotonic and forward-only: import writes 0; bits 0/1 are ORed by every update finalize from `vandalism_minutes.bin` plus the run's move-flagged days, and bit 2 is set only on the rows that update run newly writes for a below-threshold contributor. Base rows are carried unchanged, so once set a bit persists and a ranking drop never re-flags the past |
 
   The per-day `tag_*` counters are aggregated during finalize and only their
-  per-user sums are written (in `user_reputation.parquet`), so they never
+  per-user sums are written (in `user_ranking.parquet`), so they never
   appear per day.
 
   Only `uid` carries footer row-group statistics in `users_history.parquet`
-  (it is the sole pruning column); in `user_reputation.parquet` both `username`
+  (it is the sole pruning column); in `user_ranking.parquet` both `username`
   (exact filter) and `uid` (stable identity key) do. Every other column is
   written without them to keep the footer metadata compact.
 
-- `user_reputation.parquet` — one row per user, sorted by `username` (ties
+- `user_ranking.parquet` — one row per user, sorted by `username` (ties
   broken by `uid`, so an exact username lookup prunes straight to the
   matching pages):
 
@@ -166,7 +166,7 @@ are two non-partitioned single files.
   | `uid` | `int64` | OSM user id |
   | `username` | `utf8` | The user's current username (identity, for direct lookup) |
   | `first_seen_day` | `uint16` | Day the user's first watched change appears |
-  | `reputation` | `uint8` | Exact current score 0-100 (sum of the per-aspect points) |
+  | `ranking` | `uint8` | Exact current score 0-100 (sum of the per-aspect points) |
   | `node_created` … `tag_waterway` | `uint32` | Per-user sums of the 21 history counters |
 
   Then, for each aspect `node`, `way`, `relation` and `tag_<key>` (each
@@ -193,15 +193,15 @@ are two non-partitioned single files.
 - Every version event is attributed to the editing `(uid, day)`. The stored
   per-day `count` is the total activity that day: the six node/way change
   counters plus the three relation counters (created, modified, deleted).
-- Only visible version-1 relation creations feed the OSMPatrol reputation
+- Only visible version-1 relation creations feed the OSMPatrol ranking
   (built from *created* objects only); relation modifies/deletes add to a
-  day's `count` but carry no reputation value.
+  day's `count` but carry no ranking points.
 - The `tag_*` counters mirror the paper's "Top12" most-used tags, one counter
-  per tag (12 × 4 = 48 reputation points), counted only at object creation.
+  per tag (12 × 4 = 48 ranking points), counted only at object creation.
   The paper's `address` key is replaced by `place`, as OSM address tagging
-  uses the `addr:` prefix. Like relations, tag usage is reputation-only and
+  uses the `addr:` prefix. Like relations, tag usage is ranking-only and
   excluded from the day totals, so only the per-user sums are stored (in
-  `user_reputation.parquet`); the per-day file keeps just `count`.
+  `user_ranking.parquet`); the per-day file keeps just `count`.
 
 ### Querying with DuckDB
 
@@ -212,7 +212,7 @@ SELECT r.username,
        DATE '1970-01-01' + i.change_date AS change_date,
        i.count AS edits,
        r.relation_created
-FROM read_parquet('output-dir/user_reputation.parquet') r
+FROM read_parquet('output-dir/user_ranking.parquet') r
 JOIN read_parquet('output-dir/users_history.parquet') i USING (uid)
 ORDER BY edits DESC
 LIMIT 20;
@@ -223,7 +223,7 @@ LIMIT 20;
 The vandalism outputs are update-only: they cover the period after the
 recorded replication sequence and are absent after a pure import. They
 implement the OSMPatrol filters 2 (`> 500 modified/deleted in one hour`) and 3
-(node moved beyond 500 m); filter 1 (new users / reputation < 5%) is a
+(node moved beyond 500 m); filter 1 (new users / ranking < 5%) is a
 forward-only bit (bit 2 of `vandalism_flag`) that the users-history update
 finalize sets on the rows it newly writes. Filters 2/3 fold into the per-day
 `vandalism_flag` bits of `users_history.parquet`; filter 2 draws on one binary
@@ -266,7 +266,7 @@ store and filter 3's move staging is transient.
   | `vandalism_flag` | `uint8` | The history row's combined flag, non-zero by construction (bits as in `users_history.parquet`) |
   | `changes` | `uint32` | The day's total change count (node/way/relation created+modified+deleted, the same value as the `count` column of `users_history.parquet`) |
   | `far_move_count` | `uint32` | The count of that day's staged moves beyond the filter-3 threshold at the run that first flagged the day. Frozen: stamped when the day is newly flagged and carried unchanged from the base file on every later update, never recalculated. Because a day first flagged by another filter keeps its frozen value, this can be 0 even when bit 1 is set (moves staged on later runs are not re-merged into it) |
-  | `reputation_at_day` | `uint8` | The contributor's reputation (as in `user_reputation.parquet`) at the day's first flag. Frozen: stamped when the day is newly flagged and carried unchanged from the base file on every later update, never recalculated |
+  | `ranking_at_day` | `uint8` | The contributor's ranking (as in `user_ranking.parquet`) at the day's first flag. Frozen: stamped when the day is newly flagged and carried unchanged from the base file on every later update, never recalculated |
 
   The row set is exactly the non-zero flags of `users_history.parquet`
   (written from the same merged state), so the two files always agree.

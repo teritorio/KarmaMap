@@ -47,7 +47,7 @@ export async function queryRows(baseUrl, path, filter, columns, footerSize, rowL
 }
 
 // Like queryRows, but also returns the parsed metadata for callers that read
-// file-level key_value_metadata (the user-reputation aspect stats): the
+// file-level key_value_metadata (the user-ranking aspect stats): the
 // metadata is parsed even without footer_size. Returns { metadata, rows },
 // or null when the file is absent.
 export async function queryRowsWithMetadata(baseUrl, path, filter, columns, footerSize) {

@@ -7,7 +7,7 @@
 import { queryRows } from '../lib/parquet.js'
 
 // The vandalism file's full column set (uid, username, change_date,
-// vandalism_flag, changes, far_move_count, reputation_at_day).
+// vandalism_flag, changes, far_move_count, ranking_at_day).
 const VANDALISM_COLUMNS = [
   'uid',
   'username',
@@ -15,7 +15,7 @@ const VANDALISM_COLUMNS = [
   'vandalism_flag',
   'changes',
   'far_move_count',
-  'reputation_at_day',
+  'ranking_at_day',
 ]
 
 // Returns the newest `limit` vandalism rows (default 100), one row per

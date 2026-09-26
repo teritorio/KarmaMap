@@ -7,7 +7,7 @@
 inline constexpr size_t kDefaultWayBatchBytes = 512ULL * 1024 * 1024;
 inline constexpr int64_t kDefaultChangeGroupRows = 10'000;
 inline constexpr int64_t kDefaultUsersHistoryGroupRows = 10'000;
-inline constexpr int64_t kDefaultReputationGroupRows = 1'000;
+inline constexpr int64_t kDefaultRankingGroupRows = 1'000;
 
 struct Options {
     enum class Stage { import, prepare_update, update };
@@ -35,7 +35,7 @@ struct Options {
     size_t way_batch_bytes = kDefaultWayBatchBytes;
     int64_t change_group_rows = kDefaultChangeGroupRows;
     int64_t users_history_group_rows = kDefaultUsersHistoryGroupRows;
-    int64_t reputation_group_rows = kDefaultReputationGroupRows;
+    int64_t ranking_group_rows = kDefaultRankingGroupRows;
     bool run_node_pass = true;
     bool run_way_pass = true;
     bool run_sort_pass = true;
