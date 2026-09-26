@@ -1,5 +1,5 @@
-// Vandalism viewer: shows the latest flagged (uid, change_date) days from
-// vandalism.parquet, the update-only re-export of the non-zero vandalism_flag
+// Suspects viewer: shows the latest flagged (uid, change_date) days from
+// suspect.parquet, the update-only re-export of the non-zero suspect_flag
 // rows of users_history.parquet. The file is written newest-first (change_date
 // descending), so this page reads only the leading rows/pages for the 100 most
 // recent flagged days — one row per day with the day's total change count, the
@@ -9,7 +9,7 @@
 // shared lib in web/lib).
 
 import { loadManifest, dayKey, userProfileUrls } from '../lib/api.js'
-import { queryVandalismLatest } from './query.js'
+import { querySuspectLatest } from './query.js'
 import { FLAG_FILTER_2 } from '../users/ranking.js'
 
 // Data root: the data/ directory one level above the viewer pages.
@@ -19,7 +19,7 @@ const BASE_URL = '../data'
 const LATEST = 100
 
 const statusEl = document.getElementById('status')
-const tbodyEl = document.querySelector('#vandalism tbody')
+const tbodyEl = document.querySelector('#suspect tbody')
 
 function setStatus(text) {
   statusEl.textContent = text
@@ -40,7 +40,7 @@ function renderUserLinks(name) {
 
 function renderRows(rows) {
   tbodyEl.innerHTML = rows.map((row) => {
-    const editBurst = (Number(row.vandalism_flag ?? 0) & FLAG_FILTER_2) !== 0
+    const editBurst = (Number(row.suspect_flag ?? 0) & FLAG_FILTER_2) !== 0
     return `<tr>` +
       `<td>${escapeHtml(dayKey(row.change_date))}</td>` +
       `<td class="value"><a href="../users/#user=${row.username}">#${Number(row.ranking_at_day ?? 0)}</a></td>` +
@@ -65,20 +65,20 @@ async function main() {
   }
 
   const datasets = manifest.datasets ?? {}
-  if (!datasets.vandalism) {
-    setStatus('vandalism not in manifest — the pipeline did not produce the vandalism dataset (a pure import writes no flags).')
+  if (!datasets.suspect) {
+    setStatus('suspects not in manifest — the pipeline did not produce the suspects dataset (a pure import writes no flags).')
     return
   }
 
-  const dataset = datasets.vandalism
-  setStatus(`Loading the ${LATEST} latest vandalism days...`)
+  const dataset = datasets.suspect
+  setStatus(`Loading the ${LATEST} latest suspect days...`)
   try {
-    const rows = await queryVandalismLatest(BASE_URL, dataset.path, dataset.footer_size, LATEST)
+    const rows = await querySuspectLatest(BASE_URL, dataset.path, dataset.footer_size, LATEST)
     renderRows(rows)
     setStatus(
       rows.length === 0
-        ? 'No flagged days yet; the vandalism dataset is empty.'
-        : `Showing the ${rows.length} latest vandalism ${rows.length === 1 ? 'day' : 'days'}.`)
+        ? 'No flagged days yet; the suspects dataset is empty.'
+        : `Showing the ${rows.length} latest suspect ${rows.length === 1 ? 'day' : 'days'}.`)
   } catch (err) {
     console.error(err)
     setStatus(`Query failed: ${err.message}`)

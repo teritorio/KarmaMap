@@ -248,8 +248,8 @@ bool parse_args(int argc, char** argv, Options* opts) {
     const std::filesystem::path cache_parent =
         std::filesystem::path(opts->node_cache_path).parent_path();
     opts->diffs_dir = (cache_parent / "diffs").lexically_normal().string();
-    opts->vandalism_minutes_path =
-        (cache_parent / "vandalism_minutes.bin").lexically_normal().string();
+    opts->suspect_minutes_path =
+        (cache_parent / "suspect_minutes.bin").lexically_normal().string();
     if (opts->h3_resolution < 0 ||
         opts->h3_resolution > h3_utils::kMaxPackedCellResolution) {
         throw std::runtime_error(

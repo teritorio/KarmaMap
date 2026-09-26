@@ -243,7 +243,7 @@ TEST(NodeState, CreatedNodeOverlaysBase) {
     EXPECT_EQ(state.overlay_size(), 2);
 }
 
-// Vandalism filter 3 must read a modified node's prior cell BEFORE
+// Suspect filter 3 must read a modified node's prior cell BEFORE
 // set_position folds the new one into the overlay; this pins the ordering the
 // update node handler relies on.
 TEST(NodeState, PreBeforeSetPositionSeesOldCell) {

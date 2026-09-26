@@ -8,7 +8,7 @@
 // comes from users_history.parquet (uid-sorted, so a range filter prunes
 // pages, with exact membership kept client-side); the timeline reads each
 // day's `count` (the day's total activity: the six node/way change counters
-// plus the three relation counters) and its `vandalism_flag` bits for the
+// plus the three relation counters) and its `suspect_flag` bits for the
 // history chart. The dataset-wide `active`/`max` stats are read once from
 // the file's key_value_metadata footer instead of repeated per-row columns.
 
@@ -65,7 +65,7 @@ export async function queryRankingByUsername(baseUrl, path, username, footerSize
 // uid set is applied client-side (the same pattern the changes viewer uses
 // for its non-contiguous H3 cell set). Used for the per-day timeline only.
 // The projection is the file's full column set (uid, change_date, count,
-// vandalism_flag); the flag bits drive the history chart's vandalism marks.
+// suspect_flag); the flag bits drive the history chart's suspect marks.
 export async function queryHistory(baseUrl, path, uids, footerSize) {
   if (uids.length === 0) return []
   const minUid = Math.min(...uids)
@@ -73,6 +73,6 @@ export async function queryHistory(baseUrl, path, uids, footerSize) {
   const uidSet = new Set(uids)
   const rows = await queryRows(
     baseUrl, path, { uid: { $gte: minUid, $lte: maxUid } },
-    ['uid', 'change_date', 'count', 'vandalism_flag'], footerSize)
+    ['uid', 'change_date', 'count', 'suspect_flag'], footerSize)
   return rows.filter((row) => uidSet.has(Number(row.uid)))
 }

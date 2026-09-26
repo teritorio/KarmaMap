@@ -23,7 +23,7 @@ class NodeUpdateHandler : public osmium::handler::Handler {
 public:
     NodeUpdateHandler(NodeState* state,
                       parquet_out::PartitionedParquetWriter* parquet_writer,
-                      int h3_resolution, vandalism::NodeMoveSink* moves)
+                      int h3_resolution, suspect::NodeMoveSink* moves)
         : state_(state),
           parquet_writer_(parquet_writer),
           h3_resolution_(h3_resolution),
@@ -39,7 +39,7 @@ public:
             const double lon = n.location().lon();
             const uint64_t cell = h3_utils::location_to_cell(lat, lon, h3_resolution_);
 
-            // Vandalism filter 3: a modification (version > 1) with a known
+            // Suspect filter 3: a modification (version > 1) with a known
             // prior cell is a candidate move. Capture the pre-update cell
             // BEFORE set_position folds the new one into the overlay.
             if (moves_ && n.visible() && n.version() > 1) {
@@ -72,7 +72,7 @@ private:
     NodeState* state_;
     parquet_out::PartitionedParquetWriter* parquet_writer_;
     int h3_resolution_;
-    vandalism::NodeMoveSink* moves_;
+    suspect::NodeMoveSink* moves_;
 
     // INSTR: diagnostic counters.
     uint64_t touched_ = 0;
@@ -182,7 +182,7 @@ private:
 
 void run_node_update(const std::string& diff_path, const std::string& changes_root,
                      uint64_t seq, int h3_resolution, NodeState* state,
-                     vandalism::NodeMoveSink* moves) {
+                     suspect::NodeMoveSink* moves) {
     std::cerr << "[update node pass] " << diff_path << "\n";
     const auto t0 = std::chrono::steady_clock::now();  // INSTR
 

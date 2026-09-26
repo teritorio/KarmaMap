@@ -14,8 +14,8 @@
 #include "options.hpp"
 #include "test_helpers.hpp"
 #include "users_history.hpp"
-#include "vandalism.hpp"
-#include "vandalism_store.hpp"
+#include "suspect.hpp"
+#include "suspect_store.hpp"
 
 namespace {
 
@@ -148,7 +148,7 @@ HistoryRows read_history(const std::string& path) {
     if (!combined_result.ok()) return {};
     const auto& t = *combined_result;
     // uid, change_date, the day's total activity count (the six node/way
-    // change counters plus the three relation counters), and the vandalism
+    // change counters plus the three relation counters), and the suspect
     // flag.
     EXPECT_EQ(t->num_columns(), 4);
     HistoryRows out;
@@ -189,8 +189,8 @@ RankingRows read_ranking(const std::string& path) {
     return out;
 }
 
-// Reads back the update-only vandalism export into typed helper vectors.
-struct VandalismRows {
+// Reads back the update-only suspect export into typed helper vectors.
+struct SuspectRows {
     std::vector<int64_t> uid;
     std::vector<std::string> username;
     std::vector<uint16_t> day;
@@ -200,15 +200,15 @@ struct VandalismRows {
     std::vector<uint8_t> ranking_at_day;
 };
 
-VandalismRows read_vandalism(const std::string& path) {
+SuspectRows read_suspect(const std::string& path) {
     auto combined_result = read_parquet(path)->CombineChunks();
     EXPECT_TRUE(combined_result.ok()) << combined_result.status();
     if (!combined_result.ok()) return {};
     const auto& t = *combined_result;
-    // uid, username, change_date, vandalism_flag, changes, far_move_count,
+    // uid, username, change_date, suspect_flag, changes, far_move_count,
     // ranking_at_day.
     EXPECT_EQ(t->num_columns(), 7);
-    VandalismRows out;
+    SuspectRows out;
     const auto* uid = static_cast<const arrow::Int64Array*>(t->column(0)->chunk(0).get());
     const auto* user = static_cast<const arrow::StringArray*>(t->column(1)->chunk(0).get());
     const auto* day = static_cast<const arrow::UInt16Array*>(t->column(2)->chunk(0).get());
@@ -254,8 +254,8 @@ TEST(UsersHistoryFinalize, ConcatenatesSortsAndDerives) {
 
     EXPECT_FALSE(std::filesystem::exists(stage));
     EXPECT_TRUE(std::filesystem::exists(history));
-    // The vandalism export is update-only; import writes no flags and no file.
-    EXPECT_FALSE(std::filesystem::exists(dir.join("vandalism.parquet")));
+    // The suspect export is update-only; import writes no flags and no file.
+    EXPECT_FALSE(std::filesystem::exists(dir.join("suspect.parquet")));
 
     const auto ind = read_history(history);
     // Sorted by (uid, change_date).
@@ -273,7 +273,7 @@ TEST(UsersHistoryFinalize, ConcatenatesSortsAndDerives) {
     EXPECT_EQ(ind.count[2], 2);  // uid 10 day 1050: 2 way_created
     EXPECT_EQ(ind.count[3], 4);  // uid 11 day 2000: 4 node_modified
     EXPECT_EQ(ind.count[4], 1);  // uid 12 day 3000: 1 node_created
-    // Import writes no vandalism bits: filters 2/3 need the update diffs, and
+    // Import writes no suspect bits: filters 2/3 need the update diffs, and
     // filter 1 is forward-only, so even the low-ranking contributors uid 11
     // (only modified objects, rank 0) and uid 12 (rank 4) are not flagged until
     // a later update writes new rows for them.
@@ -357,7 +357,7 @@ TEST(UsersHistoryFinalize, UpdateMergesDeltasIntoExistingFiles) {
     users_history::run_update_finalize(stage_root, history,
                                        kDefaultUsersHistoryGroupRows,
                                        kDefaultRankingGroupRows,
-                                         dir.join("vandalism_minutes.bin"), {});
+                                         dir.join("suspect_minutes.bin"), {});
 
     // Existing (uid,day) rows accumulate; new users are appended.
     const auto ind = read_history(history);
@@ -382,8 +382,8 @@ TEST(UsersHistoryFinalize, UpdateMergesDeltasIntoExistingFiles) {
     ASSERT_EQ(ind.flag.size(), 4);
     EXPECT_EQ(ind.flag[0], 0);
     EXPECT_EQ(ind.flag[1], 0);
-    EXPECT_EQ(ind.flag[2], vandalism::kFlagFilter1);
-    EXPECT_EQ(ind.flag[3], vandalism::kFlagFilter1);
+    EXPECT_EQ(ind.flag[2], suspect::kFlagFilter1);
+    EXPECT_EQ(ind.flag[3], suspect::kFlagFilter1);
 
     const auto rank = read_ranking(dir.join("user_ranking.parquet"));
     ASSERT_EQ(rank.uid.size(), 3);
@@ -393,19 +393,19 @@ TEST(UsersHistoryFinalize, UpdateMergesDeltasIntoExistingFiles) {
     EXPECT_EQ(rank.username[2], "carol");
     EXPECT_EQ(rank.first_seen_day[2], 1001);
 
-    // The vandalism export carries only the two flagged days, newest first
+    // The suspect export carries only the two flagged days, newest first
     // (change_date descending): uid 11's new day 2001 then uid 13's new day
     // 1001.
-    const auto v = read_vandalism(dir.join("vandalism.parquet"));
+    const auto v = read_suspect(dir.join("suspect.parquet"));
     ASSERT_EQ(v.uid.size(), 2);
     EXPECT_EQ(v.day[0], 2001);
     EXPECT_EQ(v.uid[0], 11);
     EXPECT_EQ(v.username[0], "bob");
-    EXPECT_EQ(v.flag[0], vandalism::kFlagFilter1);
+    EXPECT_EQ(v.flag[0], suspect::kFlagFilter1);
     EXPECT_EQ(v.day[1], 1001);
     EXPECT_EQ(v.uid[1], 13);
     EXPECT_EQ(v.username[1], "carol");
-    EXPECT_EQ(v.flag[1], vandalism::kFlagFilter1);
+    EXPECT_EQ(v.flag[1], suspect::kFlagFilter1);
     // Each flagged day's changes is its own day total (13: 1 node_created,
     // 11: 1 relation_created); no far moves were staged.
     EXPECT_EQ(v.changes[0], 1);
@@ -423,14 +423,14 @@ TEST(UsersHistoryFinalize, UpdateNoStageIsNoOp) {
 
     EXPECT_NO_THROW(users_history::run_update_finalize(
         dir.join("nope"), history, kDefaultUsersHistoryGroupRows,
-        kDefaultRankingGroupRows, dir.join("vandalism_minutes.bin"), {}));
+        kDefaultRankingGroupRows, dir.join("suspect_minutes.bin"), {}));
     EXPECT_FALSE(std::filesystem::exists(history));
 }
 
 // An update that flags nothing (no minute store, no move days, every
-// contributor above the filter-1 threshold) still writes the vandalism
+// contributor above the filter-1 threshold) still writes the suspect
 // export as an empty file: its presence marks that an update has run.
-TEST(UsersHistoryFinalize, UpdateNoFlagsWritesEmptyVandalism) {
+TEST(UsersHistoryFinalize, UpdateNoFlagsWritesEmptySuspect) {
     TempDir dir;
     const std::string history = dir.join("users_history.parquet");
 
@@ -445,7 +445,7 @@ TEST(UsersHistoryFinalize, UpdateNoFlagsWritesEmptyVandalism) {
                 });
     users_history::run_finalize(base_stage, history, kDefaultUsersHistoryGroupRows,
                                 kDefaultRankingGroupRows);
-    EXPECT_FALSE(std::filesystem::exists(dir.join("vandalism.parquet")));
+    EXPECT_FALSE(std::filesystem::exists(dir.join("suspect.parquet")));
 
     // A new day for the high-ranking uid 1: rank stays 20, so no filter-1
     // bit; uid 2's day is a carried base row (never retroactively flagged).
@@ -458,17 +458,17 @@ TEST(UsersHistoryFinalize, UpdateNoFlagsWritesEmptyVandalism) {
     users_history::run_update_finalize(stage_root, history,
                                        kDefaultUsersHistoryGroupRows,
                                        kDefaultRankingGroupRows,
-                                       dir.join("vandalism_minutes.bin"), {});
+                                       dir.join("suspect_minutes.bin"), {});
 
-    EXPECT_TRUE(std::filesystem::exists(dir.join("vandalism.parquet")));
-    const auto v = read_vandalism(dir.join("vandalism.parquet"));
+    EXPECT_TRUE(std::filesystem::exists(dir.join("suspect.parquet")));
+    const auto v = read_suspect(dir.join("suspect.parquet"));
     EXPECT_EQ(v.uid.size(), 0);
 }
 
-// The vandalism filter-2 flag: with a persisted minute store present, the
+// The suspect filter-2 flag: with a persisted minute store present, the
 // update finalize marks exactly the (uid, day) pairs that hold a minute whose
 // trailing one-hour span exceeds the threshold.
-TEST(UsersHistoryFinalize, UpdateFlagsVandalismDaysFromMinuteStore) {
+TEST(UsersHistoryFinalize, UpdateFlagsSuspectDaysFromMinuteStore) {
     TempDir dir;
     const std::string history = dir.join("users_history.parquet");
 
@@ -488,9 +488,9 @@ TEST(UsersHistoryFinalize, UpdateFlagsVandalismDaysFromMinuteStore) {
     //   uid 11 day 2000: minute 1440*2000+500 carries 40 edits -> not flagged.
     //   uid 13 day 1001: minute 1440*1001+0 carries 600 edits -> flagged, and
     //   uid 13 appears in this run's diffs.
-    const std::string minutes = dir.join("vandalism_minutes.bin");
+    const std::string minutes = dir.join("suspect_minutes.bin");
     {
-        vandalism_store::Writer w(minutes);
+        suspect_store::Writer w(minutes);
         w.add(10, 1440u * 1000u + 30, 501);
         w.add(11, 1440u * 2000u + 500, 40);
         w.add(13, 1440u * 1001u, 600);
@@ -515,28 +515,28 @@ TEST(UsersHistoryFinalize, UpdateFlagsVandalismDaysFromMinuteStore) {
     ASSERT_EQ(ind.uid.size(), 3);
     EXPECT_EQ(ind.uid[0], 10);
     EXPECT_EQ(ind.day[0], 1000);
-    EXPECT_EQ(ind.flag[0], vandalism::kFlagFilter2);  // 501 > 500 in one hour; rank 56
+    EXPECT_EQ(ind.flag[0], suspect::kFlagFilter2);  // 501 > 500 in one hour; rank 56
     EXPECT_EQ(ind.uid[1], 11);
     EXPECT_EQ(ind.day[1], 2000);
     EXPECT_EQ(ind.flag[1], 0);  // 40 < 500; base row, filter 1 never retroactive
     EXPECT_EQ(ind.uid[2], 13);
     EXPECT_EQ(ind.day[2], 1001);
-    EXPECT_EQ(ind.flag[2], vandalism::kFlagFilter2 | vandalism::kFlagFilter1);  // 600 > 500; new day, rank 0
+    EXPECT_EQ(ind.flag[2], suspect::kFlagFilter2 | suspect::kFlagFilter1);  // 600 > 500; new day, rank 0
 
-    // The vandalism export mirrors the non-zero history flags, one row per
+    // The suspect export mirrors the non-zero history flags, one row per
     // flagged (uid, change_date) with the current username, sorted by
     // (change_date, uid), change_date descending: uid 13's flagged day 1001
     // before uid 10's 1000.
-    const auto v = read_vandalism(dir.join("vandalism.parquet"));
+    const auto v = read_suspect(dir.join("suspect.parquet"));
     ASSERT_EQ(v.uid.size(), 2);
     EXPECT_EQ(v.uid[0], 13);
     EXPECT_EQ(v.username[0], "carol");
     EXPECT_EQ(v.day[0], 1001);
-    EXPECT_EQ(v.flag[0], vandalism::kFlagFilter2 | vandalism::kFlagFilter1);
+    EXPECT_EQ(v.flag[0], suspect::kFlagFilter2 | suspect::kFlagFilter1);
     EXPECT_EQ(v.uid[1], 10);
     EXPECT_EQ(v.username[1], "alice");
     EXPECT_EQ(v.day[1], 1000);
-    EXPECT_EQ(v.flag[1], vandalism::kFlagFilter2);
+    EXPECT_EQ(v.flag[1], suspect::kFlagFilter2);
 
     // Derived columns per flagged day: changes is the day's own total (uid 13's
     // brand-new 1 node_created, uid 10's 5 node_created + 3 relation_created
@@ -551,7 +551,7 @@ TEST(UsersHistoryFinalize, UpdateFlagsVandalismDaysFromMinuteStore) {
     EXPECT_GT(v.ranking_at_day[1], 0);
 }
 
-// The combined vandalism flag: base flags are carried forward, this run's
+// The combined suspect flag: base flags are carried forward, this run's
 // filter-2 bits come from the minute store and filter-3 bits from the moves
 // folding, so a day flagged by both screens carries 0x03.
 TEST(UsersHistoryFinalize, UpdateFlagsCombineCarriedAndMoveDays) {
@@ -569,9 +569,9 @@ TEST(UsersHistoryFinalize, UpdateFlagsCombineCarriedAndMoveDays) {
     users_history::run_finalize(base_stage, history, kDefaultUsersHistoryGroupRows,
                                 kDefaultRankingGroupRows);
 
-    const std::string minutes = dir.join("vandalism_minutes.bin");
+    const std::string minutes = dir.join("suspect_minutes.bin");
     {
-        vandalism_store::Writer w(minutes);
+        suspect_store::Writer w(minutes);
         w.add(10, 1440u * 1000u + 30, 501);
         w.finish();
     }
@@ -579,7 +579,7 @@ TEST(UsersHistoryFinalize, UpdateFlagsCombineCarriedAndMoveDays) {
     const std::string stage_root = dir.join("stage");
     const auto update_with = [&](const std::string& seq_hex, const std::string& username,
                                  uint16_t day,
-                                 const std::map<std::pair<int64_t, uint16_t>, vandalism::MoveDay>&
+                                 const std::map<std::pair<int64_t, uint16_t>, suspect::MoveDay>&
                                      move_flags,
                                  uint64_t seq) {
         const std::string stage_root = dir.join("seq_" + seq_hex);
@@ -601,16 +601,16 @@ TEST(UsersHistoryFinalize, UpdateFlagsCombineCarriedAndMoveDays) {
     // (uid, day) sorted: uid 10 day 1000, uid 11 day 2000, uid 90 day 3000.
     ASSERT_EQ(ind1.uid.size(), 3);
     EXPECT_EQ(ind1.day[0], 1000);
-    EXPECT_EQ(ind1.flag[0], vandalism::kFlagFilter2);  // rank 36, no filter 1
+    EXPECT_EQ(ind1.flag[0], suspect::kFlagFilter2);  // rank 36, no filter 1
     EXPECT_EQ(ind1.flag[1], 0);  // uid 11 scores 0, but its day is a carried base row
-    EXPECT_EQ(ind1.flag[2], vandalism::kFlagFilter1);  // uid 90 day 3000 is new, rank 0
+    EXPECT_EQ(ind1.flag[2], suspect::kFlagFilter1);  // uid 90 day 3000 is new, rank 0
 
     // Run 2: uid 90 day 3001 staged; move-flagged existing days uid 10 day
     // 1000 (which already carries the filter-2 bit) and uid 11 day 2000.
     update_with("2", "zoe", 3001,
-                std::map<std::pair<int64_t, uint16_t>, vandalism::MoveDay>{
-                    {{10, 1000}, {vandalism::kFlagFilter3, 2}},
-                    {{11, 2000}, {vandalism::kFlagFilter3, 2}},
+                std::map<std::pair<int64_t, uint16_t>, suspect::MoveDay>{
+                    {{10, 1000}, {suspect::kFlagFilter3, 2}},
+                    {{11, 2000}, {suspect::kFlagFilter3, 2}},
                 },
                 2847601);
 
@@ -620,34 +620,34 @@ TEST(UsersHistoryFinalize, UpdateFlagsCombineCarriedAndMoveDays) {
     //   uid 90 days 3000/3001: low ranking only, on new rows -> 0x04.
     ASSERT_EQ(ind.uid.size(), 4);
     EXPECT_EQ(ind.day[0], 1000);
-    EXPECT_EQ(ind.flag[0], vandalism::kFlagFilter2 | vandalism::kFlagFilter3);
+    EXPECT_EQ(ind.flag[0], suspect::kFlagFilter2 | suspect::kFlagFilter3);
     EXPECT_EQ(ind.uid[1], 11);
     EXPECT_EQ(ind.day[1], 2000);
-    EXPECT_EQ(ind.flag[1], vandalism::kFlagFilter3);
-    EXPECT_EQ(ind.flag[2], vandalism::kFlagFilter1);
-    EXPECT_EQ(ind.flag[3], vandalism::kFlagFilter1);
+    EXPECT_EQ(ind.flag[1], suspect::kFlagFilter3);
+    EXPECT_EQ(ind.flag[2], suspect::kFlagFilter1);
+    EXPECT_EQ(ind.flag[3], suspect::kFlagFilter1);
 
-    // The vandalism export keeps only the flagged days, newest first
+    // The suspect export keeps only the flagged days, newest first
     // (change_date descending with a uid tie-break): day 3001 before day 3000
     // before day 2000 (0x02) before day 1000 (0x03).
-    const auto v = read_vandalism(dir.join("vandalism.parquet"));
+    const auto v = read_suspect(dir.join("suspect.parquet"));
     ASSERT_EQ(v.uid.size(), 4);
     EXPECT_EQ(v.day[0], 3001);
     EXPECT_EQ(v.uid[0], 90);
     EXPECT_EQ(v.username[0], "zoe");
-    EXPECT_EQ(v.flag[0], vandalism::kFlagFilter1);
+    EXPECT_EQ(v.flag[0], suspect::kFlagFilter1);
     EXPECT_EQ(v.day[1], 3000);
     EXPECT_EQ(v.uid[1], 90);
     EXPECT_EQ(v.username[1], "zoe");
-    EXPECT_EQ(v.flag[1], vandalism::kFlagFilter1);
+    EXPECT_EQ(v.flag[1], suspect::kFlagFilter1);
     EXPECT_EQ(v.day[2], 2000);
     EXPECT_EQ(v.uid[2], 11);
     EXPECT_EQ(v.username[2], "bob");
-    EXPECT_EQ(v.flag[2], vandalism::kFlagFilter3);
+    EXPECT_EQ(v.flag[2], suspect::kFlagFilter3);
     EXPECT_EQ(v.day[3], 1000);
     EXPECT_EQ(v.uid[3], 10);
     EXPECT_EQ(v.username[3], "alice");
-    EXPECT_EQ(v.flag[3], vandalism::kFlagFilter2 | vandalism::kFlagFilter3);
+    EXPECT_EQ(v.flag[3], suspect::kFlagFilter2 | suspect::kFlagFilter3);
 
     // Derived columns across the two runs' accumulations:
     //   uid 10 day 1000: changes is the carried day's own total (8, re-derived
@@ -694,7 +694,7 @@ TEST(UsersHistoryFinalize, UpdateFlagsFilter1ForwardOnlyMonotonic) {
     {
         const auto ind = read_history(history);
         ASSERT_EQ(ind.flag.size(), 2);
-        EXPECT_EQ(ind.flag[0], 0);  // import writes no vandalism bits
+        EXPECT_EQ(ind.flag[0], 0);  // import writes no suspect bits
         EXPECT_EQ(ind.flag[1], 0);
     }
 
@@ -710,7 +710,7 @@ TEST(UsersHistoryFinalize, UpdateFlagsFilter1ForwardOnlyMonotonic) {
         users_history::run_update_finalize(stage_root, history,
                                            kDefaultUsersHistoryGroupRows,
                                            kDefaultRankingGroupRows,
-                                           dir.join("vandalism_minutes.bin"), {});
+                                           dir.join("suspect_minutes.bin"), {});
     };
 
     // Update 1: uid 1's new day 1001 is written while rank 0 -> flagged.
@@ -721,11 +721,11 @@ TEST(UsersHistoryFinalize, UpdateFlagsFilter1ForwardOnlyMonotonic) {
         EXPECT_EQ(ind.day[0], 1000);
         EXPECT_EQ(ind.flag[0], 0);  // uid 1 day 1000: base, never retroactively flagged
         EXPECT_EQ(ind.day[1], 1001);
-        EXPECT_EQ(ind.flag[1], vandalism::kFlagFilter1);  // newly written, rank 0
+        EXPECT_EQ(ind.flag[1], suspect::kFlagFilter1);  // newly written, rank 0
         EXPECT_EQ(ind.day[2], 2000);
         EXPECT_EQ(ind.flag[2], 0);  // uid 2 day 2000: base, rank 20
 
-        const auto v = read_vandalism(dir.join("vandalism.parquet"));
+        const auto v = read_suspect(dir.join("suspect.parquet"));
         ASSERT_EQ(v.uid.size(), 1);
         EXPECT_EQ(v.uid[0], 1);
         EXPECT_EQ(v.day[0], 1001);
@@ -743,24 +743,24 @@ TEST(UsersHistoryFinalize, UpdateFlagsFilter1ForwardOnlyMonotonic) {
         EXPECT_EQ(ind.day[0], 1000);
         EXPECT_EQ(ind.flag[0], 0);
         EXPECT_EQ(ind.day[1], 1001);
-        EXPECT_EQ(ind.flag[1], vandalism::kFlagFilter1);  // once set, never masked out
+        EXPECT_EQ(ind.flag[1], suspect::kFlagFilter1);  // once set, never masked out
         EXPECT_EQ(ind.day[2], 1002);
         EXPECT_EQ(ind.flag[2], 0);  // rank now 20
         EXPECT_EQ(ind.day[3], 2000);
         EXPECT_EQ(ind.flag[3], 0);  // uid 2's rank dropped, but no retroactive flag
     }
 
-    // The vandalism export again mirrors the non-zero flags: only uid 1's day
+    // The suspect export again mirrors the non-zero flags: only uid 1's day
     // 1001 (the once-set filter-1 bit), newest first. The
     // ranking_at_day stays frozen at the value stamped back in update 1
     // (0): uid 1 now scores 20, but the carried row is never recalculated.
     // changes is uid 1's own day-1001 total (1 node), far_move_count 0.
-    const auto v = read_vandalism(dir.join("vandalism.parquet"));
+    const auto v = read_suspect(dir.join("suspect.parquet"));
     ASSERT_EQ(v.uid.size(), 1);
     EXPECT_EQ(v.uid[0], 1);
     EXPECT_EQ(v.username[0], "alice");
     EXPECT_EQ(v.day[0], 1001);
-    EXPECT_EQ(v.flag[0], vandalism::kFlagFilter1);
+    EXPECT_EQ(v.flag[0], suspect::kFlagFilter1);
     EXPECT_EQ(v.changes[0], 1);
     EXPECT_EQ(v.far_move_count[0], 0);
     EXPECT_EQ(v.ranking_at_day[0], 0);
@@ -809,7 +809,7 @@ TEST(UsersHistoryFinalize, Filter1FlagsRankingThresholdBoundary) {
         users_history::run_update_finalize(stage_root, history,
                                            kDefaultUsersHistoryGroupRows,
                                            kDefaultRankingGroupRows,
-                                           dir.join("vandalism_minutes.bin"), {});
+                                           dir.join("suspect_minutes.bin"), {});
         const auto ind = read_history(history);
         std::map<int64_t, uint8_t> flags;
         for (size_t r = 0; r < ind.uid.size(); ++r) flags[ind.uid[r]] |= ind.flag[r];
@@ -819,14 +819,14 @@ TEST(UsersHistoryFinalize, Filter1FlagsRankingThresholdBoundary) {
     // Five contributors ranked 1..5 on node_created: uid 1 scores 0 (flagged),
     // uid 2 exactly 5, which is not "below the threshold".
     const auto f5 = scenario({1, 2, 3, 4, 5});
-    EXPECT_EQ(f5.at(1), vandalism::kFlagFilter1);
+    EXPECT_EQ(f5.at(1), suspect::kFlagFilter1);
     EXPECT_EQ(f5.at(2), 0);
     EXPECT_EQ(f5.at(3), 0);
 
     // Six contributors where the second-lowest scores exactly 4 -> flagged.
     const auto f6 = scenario({1, 2, 10, 11, 12, 13});
-    EXPECT_EQ(f6.at(1), vandalism::kFlagFilter1);
-    EXPECT_EQ(f6.at(2), vandalism::kFlagFilter1);
+    EXPECT_EQ(f6.at(1), suspect::kFlagFilter1);
+    EXPECT_EQ(f6.at(2), suspect::kFlagFilter1);
     EXPECT_EQ(f6.at(3), 0);
 }
 

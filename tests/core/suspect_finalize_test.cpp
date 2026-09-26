@@ -17,8 +17,8 @@
 #include "node_cache.hpp"
 #include "test_helpers.hpp"
 #include "update.hpp"
-#include "vandalism.hpp"
-#include "vandalism_store.hpp"
+#include "suspect.hpp"
+#include "suspect_store.hpp"
 
 namespace {
 
@@ -95,7 +95,7 @@ struct StoreRow {
 };
 
 std::vector<StoreRow> read_minutes(const std::string& path) {
-    vandalism_store::Reader reader(path);
+    suspect_store::Reader reader(path);
     std::vector<StoreRow> out;
     out.reserve(reader.size());
     for (size_t i = 0; i < reader.size(); ++i) {
@@ -125,10 +125,10 @@ std::vector<MoveStageRow> read_move_stage(const std::string& path) {
 // fold_minute_counts
 // ---------------------------------------------------------------------------
 
-TEST(VandalismMinuteFold, FromScratchWritesSortedMergedStore) {
+TEST(SuspectMinuteFold, FromScratchWritesSortedMergedStore) {
     TempDir dir;
     const std::string counts_root = dir.join("stage/counts");
-    const std::string minutes = dir.join("vandalism_minutes.bin");
+    const std::string minutes = dir.join("suspect_minutes.bin");
 
     // Unsorted on purpose across two sequence groups.
     std::filesystem::create_directories(counts_root + "/seq_1");
@@ -143,7 +143,7 @@ TEST(VandalismMinuteFold, FromScratchWritesSortedMergedStore) {
     write_counts_stage(counts_root + "/seq_3/stage.parquet",
                        {{10, "alice", 1000, 50}});
 
-    vandalism::fold_minute_counts(counts_root, minutes, 42);
+    suspect::fold_minute_counts(counts_root, minutes, 42);
 
     EXPECT_FALSE(std::filesystem::exists(counts_root));
     ASSERT_TRUE(std::filesystem::exists(minutes));
@@ -160,21 +160,21 @@ TEST(VandalismMinuteFold, FromScratchWritesSortedMergedStore) {
         EXPECT_EQ(rows[i].count, exp[i].count) << "row " << i;
     }
 
-    vandalism_store::Reader reader(minutes);
+    suspect_store::Reader reader(minutes);
     EXPECT_EQ(reader.applied_seq(), 42);
 }
 
-TEST(VandalismMinuteFold, MergesIncomingBucketsAndSkipsReruns) {
+TEST(SuspectMinuteFold, MergesIncomingBucketsAndSkipsReruns) {
     TempDir dir;
     const std::string counts_root = dir.join("stage/counts");
-    const std::string minutes = dir.join("vandalism_minutes.bin");
+    const std::string minutes = dir.join("suspect_minutes.bin");
 
     // First update run: buckets for uid 10, stamped 50.
     {
         std::filesystem::create_directories(counts_root + "/seq_1");
         write_counts_stage(counts_root + "/seq_1/stage.parquet",
                            {{10, "alice", 1000, 300}, {10, "alice", 1040, 200}});
-        vandalism::fold_minute_counts(counts_root, minutes, 50);
+        suspect::fold_minute_counts(counts_root, minutes, 50);
     }
     EXPECT_EQ(read_minutes(minutes).size(), 2);
 
@@ -183,7 +183,7 @@ TEST(VandalismMinuteFold, MergesIncomingBucketsAndSkipsReruns) {
         std::filesystem::create_directories(counts_root + "/seq_51");
         write_counts_stage(counts_root + "/seq_51/stage.parquet",
                            {{10, "alice", 1000, 50}, {12, "dave", 3000, 600}});
-        vandalism::fold_minute_counts(counts_root, minutes, 51);
+        suspect::fold_minute_counts(counts_root, minutes, 51);
     }
     EXPECT_FALSE(std::filesystem::exists(counts_root));
 
@@ -197,7 +197,7 @@ TEST(VandalismMinuteFold, MergesIncomingBucketsAndSkipsReruns) {
         EXPECT_EQ(rows[i].count, exp[i].count) << "row " << i;
     }
     {
-        vandalism_store::Reader reader(minutes);
+        suspect_store::Reader reader(minutes);
         EXPECT_EQ(reader.applied_seq(), 51);
     }
 
@@ -207,7 +207,7 @@ TEST(VandalismMinuteFold, MergesIncomingBucketsAndSkipsReruns) {
         std::filesystem::create_directories(counts_root + "/seq_51");
         write_counts_stage(counts_root + "/seq_51/stage.parquet",
                            {{10, "alice", 1000, 50000}, {12, "dave", 3000, 90000}});
-        vandalism::fold_minute_counts(counts_root, minutes, 51);
+        suspect::fold_minute_counts(counts_root, minutes, 51);
     }
     EXPECT_FALSE(std::filesystem::exists(counts_root));
     const auto after = read_minutes(minutes);
@@ -216,15 +216,15 @@ TEST(VandalismMinuteFold, MergesIncomingBucketsAndSkipsReruns) {
     EXPECT_EQ(after[2].count, 600);   // unchanged
 }
 
-TEST(VandalismMinuteFold, NoStageIsNoOp) {
+TEST(SuspectMinuteFold, NoStageIsNoOp) {
     TempDir dir;
-    const std::string minutes = dir.join("vandalism_minutes.bin");
-    EXPECT_NO_THROW(vandalism::fold_minute_counts(dir.join("nope/counts"), minutes, 1));
+    const std::string minutes = dir.join("suspect_minutes.bin");
+    EXPECT_NO_THROW(suspect::fold_minute_counts(dir.join("nope/counts"), minutes, 1));
     EXPECT_FALSE(std::filesystem::exists(minutes));
 
     const std::string empty = dir.join("empty/counts");
     std::filesystem::create_directories(empty);
-    EXPECT_NO_THROW(vandalism::fold_minute_counts(empty, minutes, 1));
+    EXPECT_NO_THROW(suspect::fold_minute_counts(empty, minutes, 1));
     EXPECT_FALSE(std::filesystem::exists(minutes));
     EXPECT_FALSE(std::filesystem::exists(empty));
 }
@@ -233,16 +233,16 @@ TEST(VandalismMinuteFold, NoStageIsNoOp) {
 // write. The next run re-scans seqs 1..60 and re-stages the already-folded
 // seq_50 alongside the new seq_60; only the sequences beyond the stamp may be
 // re-folded, so uid 10's minute 1000 is not summed twice.
-TEST(VandalismMinuteFold, CrashBeforeManifestThenAdvanceDoesNotDoubleCount) {
+TEST(SuspectMinuteFold, CrashBeforeManifestThenAdvanceDoesNotDoubleCount) {
     TempDir dir;
     const std::string counts_root = dir.join("stage/counts");
-    const std::string minutes = dir.join("vandalism_minutes.bin");
+    const std::string minutes = dir.join("suspect_minutes.bin");
 
     {
         std::filesystem::create_directories(counts_root + "/seq_50");
         write_counts_stage(counts_root + "/seq_50/stage.parquet",
                            {{10, "alice", 1000, 300}});
-        vandalism::fold_minute_counts(counts_root, minutes, 50);
+        suspect::fold_minute_counts(counts_root, minutes, 50);
     }
 
     {
@@ -253,7 +253,7 @@ TEST(VandalismMinuteFold, CrashBeforeManifestThenAdvanceDoesNotDoubleCount) {
         std::filesystem::create_directories(counts_root + "/seq_60");
         write_counts_stage(counts_root + "/seq_60/stage.parquet",
                            {{10, "alice", 1000, 50}, {12, "dave", 3000, 600}});
-        vandalism::fold_minute_counts(counts_root, minutes, 60);
+        suspect::fold_minute_counts(counts_root, minutes, 60);
     }
 
     EXPECT_FALSE(std::filesystem::exists(counts_root));
@@ -266,7 +266,7 @@ TEST(VandalismMinuteFold, CrashBeforeManifestThenAdvanceDoesNotDoubleCount) {
         EXPECT_EQ(rows[i].count, exp[i].count) << "row " << i;
     }
     {
-        vandalism_store::Reader reader(minutes);
+        suspect_store::Reader reader(minutes);
         EXPECT_EQ(reader.applied_seq(), 60);
     }
 }
@@ -275,15 +275,15 @@ TEST(VandalismMinuteFold, CrashBeforeManifestThenAdvanceDoesNotDoubleCount) {
 // flagged_days
 // ---------------------------------------------------------------------------
 
-TEST(VandalismFlaggedDays, ThresholdAcrossDays) {
+TEST(SuspectFlaggedDays, ThresholdAcrossDays) {
     TempDir dir;
-    const std::string minutes = dir.join("vandalism_minutes.bin");
+    const std::string minutes = dir.join("suspect_minutes.bin");
     {
         // Day 0 for uid 7 at minute 0: single 501 -> flagged. Day 1 at minute
         // 1440: single 500 -> not flagged. uid 8 has minutes 2880 (400) and
         // 2882 (120): the trailing span at 2882 is 520 and day 2882/1440 = 2
         // is flagged.
-        vandalism_store::Writer w(minutes);
+        suspect_store::Writer w(minutes);
         w.add(7, 0, 501);
         w.add(7, 1440, 500);
         w.add(8, 2880, 400);
@@ -291,35 +291,35 @@ TEST(VandalismFlaggedDays, ThresholdAcrossDays) {
         w.finish();
     }
     const std::map<std::pair<int64_t, uint16_t>, uint8_t> flags =
-        vandalism::flagged_days(minutes);
+        suspect::flagged_days(minutes);
     const std::map<std::pair<int64_t, uint16_t>, uint8_t> exp_flags = {
-        {{7, 0}, vandalism::kFlagFilter2}, {{8, 2}, vandalism::kFlagFilter2},
+        {{7, 0}, suspect::kFlagFilter2}, {{8, 2}, suspect::kFlagFilter2},
     };
     EXPECT_EQ(flags, exp_flags);
 }
 
-TEST(VandalismFlaggedDays, GuardsDayUint16Range) {
+TEST(SuspectFlaggedDays, GuardsDayUint16Range) {
     TempDir dir;
-    const std::string minutes = dir.join("vandalism_minutes.bin");
+    const std::string minutes = dir.join("suspect_minutes.bin");
     {
-        vandalism_store::Writer w(minutes);
+        suspect_store::Writer w(minutes);
         // minute / 1440 = 65536 exceeds the uint16 change_date ceiling.
         w.add(5, 65536u * 1440u, 600);
         w.finish();
     }
-    EXPECT_THROW(vandalism::flagged_days(minutes), std::runtime_error);
+    EXPECT_THROW(suspect::flagged_days(minutes), std::runtime_error);
 }
 
-TEST(VandalismFlaggedDays, MissingStoreIsEmpty) {
+TEST(SuspectFlaggedDays, MissingStoreIsEmpty) {
     TempDir dir;
-    EXPECT_EQ(vandalism::flagged_days(dir.join("nope.bin")).size(), 0);
+    EXPECT_EQ(suspect::flagged_days(dir.join("nope.bin")).size(), 0);
 }
 
 // ---------------------------------------------------------------------------
 // flagged_move_days (filter 3 -> day-level bit-1 flags).
 // ---------------------------------------------------------------------------
 
-TEST(VandalismMoveDays, FoldsStagedMovesIntoDayFlags) {
+TEST(SuspectMoveDays, FoldsStagedMovesIntoDayFlags) {
     TempDir dir;
     const std::string stage_root = dir.join("stage");
 
@@ -333,21 +333,21 @@ TEST(VandalismMoveDays, FoldsStagedMovesIntoDayFlags) {
         write_moves_stage(stage_root + "/moves/seq_2/stage.parquet",
                           {{10, 2881}, {12, 1440 + 5}});
     }
-    const auto flags = vandalism::flagged_move_days(stage_root);
+    const auto flags = suspect::flagged_move_days(stage_root);
     EXPECT_FALSE(std::filesystem::exists(stage_root));
 
     // day = minute / 1440: uid 10's 1440 -> day 1, 2880/2881 -> day 2; uid
     // 12's 1445 falls into day 1. far_move_count is the number of staged
     // moves folded into that day.
-    const std::map<std::pair<int64_t, uint16_t>, vandalism::MoveDay> exp = {
-        {{10, 1}, {vandalism::kFlagFilter3, 1}},
-        {{10, 2}, {vandalism::kFlagFilter3, 2}},
-        {{12, 1}, {vandalism::kFlagFilter3, 1}},
+    const std::map<std::pair<int64_t, uint16_t>, suspect::MoveDay> exp = {
+        {{10, 1}, {suspect::kFlagFilter3, 1}},
+        {{10, 2}, {suspect::kFlagFilter3, 2}},
+        {{12, 1}, {suspect::kFlagFilter3, 1}},
     };
     EXPECT_EQ(flags, exp);
 }
 
-TEST(VandalismMoveDays, RerunRefoldsSameFlags) {
+TEST(SuspectMoveDays, RerunRefoldsSameFlags) {
     TempDir dir;
     const std::string stage_root = dir.join("stage");
 
@@ -355,31 +355,31 @@ TEST(VandalismMoveDays, RerunRefoldsSameFlags) {
         std::filesystem::create_directories(stage_root + "/moves/seq_1");
         write_moves_stage(stage_root + "/moves/seq_1/stage.parquet",
                           {{10, 1440 * 1000 + 30}});
-        return vandalism::flagged_move_days(stage_root);
+        return suspect::flagged_move_days(stage_root);
     };
-    EXPECT_EQ(run(), (std::map<std::pair<int64_t, uint16_t>, vandalism::MoveDay>{
-        {{10, 1000}, {vandalism::kFlagFilter3, 1}}}));
+    EXPECT_EQ(run(), (std::map<std::pair<int64_t, uint16_t>, suspect::MoveDay>{
+        {{10, 1000}, {suspect::kFlagFilter3, 1}}}));
     // A rerun regenerates the same staged rows; flags are monotonic ORs, so
     // the result is identical.
-    EXPECT_EQ(run(), (std::map<std::pair<int64_t, uint16_t>, vandalism::MoveDay>{
-        {{10, 1000}, {vandalism::kFlagFilter3, 1}}}));
+    EXPECT_EQ(run(), (std::map<std::pair<int64_t, uint16_t>, suspect::MoveDay>{
+        {{10, 1000}, {suspect::kFlagFilter3, 1}}}));
 }
 
-TEST(VandalismMoveDays, NoStageIsEmptyAndRemovesRoot) {
+TEST(SuspectMoveDays, NoStageIsEmptyAndRemovesRoot) {
     TempDir dir;
-    EXPECT_EQ(vandalism::flagged_move_days(dir.join("nope")).size(), 0);
+    EXPECT_EQ(suspect::flagged_move_days(dir.join("nope")).size(), 0);
     EXPECT_FALSE(std::filesystem::exists(dir.join("nope")));
 
     const std::string empty = dir.join("empty_stage");
     std::filesystem::create_directories(empty);
-    EXPECT_EQ(vandalism::flagged_move_days(empty).size(), 0);
+    EXPECT_EQ(suspect::flagged_move_days(empty).size(), 0);
     EXPECT_FALSE(std::filesystem::exists(empty));
 
     // A counts/ subtree without moves is folded to nothing here (its minutes
     // were consumed by fold_minute_counts) and still cleaned up.
     const std::string counts = dir.join("counts_only");
     std::filesystem::create_directories(counts + "/counts/seq_1");
-    EXPECT_EQ(vandalism::flagged_move_days(counts).size(), 0);
+    EXPECT_EQ(suspect::flagged_move_days(counts).size(), 0);
     EXPECT_FALSE(std::filesystem::exists(counts));
 }
 
@@ -410,7 +410,7 @@ const char* kOsc =
     "  </delete>\n"
     "</osmChange>\n";
 
-TEST(VandalismScanDiff, ClassifiesAndBuckets) {
+TEST(SuspectScanDiff, ClassifiesAndBuckets) {
     TempDir dir;
     const std::string osc = dir.join("diff.osc");
     {
@@ -418,7 +418,7 @@ TEST(VandalismScanDiff, ClassifiesAndBuckets) {
         out << kOsc;
     }
     const std::string stage_dir = dir.join("stage");
-    EXPECT_NO_THROW(vandalism::run_scan_diff(osc, stage_dir));
+    EXPECT_NO_THROW(suspect::run_scan_diff(osc, stage_dir));
 
     // Creates ignored; the modify (node+way) and the delete (node+relation)
     // each land in their UTC minute buckets: ts 00:01 -> minute 28401121,
@@ -461,7 +461,7 @@ TEST(VandalismScanDiff, ClassifiesAndBuckets) {
 // NodeMoveSink hooked into the update node pass (filter 3).
 // ---------------------------------------------------------------------------
 
-TEST(VandalismNodeMoves, UpdateNodePassStagesOnlyFarMoves) {
+TEST(SuspectNodeMoves, UpdateNodePassStagesOnlyFarMoves) {
     TempDir dir;
     const std::string cache = dir.join("incr.bin");
     {
@@ -499,7 +499,7 @@ TEST(VandalismNodeMoves, UpdateNodePassStagesOnlyFarMoves) {
 
     const std::string changes_root = dir.join("changes");
     std::filesystem::create_directories(changes_root);
-    vandalism::NodeMoveSink sink(dir.join("moves"));
+    suspect::NodeMoveSink sink(dir.join("moves"));
     {
         update_pass::NodeState state(cache, 9);
         sink.start_seq(1);

@@ -29,7 +29,7 @@
 #include <vector>
 
 #include "node_cache.hpp"
-#include "vandalism.hpp"
+#include "suspect.hpp"
 
 namespace update_pass {
 
@@ -188,11 +188,11 @@ private:
 // <changes_root>/year=YYYY/nodes.<seq>.parquet and folds the positions into
 // `state` (shared across all diffs of the run). When `moves` is non-null,
 // modified nodes with a known prior position are recorded into it before the
-// position is updated (vandalism filter 3; only moves beyond the threshold are
+// position is updated (suspect filter 3; only moves beyond the threshold are
 // staged, as per-(uid, minute) rows).
 void run_node_update(const std::string& diff_path, const std::string& changes_root,
                      uint64_t seq, int h3_resolution, NodeState* state,
-                     vandalism::NodeMoveSink* moves = nullptr);
+                     suspect::NodeMoveSink* moves = nullptr);
 
 // Run the update way pass over one change file: counts way deltas into
 // <changes_root>/year=YYYY/ways.<seq>.parquet using `state`'s overlay. Way

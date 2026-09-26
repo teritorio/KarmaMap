@@ -1,4 +1,4 @@
-#include "vandalism.hpp"
+#include "suspect.hpp"
 
 #include <osmium/handler.hpp>
 #include <osmium/io/any_input.hpp>
@@ -25,9 +25,9 @@
 
 #include "arrow_table_io.hpp"
 #include "h3_utils.hpp"
-#include "vandalism_store.hpp"
+#include "suspect_store.hpp"
 
-namespace vandalism {
+namespace suspect {
 
 namespace {
 
@@ -121,7 +121,7 @@ void write_counts_stage_file(
 
     if (!uid_builder.Reserve(n).ok() || !username_builder.Reserve(n).ok() ||
         !minute_builder.Reserve(n).ok() || !count_builder.Reserve(n).ok()) {
-        throw std::runtime_error("Reserve() failed while flushing vandalism stage");
+        throw std::runtime_error("Reserve() failed while flushing suspect stage");
     }
     for (const auto& [key, entry] : rows) {
         append_checked(uid_builder, key.uid);
@@ -144,9 +144,9 @@ void write_counts_stage_file(
 // Streaming scan over one replication diff: classifies every object the same
 // way the users-history diff scan does and feeds the per-(uid, minute)
 // counter.
-class VandalScanHandler : public osmium::handler::Handler {
+class SuspectScanHandler : public osmium::handler::Handler {
 public:
-    explicit VandalScanHandler(std::string stage_dir)
+    explicit SuspectScanHandler(std::string stage_dir)
         : stage_dir_(std::move(stage_dir)) {}
 
     void node(const osmium::Node& node) {
@@ -311,14 +311,14 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir) {
                               osmium::osm_entity_bits::node | osmium::osm_entity_bits::way |
                                   osmium::osm_entity_bits::relation);
 
-    VandalScanHandler handler(stage_dir);
+    SuspectScanHandler handler(stage_dir);
     while (osmium::memory::Buffer buf = reader.read()) {
         osmium::apply(buf, handler);
     }
     reader.close();
     handler.finish();
 
-    std::cerr << "[vandalism] diff scan objects=" << handler.objects()
+    std::cerr << "[suspect] diff scan objects=" << handler.objects()
               << " stage_rows=" << handler.stage_rows()
               << " stage_files=" << handler.stage_files() << "\n";
 }
@@ -333,14 +333,14 @@ void fold_minute_counts(const std::string& counts_root, const std::string& minut
     // cleanup); skip instead of double-counting. applied_seq == 0 has no
     // meaningful stamp.
     if (have_base && applied_seq > 0 &&
-        vandalism_store::applied_seq_of(minutes_path) >= applied_seq) {
-        std::cerr << "[vandalism] minute buckets already folded through " << applied_seq
+        suspect_store::applied_seq_of(minutes_path) >= applied_seq) {
+        std::cerr << "[suspect] minute buckets already folded through " << applied_seq
                   << ", skipping\n";
         std::filesystem::remove_all(counts_root);
         return;
     }
     if (count_stage.empty()) {
-        std::cerr << "[vandalism] no minute bucket stage files under " << counts_root
+        std::cerr << "[suspect] no minute bucket stage files under " << counts_root
                   << ", nothing to fold\n";
         std::filesystem::remove_all(counts_root);
         return;
@@ -353,20 +353,20 @@ void fold_minute_counts(const std::string& counts_root, const std::string& minut
     // than summing them into the store a second time. Merging then only
     // advances the store past its stamp, keeping it cumulative.
     const uint64_t base_seq =
-        have_base ? vandalism_store::applied_seq_of(minutes_path) : 0;
+        have_base ? suspect_store::applied_seq_of(minutes_path) : 0;
 
     // Merge base + every newly staged diff, summing equal (uid, minute) keys.
     // The map hands the writer its guaranteed (uid, minute) ascending order.
     std::map<std::pair<int64_t, uint32_t>, uint32_t> merged;
     if (have_base) {
-        vandalism_store::Reader base(minutes_path);
+        suspect_store::Reader base(minutes_path);
         for (size_t i = 0; i < base.size(); ++i) {
             merged[{base.uid_at(i), base.minute_at(i)}] += base.count_at(i);
         }
     }
     for (const std::string& path : count_stage) {
         if (base_seq > 0 && staged_seq(path) <= base_seq) {
-            std::cerr << "[vandalism] stage " << path
+            std::cerr << "[suspect] stage " << path
                       << " already folded (seq <= " << base_seq << "), skipping\n";
             continue;
         }
@@ -380,13 +380,13 @@ void fold_minute_counts(const std::string& counts_root, const std::string& minut
         }
     }
 
-    vandalism_store::Writer writer(minutes_path);
+    suspect_store::Writer writer(minutes_path);
     writer.set_applied_seq(applied_seq);
     for (const auto& [key, count] : merged) {
         writer.add(key.first, key.second, count);
     }
     writer.finish();
-    std::cerr << "[vandalism] folded " << merged.size() << " minute buckets into "
+    std::cerr << "[suspect] folded " << merged.size() << " minute buckets into "
               << minutes_path << "\n";
     std::filesystem::remove_all(counts_root);
 }
@@ -394,7 +394,7 @@ void fold_minute_counts(const std::string& counts_root, const std::string& minut
 std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_days(const std::string& minutes_path) {
     std::map<std::pair<int64_t, uint16_t>, uint8_t> days;
     if (!std::filesystem::exists(minutes_path)) return days;
-    vandalism_store::Reader reader(minutes_path);
+    suspect_store::Reader reader(minutes_path);
 
     // The store is grouped by uid in (uid, minute) order, so each uid's series
     // is contiguous; hour_spans needs no more than that.
@@ -449,7 +449,7 @@ std::map<std::pair<int64_t, uint16_t>, MoveDay> flagged_move_days(
         }
     }
     if (!move_stage.empty()) {
-        std::cerr << "[vandalism] folded " << days.size() << " move-flagged days\n";
+        std::cerr << "[suspect] folded " << days.size() << " move-flagged days\n";
     }
 
     // The run's staging is now folded into the day flags; the counts/ sub-tree
@@ -458,4 +458,4 @@ std::map<std::pair<int64_t, uint16_t>, MoveDay> flagged_move_days(
     return days;
 }
 
-}  // namespace vandalism
+}  // namespace suspect

@@ -23,8 +23,8 @@ export const TAG_COUNTERS = TOP12_TAGS.map((key) => `tag_${key}`)
 // creations + tags), used to project a wide per-uid row into a counters map.
 export const ALL_COUNTERS = [...CHANGE_COUNTERS, 'relation_created', ...TAG_COUNTERS]
 
-// Bits of the daily vandalism_flag column of users_history.parquet,
-// mirroring src/vandalism.hpp. Filter 2/3 are per-day occurrences; filter 1
+// Bits of the daily suspect_flag column of users_history.parquet,
+// mirroring src/suspect.hpp. Filter 2/3 are per-day occurrences; filter 1
 // is forward-only, set on new rows for a below-threshold contributor.
 export const FLAG_FILTER_2 = 0x01
 export const FLAG_FILTER_3 = 0x02
@@ -90,7 +90,7 @@ function computeRanking(row, stats) {
 // Totals from the exact user_ranking.parquet row (all 21 history sums
 // and the identity columns are stored per uid by the pipeline), plus the
 // per-day timeline from users_history.parquet: the activity-by-day edit
-// counts and per-day vandalism_flag masks that feed the history graph.
+// counts and per-day suspect_flag masks that feed the history graph.
 export function computeScores(rankingRows, historyRows, stats) {
   const rankRow = rankingRows[0]
   const counters = { ...rankRow.counters }
@@ -101,7 +101,7 @@ export function computeScores(rankingRows, historyRows, stats) {
     const dayCount = Number(row.count ?? 0)
     const day = dayKey(row.change_date)
     byDay.set(day, (byDay.get(day) ?? 0) + dayCount)
-    flagByDay.set(day, (flagByDay.get(day) ?? 0) | Number(row.vandalism_flag ?? 0))
+    flagByDay.set(day, (flagByDay.get(day) ?? 0) | Number(row.suspect_flag ?? 0))
   }
 
   const totalEdits = CHANGE_COUNTERS.reduce((sum, k) => sum + counters[k], 0)

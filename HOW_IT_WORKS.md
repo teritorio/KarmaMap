@@ -197,41 +197,50 @@ and its timestamp once per run.
 
 That merge is by file name and schema: the finalize reads the previous
 `users_history.parquet`, `user_ranking.parquet` (the base of the recomputed
-ranking) and `vandalism.parquet` (including its `ranking_at_day` column, the
+ranking) and `suspect.parquet` (including its `ranking_at_day` column, the
 base of the carried flag values) as its three bases, and reads all of them
 before it writes the first file of the run, so a base that does not match the
 current schema aborts the update with nothing replaced. An output directory not
 written by this build is therefore not updatable: re-import the snapshot into a
 fresh output directory.
 
-The vandalism engine (OSMPatrol filters 2 and 3, see
+The `suspect_minutes.bin` minute store is the one derived file with no schema
+check: a missing store is read as an empty base, so an update against a
+directory whose store was written under another name silently restarts
+filter-2 accumulation at that point instead of failing. The store is
+self-identifying (a `VMIN` magic and version, no file name), so renaming it in
+place preserves the folded minutes and the applied-sequence stamp; do that
+before updating, or the period before the upgrade stops contributing to the
+filter-2 day bits.
+
+The suspect engine (OSMPatrol filters 2 and 3, see
 `docs/osmpatrol-neis-2012.md`) runs in the same loop. Every diff is scanned
 into per-`(uid, minute)` modified+deleted buckets under
-`vandalism_update_stage/counts/seq_<n>/`, and modified nodes with a known
+`suspect_update_stage/counts/seq_<n>/`, and modified nodes with a known
 prior position are recorded by the update node pass into
-`vandalism_update_stage/moves/seq_<n>/` as `(uid, minute)` rows.
+`suspect_update_stage/moves/seq_<n>/` as `(uid, minute)` rows.
 The finalize three-step ordering is load-bearing:
 
 1. `fold_minute_counts` merges the run's staged buckets into the persisted
-   binary store `vandalism_minutes.bin` (`vandalism_store.hpp`), summing
-   equal `(uid, minute)` keys — the store is the merge base for the next run
-   and is stamped with the applied sequence so a rerun is a no-op.
+   binary store `suspect_minutes.bin` (`suspect_store.hpp`), summing equal
+   `(uid, minute)` keys — the store is the merge base for the next run and is
+   stamped with the applied sequence so a rerun is a no-op.
 2. `users_history::run_update_finalize` reads it through
-   `vandalism::flagged_days` plus this run's `vandalism::flagged_move_days`
-   and recomputes the `vandalism_flag` column of `users_history.parquet`
+   `suspect::flagged_days` plus this run's `suspect::flagged_move_days`
+   and recomputes the `suspect_flag` column of `users_history.parquet`
    (bits 0/1 base flags carried forward, ORed with this run's filter-2 and
    filter-3 bits; bit 2, the ranking-based filter 1, is forward-only —
    set only on the rows this run newly writes, see the users-history pass
-   below). It also writes `vandalism.parquet`, one row per flagged day with
+   below). It also writes `suspect.parquet`, one row per flagged day with
    the day's total change count, its far-move count and the ranking
    frozen at the day's first flag.
-3. `vandalism::flagged_move_days` folds the staged node moves (> 500 m) into
+3. `suspect::flagged_move_days` folds the staged node moves (> 500 m) into
    those same per-day bits (filter 3) and a per-day far-move count; its
    stage is transient and removed, so every finalize is idempotent.
-   `vandalism_minutes.bin` likewise folds minutes (filter 2). There is no
+   `suspect_minutes.bin` likewise folds minutes (filter 2). There is no
    persisted move dataset beyond the carried `far_move_count` column of
-   `vandalism.parquet` — both filters land in `users_history.parquet`'s
-   `vandalism_flag` bits and only the flagged days are re-exported.
+   `suspect.parquet` — both filters land in `users_history.parquet`'s
+   `suspect_flag` bits and only the flagged days are re-exported.
 
 ## Users-history pass
 
@@ -248,7 +257,7 @@ user, so it grows with new users, not new edits, and can be rebuilt from the
 per-user totals without re-reading history. The non-partitioned single files
 keep the `uid` join cheap and the numerics-only history file small.
 
-The `vandalism_flag` of each history row is a bit field. Bits 0 and 1
+The `suspect_flag` of each history row is a bit field. Bits 0 and 1
 (`kFlagFilter2`, `kFlagFilter3`) stay 0 on import and are monotonically ORed
 by every update finalize from the persisted minute store and the run's
 move-flagged days. Bit 2 (`kFlagFilter1`, the paper's "new users or
@@ -260,18 +269,18 @@ flagged. The update finalize derives it from the same `ranking::Result` it
 writes to `user_ranking.parquet`; a contributor who created nothing ranks 0,
 which covers the "new users" half of the screen without a separate rule.
 
-## Vandalism pass
+## Suspect pass
 
-The vandalism engine (OSMPatrol filters 2 and 3 of Neis, Goetz & Zipf 2012)
+The suspect engine (OSMPatrol filters 2 and 3 of Neis, Goetz & Zipf 2012)
 watches the diff stream, not the full history — it runs `update`-only. The
-diff scan (`vandalism::run_scan_diff`) reuses the
-users-history classification (visible version 1 = created, later = modified,
+diff scan (`suspect::run_scan_diff`) reuses the users-history
+classification (visible version 1 = created, later = modified,
 invisible = deleted) and counts **modified + deleted** objects per
-`(uid, minute)` into `vandalism_update_stage/counts/seq_<n>/` (UTC minutes
+`(uid, minute)` into `suspect_update_stage/counts/seq_<n>/` (UTC minutes
 since the epoch; creates are ignored).
 
 The minute buckets are persisted as the binary block store
-`vandalism_minutes.bin` next to the node caches (see `vandalism_store.hpp` for
+`suspect_minutes.bin` next to the node caches (see `suspect_store.hpp` for
 the on-disk format: one 16-byte record per `(uid, minute)`, sorted, keyed as
 the update finalize's merge base). `fold_minute_counts` reads the store plus
 the run's staged buckets, sums equal `(uid, minute)` keys (so a minute that
@@ -280,28 +289,28 @@ tmp+rename swap and stamps its header with the applied sequence. A rerun of
 an already-folded sequence (crash between the rename and stage cleanup) is
 skipped.
 
-`vandalism::flagged_days` reads the store back into
+`suspect::flagged_days` reads the store back into
 `(uid, day) -> flag`: each uid's contiguous minute series is run through
 `hour_spans`, the trailing 60-minute window (the minute's count plus the
 previous 59), and any day holding a minute whose span is strictly above 500
 is flagged (`day = minute / 1440`, so a burst crossing midnight still lands
 on the day of its peak minute). The users-history update finalize merges
-those flags into `users_history.parquet`'s `vandalism_flag` column for the
+those flags into `users_history.parquet`'s `suspect_flag` column for the
 whole history. Import writes the column as 0: the full-history scan precedes
 the replication stream, so no minute buckets exist for it.
 
 Filter 3 records modified-node moves (> 500 m) as the same updates apply:
 the update node pass already tracks each node's last known H3 cell
 (`node_cache::incremental` base plus this run's overlay), and it hands every
-detected move beyond the 500 m screen to `vandalism::NodeMoveSink`, which
+detected move beyond the 500 m screen to `suspect::NodeMoveSink`, which
 stages `(uid, minute)` rows under
-`vandalism_update_stage/moves/seq_<n>/` (rows that do not clear the screen
+`suspect_update_stage/moves/seq_<n>/` (rows that do not clear the screen
 are dropped before staging). `flagged_move_days` folds them straight into
 this run's `(uid, day) -> filter-3 bit` flags and per-day far-move count used
 by the users-history finalize and removes the stage root, so there is **no
 persisted move dataset** — filter 3 survives only as the carried/ORed day bit
 in `users_history.parquet` and the frozen per-day `far_move_count` column of
-`vandalism.parquet`. The distance is measured from the prior cell
+`suspect.parquet`. The distance is measured from the prior cell
 center to the new point, within one res-9 cell radius (~175 m) of the true
 prior: fine for the 500 m screen, not for the paper's finer 11 m
 edit-analysis flag. Filter 1 (new users / ranking < 5%) is a `kFlagFilter1`
@@ -344,14 +353,14 @@ client-side. Each day's `count` column already totals the six node/way change
 counters plus the three relation counters; the per-uid edit total stays
 node/way-only (relations are ranking-only).
 
-### Vandalism viewer
+### Suspects viewer
 
-`web/vandalism/query.js` reads the 100 latest flagged days from
-`vandalism.parquet`. Because the update finalize writes that file newest-first
+`web/suspect/query.js` reads the 100 latest flagged days from
+`suspect.parquet`. Because the update finalize writes that file newest-first
 (`change_date` descending), the page issues a plain `rowEnd`-capped query (no
 date filter): hyparquet fetches only the leading row groups' pages, so the
 "100 last" table never scans the whole file. Each row is one flagged
-`(uid, change_date)` with the username, the combined `vandalism_flag` bits,
+`(uid, change_date)` with the username, the combined `suspect_flag` bits,
 the day's total change count, its far-move count and the ranking frozen at
 the day's first flag. Of the flags the table shows one: a day carrying bit 0
 (`kFlagFilter2`, the >500 modified/deleted objects in one hour filter) is marked

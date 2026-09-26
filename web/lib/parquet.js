@@ -34,7 +34,7 @@ async function maybeParseMetadata(file, footerSize, always) {
 // groups and pages on the server side; exact membership is left to the
 // caller. `rowLimit` caps the returned rows to the first N physical rows
 // (rowEnd), which a caller combines with a known physical sort (e.g. the
-// vandalism file's newest-first change_date order) to read only the leading
+// suspect file's newest-first change_date order) to read only the leading
 // pages.
 export async function queryRows(baseUrl, path, filter, columns, footerSize, rowLimit) {
   const file = await fetchFile(baseUrl, path)

@@ -136,7 +136,7 @@ TEST(Manifest, WritesUserDatasetEntries) {
     {
         std::ofstream(dir.join("users_history.parquet")) << "x\n";
         std::ofstream(dir.join("user_ranking.parquet")) << "z\n";
-        std::ofstream(dir.join("vandalism.parquet")) << "v\n";
+        std::ofstream(dir.join("suspect.parquet")) << "v\n";
     }
     manifest::write_manifest(dir.path(), 4);
 
@@ -145,7 +145,7 @@ TEST(Manifest, WritesUserDatasetEntries) {
               std::string::npos);
     EXPECT_NE(json.find("\"user_ranking\": { \"path\": \"user_ranking.parquet\", \"partitions\": [] }"),
               std::string::npos);
-    EXPECT_NE(json.find("\"vandalism\": { \"path\": \"vandalism.parquet\", \"partitions\": [] }"),
+    EXPECT_NE(json.find("\"suspect\": { \"path\": \"suspect.parquet\", \"partitions\": [] }"),
               std::string::npos);
     // The fixture files are not parquet, so no footer_size is emitted.
     EXPECT_EQ(json.find("footer_size"), std::string::npos);
@@ -179,7 +179,7 @@ TEST(Manifest, SkipsUserDatasetsWhenAbsent) {
     const std::string json = read_file(dir.join("manifest.json"));
     EXPECT_EQ(json.find("\"users_history\""), std::string::npos);
     EXPECT_EQ(json.find("\"user_ranking\""), std::string::npos);
-    EXPECT_EQ(json.find("\"vandalism\""), std::string::npos);
+    EXPECT_EQ(json.find("\"suspect\""), std::string::npos);
 }
 
 TEST(Manifest, WritesSourceProvenance) {

@@ -4,11 +4,11 @@
 // the OSM full history per contributing user and per UTC day. Two outputs:
 //
 //   users_history.parquet  per (uid, change_date) activity counter plus the
-//                            vandalism flag bits:
+//                            suspect flag bits:
 //                            (uid, change_date, count = the six node/way
 //                            change counters + relation_created +
 //                            relation_modified + relation_deleted;
-//                            vandalism_flag = bits of the day's vandalism
+//                            suspect_flag = bits of the day's suspect
 //                            screens — bit 0 (kFlagFilter2): any of the
 //                            day's minutes had > 500 modified+deleted
 //                            objects in a one-hour window; bit 1
@@ -29,32 +29,32 @@
 //                            (uid, username, first_seen_day, ranking,
 //                             21 counter totals, per-aspect pct;
 //                             active/max in file metadata)
-//   vandalism.parquet  update-only; the flagged (uid, change_date) rows
-//                      of users_history.parquet, re-joined with the
-//                      username and the day's derived values
-//                      (uid, username, change_date, vandalism_flag,
-//                      changes = the day's total change count (node/way/
-//                      relation created+modified+deleted, the same value as
-//                      the users_history count column, 0 otherwise),
-//                      far_move_count = the count of that day's staged moves
-//                      beyond the filter-3 threshold at the run that first
-//                      flagged the day (see the frozen note below),
-//                      ranking_at_day = the contributor's ranking as of
-//                      the day's first flag), sorted by (change_date, uid)
-//                      with change_date descending (newest first).
-//                      Written by the update finalize from the same merged
-//                      flag state as the history file, so the two always
-//                      agree; a pure import writes no flags and produces no
-//                      vandalism.parquet. changes is re-derived from the
-//                      merged per-day counts each run (an appended-to history
-//                      yields the same sum, so it never drifts and never
-//                      touches other days); far_move_count and
-//                      ranking_at_day are frozen when a day is first
-//                      flagged and carried unchanged on every later update,
-//                      never recalculated. Because a day first flagged by
-//                      another filter keeps its frozen far_move_count, that
-//                      column can be 0 even when bit 1 (filter-3) is set:
-//                      moves staged on later runs are not re-merged into it.
+//   suspect.parquet  update-only; the flagged (uid, change_date) rows
+//                    of users_history.parquet, re-joined with the
+//                    username and the day's derived values
+//                    (uid, username, change_date, suspect_flag,
+//                    changes = the day's total change count (node/way/
+//                    relation created+modified+deleted, the same value as
+//                    the users_history count column, 0 otherwise),
+//                    far_move_count = the count of that day's staged moves
+//                    beyond the filter-3 threshold at the run that first
+//                    flagged the day (see the frozen note below),
+//                    ranking_at_day = the contributor's ranking as of
+//                    the day's first flag), sorted by (change_date, uid)
+//                    with change_date descending (newest first).
+//                    Written by the update finalize from the same merged
+//                    flag state as the history file, so the two always
+//                    agree; a pure import writes no flags and produces no
+//                    suspect.parquet. changes is re-derived from the
+//                    merged per-day counts each run (an appended-to history
+//                    yields the same sum, so it never drifts and never
+//                    touches other days); far_move_count and
+//                    ranking_at_day are frozen when a day is first
+//                    flagged and carried unchanged on every later update,
+//                    never recalculated. Because a day first flagged by
+//                    another filter keeps its frozen far_move_count, that
+//                    column can be 0 even when bit 1 (filter-3) is set:
+//                    moves staged on later runs are not re-merged into it.
 //
 // users_history.parquet and user_ranking.parquet are non-partitioned,
 // with users_history sorted by (uid, change_date) and user_ranking.parquet
@@ -93,9 +93,9 @@
 #include <unordered_map>
 #include <utility>
 
-namespace vandalism {
+namespace suspect {
 struct MoveDay;
-}  // namespace vandalism
+}  // namespace suspect
 
 namespace users_history {
 
@@ -283,10 +283,10 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
 // (uid, change_date) deltas are summed into users_history.parquet, and
 // user_ranking.parquet is recomputed from the existing per-uid totals plus
 // the diff totals (so newly appeared contributors join the ranking). The
-// vandalism_flag bits are rebuilt over the whole history: bit 0 (kFlagFilter2)
-// from the persisted minute store at `minutes_path` (vandalism::flagged_days),
+// suspect_flag bits are rebuilt over the whole history: bit 0 (kFlagFilter2)
+// from the persisted minute store at `minutes_path` (suspect::flagged_days),
 // bit 1 (kFlagFilter3) from `move_flags`, the run's (uid, change_date) ->
-// kFlagFilter3 set produced by vandalism::flagged_move_days, which the caller
+// kFlagFilter3 set produced by suspect::flagged_move_days, which the caller
 // must have folded first. All bits are monotonic and forward-only: the
 // existing file's flags are carried forward unchanged (import writes 0), this
 // run's bit-0/1 sets are ORed in, and bit 2 (kFlagFilter1, low ranking) is
@@ -295,7 +295,7 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
 // ranking drop never re-flags the base rows and a once-set bit is never
 // masked out. Called once per update run. The existing files must carry the
 // schemas written by run_finalize (full-run datasets) or a previous update
-// finalize. Alongside the history rewrite it also writes vandalism.parquet
+// finalize. Alongside the history rewrite it also writes suspect.parquet
 // (one row per flagged (uid, change_date) with the username, the day's total
 // change count, the day's far-move count and the ranking frozen at the
 // day's first flag, sorted by (change_date, uid) with change_date descending
@@ -303,7 +303,7 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
 void run_update_finalize(const std::string& stage_root, const std::string& history_path,
                          int64_t users_history_group_rows, int64_t ranking_group_rows,
                          const std::string& minutes_path,
-                         const std::map<std::pair<int64_t, uint16_t>, vandalism::MoveDay>&
+                         const std::map<std::pair<int64_t, uint16_t>, suspect::MoveDay>&
                              move_flags);
 
 }  // namespace users_history

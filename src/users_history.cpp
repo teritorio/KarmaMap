@@ -32,7 +32,7 @@
 #include "arrow_table_io.hpp"
 #include "h3_utils.hpp"
 #include "ranking.hpp"
-#include "vandalism.hpp"
+#include "suspect.hpp"
 
 namespace users_history {
 
@@ -597,7 +597,7 @@ void run_finalize(const std::string& stage_dir, const std::string& history_path,
         append_checked(ind_uid_builder, uid);
         append_checked(ind_day_builder, day);
         append_checked(ind_count_builder, count);
-        // Import writes no vandalism flags: the object hours precede the
+        // Import writes no suspect flags: the object hours precede the
         // replication stream's minute buckets (filters 2/3), and filter 1 is
         // forward-only, marking rows written after a low ranking is
         // detected rather than retroactively over the whole history.
@@ -614,7 +614,7 @@ void run_finalize(const std::string& stage_dir, const std::string& history_path,
         arrow::field("uid", arrow::int64(), false),
         arrow::field("change_date", arrow::uint16(), false),
         arrow::field("count", arrow::uint32(), false),
-        arrow::field("vandalism_flag", arrow::uint8(), false),
+        arrow::field("suspect_flag", arrow::uint8(), false),
     };
     std::vector<std::shared_ptr<arrow::Array>> history_columns = {
         ind_uid, ind_day, ind_count, ind_flag};
@@ -661,7 +661,7 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir) {
 void run_update_finalize(const std::string& stage_root, const std::string& history_path,
                          int64_t users_history_group_rows, int64_t ranking_group_rows,
                          const std::string& minutes_path,
-                         const std::map<std::pair<int64_t, uint16_t>, vandalism::MoveDay>& move_flags) {
+                         const std::map<std::pair<int64_t, uint16_t>, suspect::MoveDay>& move_flags) {
     // Registers Arrow's compute kernels (sort_indices, take).
     auto init_status = arrow::compute::Initialize();
     if (!init_status.ok()) {
@@ -735,34 +735,34 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     const std::filesystem::path history_parent =
         std::filesystem::path(history_path).parent_path();
     const std::string ranking_path = (history_parent / "user_ranking.parquet").string();
-    const std::string vandalism_path = (history_parent / "vandalism.parquet").string();
+    const std::string suspect_path = (history_parent / "suspect.parquet").string();
 
-    // The vandalism file freezes each flagged day's filter-1 ranking and
-    // far-move count. vandalism_base maps every previously flagged
+    // The suspect file freezes each flagged day's filter-1 ranking and
+    // far-move count. suspect_base maps every previously flagged
     // (uid, change_date) to those carried values; the base read and the export
     // loop below that writes over it must stay in lockstep (far_move_count,
     // ranking_at_day are the only carried columns).
-    struct VandalBaseRow {
+    struct SuspectBaseRow {
         uint32_t far_move_count = 0;
         uint8_t ranking_at_day = 0;
     };
-    std::map<std::pair<int64_t, uint16_t>, VandalBaseRow> vandalism_base;
-    if (std::filesystem::exists(vandalism_path)) {
-        auto base_result = arrow_table_io::read_table(vandalism_path)->CombineChunks();
+    std::map<std::pair<int64_t, uint16_t>, SuspectBaseRow> suspect_base;
+    if (std::filesystem::exists(suspect_path)) {
+        auto base_result = arrow_table_io::read_table(suspect_path)->CombineChunks();
         if (!base_result.ok()) {
-            throw std::runtime_error("CombineChunks failed on " + vandalism_path + ": " +
+            throw std::runtime_error("CombineChunks failed on " + suspect_path + ": " +
                                      base_result.status().ToString());
         }
         const std::shared_ptr<arrow::Table> base_v = *base_result;
-        const auto* bv_uids = typed_column<arrow::Int64Array>(base_v, "uid", vandalism_path);
+        const auto* bv_uids = typed_column<arrow::Int64Array>(base_v, "uid", suspect_path);
         const auto* bv_days =
-            typed_column<arrow::UInt16Array>(base_v, "change_date", vandalism_path);
+            typed_column<arrow::UInt16Array>(base_v, "change_date", suspect_path);
         const auto* bv_moves =
-            typed_column<arrow::UInt32Array>(base_v, "far_move_count", vandalism_path);
+            typed_column<arrow::UInt32Array>(base_v, "far_move_count", suspect_path);
         const auto* bv_rank =
-            typed_column<arrow::UInt8Array>(base_v, "ranking_at_day", vandalism_path);
+            typed_column<arrow::UInt8Array>(base_v, "ranking_at_day", suspect_path);
         for (int64_t i = 0; i < base_v->num_rows(); ++i) {
-            VandalBaseRow& row = vandalism_base[{bv_uids->Value(i), bv_days->Value(i)}];
+            SuspectBaseRow& row = suspect_base[{bv_uids->Value(i), bv_days->Value(i)}];
             row.far_move_count = bv_moves->Value(i);
             row.ranking_at_day = bv_rank->Value(i);
         }
@@ -831,7 +831,7 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
         const auto* b_counts =
             typed_column<arrow::UInt32Array>(base_table, "count", history_path);
         const auto* b_flags =
-            typed_column<arrow::UInt8Array>(base_table, "vandalism_flag", history_path);
+            typed_column<arrow::UInt8Array>(base_table, "suspect_flag", history_path);
         for (int64_t i = 0; i < base_table->num_rows(); ++i) {
             const auto key = std::make_pair(b_uids->Value(i), b_days->Value(i));
             merged_counts[key] += b_counts->Value(i);
@@ -869,8 +869,8 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
             rank_uids, rank_usernames, rank_first_seen, counter_sums, history_path,
             ranking_group_rows);
         for (size_t i = 0; i < rank_uids.size() && i < rank.ranking.size(); ++i) {
-            if (rank.ranking[i] < vandalism::kFilter1RankingThreshold) {
-                filter1_uid[rank_uids[i]] = vandalism::kFlagFilter1;
+            if (rank.ranking[i] < suspect::kFilter1RankingThreshold) {
+                filter1_uid[rank_uids[i]] = suspect::kFlagFilter1;
             }
         }
     }
@@ -882,7 +882,7 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     // filter2_days value is kFlagFilter2 and every move_flags entry carries
     // kFlagFilter3, so ORing them into the carried-forward base bits yields
     // the combined per-day field.
-    const auto filter2_days = vandalism::flagged_days(minutes_path);
+    const auto filter2_days = suspect::flagged_days(minutes_path);
     for (const auto& [key, flag] : filter2_days) {
         merged_flags[key] |= flag;
     }
@@ -894,7 +894,7 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     arrow::UInt16Builder ind_day_builder;
     arrow::UInt32Builder ind_count_builder;
     arrow::UInt8Builder ind_flag_builder;
-    // Vandalism export: the same merged flags, one (uid, change_date) row per
+    // Suspect export: the same merged flags, one (uid, change_date) row per
     // day carrying any bit, plus the day's total change count (created +
     // modified + deleted, the same value as the count column written above),
     // the count of that day's staged moves beyond kFilter3Threshold and the
@@ -938,9 +938,9 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
             // taken from this run's current ranking when the day is newly
             // flagged, and never recalculated.
             append_checked(v_changes_builder, count);
-            const auto carried = vandalism_base.find(key);
+            const auto carried = suspect_base.find(key);
             const auto mv = move_flags.find(key);
-            if (carried != vandalism_base.end()) {
+            if (carried != suspect_base.end()) {
                 append_checked(v_moves_builder, carried->second.far_move_count);
                 append_checked(v_rank_builder, carried->second.ranking_at_day);
             } else {
@@ -961,7 +961,7 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
         arrow::schema({arrow::field("uid", arrow::int64(), false),
                        arrow::field("change_date", arrow::uint16(), false),
                        arrow::field("count", arrow::uint32(), false),
-                       arrow::field("vandalism_flag", arrow::uint8(), false)}),
+                       arrow::field("suspect_flag", arrow::uint8(), false)}),
         {ind_uid, ind_day, ind_count, ind_flag});
 
     const std::string history_tmp = history_path + ".tmp";
@@ -971,7 +971,7 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
                                 {"uid"});
     std::filesystem::rename(history_tmp, history_path);
 
-    // The vandalism export: every (uid, change_date) carrying any flag bit,
+    // The suspect export: every (uid, change_date) carrying any flag bit,
     // with the username, the day's total change count, the count of that day's
     // far moves and the ranking frozen at the day's first flag, sorted by
     // (change_date, uid) with change_date descending (newest first) so a client
@@ -988,11 +988,11 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     finish_checked(v_changes_builder, &v_changes);
     finish_checked(v_moves_builder, &v_moves);
     finish_checked(v_rank_builder, &v_rank);
-    auto vandalism_table = arrow::Table::Make(
+    auto suspect_table = arrow::Table::Make(
         arrow::schema({arrow::field("uid", arrow::int64(), false),
                        arrow::field("username", arrow::utf8(), false),
                        arrow::field("change_date", arrow::uint16(), false),
-                       arrow::field("vandalism_flag", arrow::uint8(), false),
+                       arrow::field("suspect_flag", arrow::uint8(), false),
                        arrow::field("changes", arrow::uint32(), false),
                        arrow::field("far_move_count", arrow::uint32(), false),
                        arrow::field("ranking_at_day", arrow::uint8(), false)}),
@@ -1000,20 +1000,20 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     // Newest-first order makes change_date (the pruning column) the compact
     // footer statistics key, with the most recent days' min/max in the first
     // row groups.
-    vandalism_table = arrow_table_io::sort_by_keys(
-        vandalism_table,
+    suspect_table = arrow_table_io::sort_by_keys(
+        suspect_table,
         {arrow::compute::SortKey("change_date", arrow::compute::SortOrder::Descending),
          arrow::compute::SortKey("uid")});
-    const std::string vandalism_tmp = vandalism_path + ".tmp";
-    arrow_table_io::write_table(vandalism_tmp, vandalism_table, ranking_group_rows,
+    const std::string suspect_tmp = suspect_path + ".tmp";
+    arrow_table_io::write_table(suspect_tmp, suspect_table, ranking_group_rows,
                                 {"change_date"});
-    std::filesystem::rename(vandalism_tmp, vandalism_path);
+    std::filesystem::rename(suspect_tmp, suspect_path);
 
     std::filesystem::remove_all(stage_root);
 
     std::cerr << "[users history] update finalized " << history_table->num_rows()
               << " history rows, " << rank_uids.size() << " ranking rows, "
-              << vandalism_table->num_rows() << " vandalism rows\n";
+              << suspect_table->num_rows() << " suspect rows\n";
 }
 
 }  // namespace users_history

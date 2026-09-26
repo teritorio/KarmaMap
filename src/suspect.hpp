@@ -1,8 +1,8 @@
 #pragma once
 
-// Vandalism history following the OSMPatrol filters of Neis, Goetz & Zipf
+// Suspect history following the OSMPatrol filters of Neis, Goetz & Zipf
 // (2012) — see docs/osmpatrol-neis-2012.md. All three filters collapse into
-// the per-day `vandalism_flag` bits field of users_history.parquet:
+// the per-day `suspect_flag` bits field of users_history.parquet:
 //
 //   bit 0 (kFlagFilter2)  a day minute's trailing 60-minute modified+deleted
 //                         span exceeds kFilter2Threshold (paper: "modified
@@ -17,14 +17,14 @@
 //                         "New users" are covered implicitly: a contributor
 //                         who created nothing ranks 0.
 //
-//   vandalism_minutes.bin per-(uid, minute) count of modified+deleted objects
-//                         over the whole update period, persisted as a binary
-//                         block store (vandalism_store.hpp). fold_minute_counts()
-//                         merges each update run's staged buckets into it,
-//                         summed per (uid, minute), exactly once. It is the
-//                         source of truth behind the bit-0 flag: flagged_days()
-//                         reads it and the users-history update finalize
-//                         writes its bits into users_history.parquet.
+//   suspect_minutes.bin per-(uid, minute) count of modified+deleted objects
+//                       over the whole update period, persisted as a binary
+//                       block store (suspect_store.hpp). fold_minute_counts()
+//                       merges each update run's staged buckets into it,
+//                       summed per (uid, minute), exactly once. It is the
+//                       source of truth behind the bit-0 flag: flagged_days()
+//                       reads it and the users-history update finalize
+//                       writes its bits into users_history.parquet.
 //
 // Buckets are UTC minutes since the epoch. A minute's trailing 60-minute span
 // is the sum of its modified_deleted plus the previous 59 minutes'. Folding is
@@ -64,7 +64,7 @@
 #include <utility>
 #include <vector>
 
-namespace vandalism {
+namespace suspect {
 
 // Filter 2 flag threshold: "modified or deleted more than 500 objects within
 // one hour" (paper sec. 5).
@@ -78,7 +78,7 @@ inline constexpr double kFilter3Threshold = 500.0;
 // triggers the bit.
 inline constexpr uint8_t kFilter1RankingThreshold = 5;
 
-// Bits of the users_history.parquet vandalism_flag column.
+// Bits of the users_history.parquet suspect_flag column.
 inline constexpr uint8_t kFlagFilter2 = 0x01;
 inline constexpr uint8_t kFlagFilter3 = 0x02;
 inline constexpr uint8_t kFlagFilter1 = 0x04;
@@ -223,7 +223,7 @@ void fold_minute_counts(const std::string& counts_root, const std::string& minut
 // Reads the persisted minute store and returns one (uid, day) -> flag entry
 // for every day holding at least one minute whose trailing-hour span exceeds
 // kFilter2Threshold; day = minute / 1440 (UTC) and the flag is kFlagFilter2.
-// Feeds the vandalism_flag bits the users-history update finalize writes into
+// Feeds the suspect_flag bits the users-history update finalize writes into
 // the daily history.
 std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_days(const std::string& minutes_path);
 
@@ -247,4 +247,4 @@ struct MoveDay {
 std::map<std::pair<int64_t, uint16_t>, MoveDay> flagged_move_days(
     const std::string& stage_root);
 
-}  // namespace vandalism
+}  // namespace suspect

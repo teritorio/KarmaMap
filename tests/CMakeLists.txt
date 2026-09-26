@@ -24,8 +24,8 @@ add_executable(unit_tests
   unit/ranking_test.cpp
   unit/options_test.cpp
   unit/state_test.cpp
-  unit/vandalism_test.cpp
-  unit/vandalism_store_test.cpp
+  unit/suspect_test.cpp
+  unit/suspect_store_test.cpp
 )
 
 target_compile_features(unit_tests PRIVATE cxx_std_17)
@@ -46,7 +46,7 @@ add_executable(core_tests
   core/sort_pass_test.cpp
   core/users_history_finalize_test.cpp
   core/ranking_test.cpp
-  core/vandalism_finalize_test.cpp
+  core/suspect_finalize_test.cpp
   core/way_update_test.cpp
 )
 

@@ -42,7 +42,7 @@
 #include "state.hpp"
 #include "update.hpp"
 #include "users_history.hpp"
-#include "vandalism.hpp"
+#include "suspect.hpp"
 #include "way_processor.hpp"
 
 namespace {
@@ -219,7 +219,7 @@ void run_users_history_pass(const Options& opts) {
     std::filesystem::remove_all(stage_dir);
     std::filesystem::remove(history_path);
     std::filesystem::remove(opts.output_dir + "/user_ranking.parquet");
-    std::filesystem::remove(opts.output_dir + "/vandalism.parquet");
+    std::filesystem::remove(opts.output_dir + "/suspect.parquet");
 
     users_history::run_scan(opts.input_path, stage_dir);
     users_history::run_finalize(stage_dir, history_path, opts.users_history_group_rows,
@@ -313,14 +313,14 @@ std::optional<replication_state::State> run_update_mode(
     update_pass::NodeState node_state(opts.node_cache_last_path, opts.h3_resolution);
     const std::string history_stage_root =
         opts.output_dir + "/users_history_update_stage";
-    const std::string vandalism_stage_root = opts.output_dir + "/vandalism_update_stage";
+    const std::string suspect_stage_root = opts.output_dir + "/suspect_update_stage";
     // Stage groups from a crashed earlier run may cover sequences this run
     // does not re-scan; drop them so finalize only folds what was applied.
     std::filesystem::remove_all(history_stage_root);
-    std::filesystem::remove_all(vandalism_stage_root);
-    // Filter 2 stages go under vandalism_update_stage/counts/seq_<n>; the
-    // move sink stages filter 3 under vandalism_update_stage/moves/seq_<n>.
-    vandalism::NodeMoveSink move_sink(vandalism_stage_root + "/moves");
+    std::filesystem::remove_all(suspect_stage_root);
+    // Filter 2 stages go under suspect_update_stage/counts/seq_<n>; the
+    // move sink stages filter 3 under suspect_update_stage/moves/seq_<n>.
+    suspect::NodeMoveSink move_sink(suspect_stage_root + "/moves");
     uint64_t applied = base_seq;
     for (uint64_t seq = first; seq <= target; ++seq) {
         const std::string diff_path = replication_state::fetch_diff(
@@ -332,8 +332,8 @@ std::optional<replication_state::State> run_update_mode(
                                     opts.way_batch_bytes);
         users_history::run_scan_diff(
             diff_path, history_stage_root + "/seq_" + std::to_string(seq));
-        vandalism::run_scan_diff(
-            diff_path, vandalism_stage_root + "/counts/seq_" + std::to_string(seq));
+        suspect::run_scan_diff(
+            diff_path, suspect_stage_root + "/counts/seq_" + std::to_string(seq));
         move_sink.finish_seq();
         // `diff_path` is provably applied after every pass over it succeeded;
         // a throw anywhere above leaves the file for fetch_diff to reuse on a
@@ -350,14 +350,14 @@ std::optional<replication_state::State> run_update_mode(
     sort_pass::merge_update_partitions(changes_root, opts.change_group_rows, applied);
 
     // Filter 2: fold this run's staged minute buckets into the persisted
-    // binary minute store first, so the daily vandalism flag written below
+    // binary minute store first, so the daily suspect flag written below
     // already reflects every diff of this run. Filter 3 (any node moved
     // > 500 m) folds into per-day flags the same way, and both staging roots
     // are consumed here.
-    const std::string minutes_path = opts.vandalism_minutes_path;
-    vandalism::fold_minute_counts(vandalism_stage_root + "/counts", minutes_path, applied);
-    const std::map<std::pair<int64_t, uint16_t>, vandalism::MoveDay> move_flags =
-        vandalism::flagged_move_days(vandalism_stage_root);
+    const std::string minutes_path = opts.suspect_minutes_path;
+    suspect::fold_minute_counts(suspect_stage_root + "/counts", minutes_path, applied);
+    const std::map<std::pair<int64_t, uint16_t>, suspect::MoveDay> move_flags =
+        suspect::flagged_move_days(suspect_stage_root);
 
     users_history::run_update_finalize(history_stage_root,
                                        opts.output_dir + "/users_history.parquet",

@@ -1,6 +1,6 @@
 #pragma once
 
-// The persisted minute-bucket store behind vandalism filter 2 ("modified or
+// The persisted minute-bucket store behind suspect filter 2 ("modified or
 // deleted more than 500 objects within one hour"). One shared, single-file
 // store holds the merged per-(uid, minute) modified+deleted counts for the
 // whole update period; the update finalize sums the incoming diffs' staged
@@ -35,7 +35,7 @@
 #include <string>
 #include <vector>
 
-namespace vandalism_store {
+namespace suspect_store {
 
 constexpr uint32_t kMagic = 0x564D494E;  // "VMIN"
 constexpr uint32_t kVersion = 1;
@@ -383,4 +383,4 @@ inline uint64_t applied_seq_of(const std::string& path) {
     return be64(header + 32);
 }
 
-}  // namespace vandalism_store
+}  // namespace suspect_store

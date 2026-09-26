@@ -18,7 +18,7 @@ inline int32_t timestamp_to_utc_day(int64_t epoch_seconds) {
     return static_cast<int32_t>(epoch_seconds / 86400);
 }
 
-// UTC minutes since the Unix epoch, the value stored in the vandalism
+// UTC minutes since the Unix epoch, the value stored in the suspect
 // minute-store columns.
 inline uint32_t timestamp_to_utc_minute(int64_t epoch_seconds) {
     return static_cast<uint32_t>(epoch_seconds / 60);
@@ -52,7 +52,7 @@ inline uint64_t location_to_cell(double lat_deg, double lon_deg, int resolution)
 }
 
 // Center of an H3 cell as (lat, lon) degrees. The prior-position approximation
-// behind vandalism filter 3: osc diffs carry only the new coordinates, so the
+// behind suspect filter 3: osc diffs carry only the new coordinates, so the
 // last known position is reconstructed from the incremental cache's cell.
 inline std::pair<double, double> cell_to_latlng(uint64_t cell) {
     LatLng geo;

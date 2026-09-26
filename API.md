@@ -10,10 +10,10 @@ The two access parts:
   count)` change counts (node + way changes merged per cell per day).
 - **Users** — `users_history.parquet` and
   `user_ranking.parquet`: per-user, per-day activity and ranking.
-- **Vandalism** — `vandalism_minutes.bin` (binary, not Parquet): the
+- **Suspect** — `suspect_minutes.bin` (binary, not Parquet): the
   update-only OSMPatrol filter-2 source; filter-3 fold stages are transient.
   The per-day flags (bits for filters 2 and 3) land in
-  `users_history.parquet`, and `vandalism.parquet` (update-only) re-exports
+  `users_history.parquet`, and `suspect.parquet` (update-only) re-exports
   the flagged days with their daily change count, far-move count and frozen
   ranking.
 
@@ -24,7 +24,7 @@ output-dir/
 ├── manifest.json
 ├── users_history.parquet
 ├── user_ranking.parquet
-├── vandalism.parquet      # update-only; flagged days, empty after no flags
+├── suspect.parquet           # update-only; flagged days, empty after no flags
 └── changes/
     └── year=2025/
         ├── data.parquet      # (h3_cell, change_date, count)
@@ -34,7 +34,7 @@ output-dir/
 # Next to the node caches (output-dir's parent by default):
 node_positions.cache      # full-history node cache (import/prepare-update)
 node_positions.cache.last  # incremental cache (prepare-update/update)
-vandalism_minutes.bin     # update-only; binary block store
+suspect_minutes.bin       # update-only; binary block store
 diffs/                    # update-only; in-flight diff download cache
 ```
 
@@ -146,7 +146,7 @@ are two non-partitioned single files.
   | `uid` | `int64` | OSM user id |
   | `change_date` | `uint16` | UTC day (same encoding as `changes/`) |
   | `count` | `uint32` | Total activity that day: the six node/way change counters plus the three relation counters (created, modified, deleted) |
-  | `vandalism_flag` | `uint8` | Per-day OSMPatrol flag: bit 0 (`0x01`) = any of the day's minutes had > 500 modified+deleted objects within a one-hour window; bit 1 (`0x02`) = a modified node moved more than 500 m that day; bit 2 (`0x04`) = the day's user has ranking < 5% (filter 1, "new users or low ranking"; a contributor who created nothing ranks 0). All bits are monotonic and forward-only: import writes 0; bits 0/1 are ORed by every update finalize from `vandalism_minutes.bin` plus the run's move-flagged days, and bit 2 is set only on the rows that update run newly writes for a below-threshold contributor. Base rows are carried unchanged, so once set a bit persists and a ranking drop never re-flags the past |
+  | `suspect_flag` | `uint8` | Per-day OSMPatrol flag: bit 0 (`0x01`) = any of the day's minutes had > 500 modified+deleted objects within a one-hour window; bit 1 (`0x02`) = a modified node moved more than 500 m that day; bit 2 (`0x04`) = the day's user has ranking < 5% (filter 1, "new users or low ranking"; a contributor who created nothing ranks 0). All bits are monotonic and forward-only: import writes 0; bits 0/1 are ORed by every update finalize from `suspect_minutes.bin` plus the run's move-flagged days, and bit 2 is set only on the rows that update run newly writes for a below-threshold contributor. Base rows are carried unchanged, so once set a bit persists and a ranking drop never re-flags the past |
 
   The per-day `tag_*` counters are aggregated during finalize and only their
   per-user sums are written (in `user_ranking.parquet`), so they never
@@ -218,21 +218,21 @@ ORDER BY edits DESC
 LIMIT 20;
 ```
 
-## Vandalism part
+## Suspect part
 
-The vandalism outputs are update-only: they cover the period after the
+The suspect outputs are update-only: they cover the period after the
 recorded replication sequence and are absent after a pure import. They
 implement the OSMPatrol filters 2 (`> 500 modified/deleted in one hour`) and 3
 (node moved beyond 500 m); filter 1 (new users / ranking < 5%) is a
-forward-only bit (bit 2 of `vandalism_flag`) that the users-history update
+forward-only bit (bit 2 of `suspect_flag`) that the users-history update
 finalize sets on the rows it newly writes. Filters 2/3 fold into the per-day
-`vandalism_flag` bits of `users_history.parquet`; filter 2 draws on one binary
+`suspect_flag` bits of `users_history.parquet`; filter 2 draws on one binary
 store and filter 3's move staging is transient.
 
-- `vandalism_minutes.bin` — the **binary** per-`(uid, minute)` modified+
-  deleted counts behind the filter-2 flag (bit 0 of `vandalism_flag`); it is a
+- `suspect_minutes.bin` — the **binary** per-`(uid, minute)` modified+
+  deleted counts behind the filter-2 flag (bit 0 of `suspect_flag`); it is a
   binary store, not part of `manifest.json` or the Parquet contract. Format (see
-  `src/vandalism_store.hpp`): a 40-byte header (magic `VMIN`, version, record
+  `src/suspect_store.hpp`): a 40-byte header (magic `VMIN`, version, record
   size, record/block counts, the `karmamap_source_seq`-equivalent
   applied-sequence stamp), followed by ZSTD blocks of `2^18` 16-byte records
   `(uid, minute, count)` and a per-block directory of `(first_uid, compressed
@@ -250,20 +250,20 @@ store and filter 3's move staging is transient.
   center to the new point: off by up to one res-9 cell radius (~175 m), fine
   for the 500 m screen, not for the finer 11 m edit-analysis flag.
 
-- `vandalism.parquet` — update-only, written by every update finalize (never
+- `suspect.parquet` — update-only, written by every update finalize (never
   by import), one row per flagged `(uid, change_date)` of
   `users_history.parquet`, sorted by `(change_date, uid)` with `change_date`
   descending (newest first: the most recent flagged days occupy the leading
   row groups), so `change_date` (the pruning column) carries the footer
   row-group statistics and a reader of the latest rows (e.g. the bundled
-  vandalism viewer's "100 last" table) fetches only the leading pages:
+  suspects viewer's "100 last" table) fetches only the leading pages:
 
   | Column | Type | Meaning |
   |---|---|---|
   | `uid` | `int64` | OSM user id |
   | `username` | `utf8` | The user's current username |
   | `change_date` | `uint16` | UTC day (same encoding as `changes/`) |
-  | `vandalism_flag` | `uint8` | The history row's combined flag, non-zero by construction (bits as in `users_history.parquet`) |
+  | `suspect_flag` | `uint8` | The history row's combined flag, non-zero by construction (bits as in `users_history.parquet`) |
   | `changes` | `uint32` | The day's total change count (node/way/relation created+modified+deleted, the same value as the `count` column of `users_history.parquet`) |
   | `far_move_count` | `uint32` | The count of that day's staged moves beyond the filter-3 threshold at the run that first flagged the day. Frozen: stamped when the day is newly flagged and carried unchanged from the base file on every later update, never recalculated. Because a day first flagged by another filter keeps its frozen value, this can be 0 even when bit 1 is set (moves staged on later runs are not re-merged into it) |
   | `ranking_at_day` | `uint8` | The contributor's ranking (as in `user_ranking.parquet`) at the day's first flag. Frozen: stamped when the day is newly flagged and carried unchanged from the base file on every later update, never recalculated |
@@ -273,4 +273,4 @@ store and filter 3's move staging is transient.
   `changes` is re-derived from the merged per-day counts on every run (an
   appended-to history yields the same sum, so it never drifts and never
   touches other days). An update that flags nothing writes an empty file; a
-  pure import writes no `vandalism.parquet` at all.
+  pure import writes no `suspect.parquet` at all.

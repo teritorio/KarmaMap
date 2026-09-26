@@ -59,7 +59,7 @@ TEST(Options, ImportAloneDerivesDefaults) {
     EXPECT_EQ(opts.node_cache_path, "data/node_positions.cache");
     EXPECT_EQ(opts.node_cache_last_path, "data/node_positions.cache.last");
     EXPECT_EQ(opts.diffs_dir, "data/diffs");
-    EXPECT_EQ(opts.vandalism_minutes_path, "data/vandalism_minutes.bin");
+    EXPECT_EQ(opts.suspect_minutes_path, "data/suspect_minutes.bin");
 }
 
 TEST(Options, DataDirEnvSetsDefaultOutputDir) {
@@ -70,7 +70,7 @@ TEST(Options, DataDirEnvSetsDefaultOutputDir) {
     EXPECT_EQ(opts.node_cache_path, "/data/node_positions.cache");
     EXPECT_EQ(opts.node_cache_last_path, "/data/node_positions.cache.last");
     EXPECT_EQ(opts.diffs_dir, "/data/diffs");
-    EXPECT_EQ(opts.vandalism_minutes_path, "/data/vandalism_minutes.bin");
+    EXPECT_EQ(opts.suspect_minutes_path, "/data/suspect_minutes.bin");
 }
 
 TEST(Options, DataDirEnvWithTrailingSlash) {
@@ -80,7 +80,7 @@ TEST(Options, DataDirEnvWithTrailingSlash) {
     EXPECT_EQ(opts.output_dir, "/data/output");
     EXPECT_EQ(opts.node_cache_path, "/data/node_positions.cache");
     EXPECT_EQ(opts.diffs_dir, "/data/diffs");
-    EXPECT_EQ(opts.vandalism_minutes_path, "/data/vandalism_minutes.bin");
+    EXPECT_EQ(opts.suspect_minutes_path, "/data/suspect_minutes.bin");
 }
 
 TEST(Options, DiffsFollowNodeCacheParent) {
@@ -89,7 +89,7 @@ TEST(Options, DiffsFollowNodeCacheParent) {
                        "--output-dir", "out"},
                       &opts));
     EXPECT_EQ(opts.diffs_dir, "chain/diffs");
-    EXPECT_EQ(opts.vandalism_minutes_path, "chain/vandalism_minutes.bin");
+    EXPECT_EQ(opts.suspect_minutes_path, "chain/suspect_minutes.bin");
 }
 
 TEST(Options, ImportFileAfterFlags) {
@@ -332,7 +332,7 @@ TEST(Options, PrepareUpdateAloneDerivesDefaults) {
     EXPECT_EQ(opts.node_cache_path, "data/node_positions.cache");
     EXPECT_EQ(opts.node_cache_last_path, "data/node_positions.cache.last");
     EXPECT_EQ(opts.diffs_dir, "data/diffs");
-    EXPECT_EQ(opts.vandalism_minutes_path, "data/vandalism_minutes.bin");
+    EXPECT_EQ(opts.suspect_minutes_path, "data/suspect_minutes.bin");
 }
 
 TEST(Options, PrepareUpdateNodeCacheLastOverride) {
@@ -382,7 +382,7 @@ TEST(Options, UpdateBareParses) {
     EXPECT_TRUE(opts.input_path.empty());
     EXPECT_EQ(opts.node_cache_last_path, "data/node_positions.cache.last");
     EXPECT_EQ(opts.diffs_dir, "data/diffs");
-    EXPECT_EQ(opts.vandalism_minutes_path, "data/vandalism_minutes.bin");
+    EXPECT_EQ(opts.suspect_minutes_path, "data/suspect_minutes.bin");
 }
 
 TEST(Options, UpdateCountSeparateToken) {
@@ -416,10 +416,10 @@ TEST(Options, UpdateNodeCacheLastOverride) {
                       &opts));
     EXPECT_EQ(opts.node_cache_last_path, "last.bin");
     EXPECT_EQ(opts.output_dir, "out");
-    // diffs_dir/vandalism_minutes_path follow the node cache parent; with the
+    // diffs_dir/suspect_minutes_path follow the node cache parent; with the
     // default cache (out/../node_positions.cache) that parent is empty.
     EXPECT_EQ(opts.diffs_dir, "diffs");
-    EXPECT_EQ(opts.vandalism_minutes_path, "vandalism_minutes.bin");
+    EXPECT_EQ(opts.suspect_minutes_path, "suspect_minutes.bin");
 }
 
 TEST(Options, UpdateRejectsPassThrows) {

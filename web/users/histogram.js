@@ -5,7 +5,7 @@
 // counts the nine history counters: the six node/way changes plus the three
 // relation counters. The y-axis is logarithmic by default.
 //
-// Days carrying vandalism_flag bits (users_history.parquet) get a solid
+// Days carrying suspect_flag bits (users_history.parquet) get a solid
 // full-height red markArea band and an altered blue volume bar; the tooltip
 // lists the activated screens (paper sec. 5).
 
@@ -67,7 +67,7 @@ function tooltipFormatter(params) {
   const lines = [`<b>${day}</b>`, `Total edits: ${count.toLocaleString()}`]
   const active = FLAG_LABELS.filter((f) => flags & f.mask)
   if (active.length === 0) {
-    lines.push('<span style="color:#888">No vandalism flags</span>')
+    lines.push('<span style="color:#888">No suspect flags</span>')
   } else {
     for (const f of active) {
       lines.push(`<span style="color:#d63c3c;font-weight:700">\u25cf</span> ${f.label}`)

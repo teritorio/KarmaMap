@@ -328,9 +328,9 @@ void write_manifest(const std::string& output_dir, int h3_resolution,
         write_dataset("user_ranking", "user_ranking.parquet", {},
                       single_file_field("user_ranking.parquet"));
     }
-    if (std::filesystem::exists(output_dir + "/vandalism.parquet")) {
-        write_dataset("vandalism", "vandalism.parquet", {},
-                      single_file_field("vandalism.parquet"));
+    if (std::filesystem::exists(output_dir + "/suspect.parquet")) {
+        write_dataset("suspect", "suspect.parquet", {},
+                      single_file_field("suspect.parquet"));
     }
     out << "\n  }\n";
     out << "}\n";
