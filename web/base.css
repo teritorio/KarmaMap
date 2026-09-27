@@ -24,6 +24,8 @@ html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; }
 }
 #controls a { color: var(--link); text-decoration: none; font-size: 0.9rem; }
 #controls h1 { font-size: 1rem; margin: 0; }
+#controls .brand { display: flex; align-items: center; gap: 0.5rem; color: white; font-size: 1rem; }
+#controls .brand:hover { opacity: 0.85; }
 #controls .divider { width: 1px; height: 28px; background: var(--divider); }
 #controls label { font-size: 0.85rem; }
 #controls input[type="date"],
