@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>How it works — KarmaMap</title>
+  <meta name="description" content="What each KarmaMap page shows and what its numbers mean: the changes map, the 0-100 contributor ranking, and the three suspect screens from Neis, Goetz &amp; Zipf (2012)." />
+  <meta property="og:type" content="article" />
+  <meta property="og:title" content="How it works — KarmaMap" />
+  <meta property="og:description" content="What each KarmaMap page shows and what its numbers mean: the changes map, the 0-100 contributor ranking, and the three suspect screens from Neis, Goetz &amp; Zipf (2012)." />
+
+  <link rel="alternate" type="text/markdown" href="./HOW_IT_WORKS.md" title="Markdown source" />
+  <link rel="icon" type="image/svg+xml" href="./icon.svg" />
+  <link rel="stylesheet" href="./base.css" />
+
+  <script type="importmap">
+  {
+    "imports": {
+      "markdown-it": "https://cdn.jsdelivr.net/npm/markdown-it@15.0.2/+esm"
+    }
+  }
+  </script>
+
+  <style>
+    html, body { background: var(--page-bg); }
+    body { display: flex; flex-direction: column; }
+
+    #doc { flex: 1; overflow-y: auto; }
+    #content {
+      max-width: 46rem; margin: 0 auto; padding: 1.5rem 1rem 2rem;
+      background: var(--surface); color: #111827;
+      line-height: 1.65; overflow-wrap: break-word;
+    }
+    #content > :first-child { margin-top: 0; }
+    #content h1 { font-size: 1.5rem; margin: 0 0 1rem; }
+    #content h2 {
+      font-size: 1.15rem; margin: 2rem 0 0.75rem;
+      padding-top: 1rem; border-top: 1px solid var(--border);
+    }
+    #content h3 { font-size: 1rem; margin: 1.5rem 0 0.5rem; }
+    #content p, #content ul, #content ol, #content blockquote, #content .table-wrap { margin: 0 0 1rem; }
+    #content li { margin: 0.25rem 0; }
+    #content code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.85em; background: var(--surface-alt);
+      border: 1px solid var(--border); border-radius: 4px; padding: 0.05rem 0.3rem;
+    }
+    #content a { color: #1d4ed8; }
+    #content blockquote {
+      border-left: 3px solid var(--border); padding: 0.25rem 0 0.25rem 1rem;
+      color: var(--label);
+    }
+    #content blockquote p:last-child { margin-bottom: 0; }
+    #content .table-wrap { overflow-x: auto; }
+    #content table {
+      width: 100%; border-collapse: collapse; font-size: 0.85rem;
+      border: 1px solid var(--border);
+    }
+    #content th {
+      text-align: left; font-size: 0.7rem; text-transform: uppercase;
+      color: var(--label); padding: 0.4rem 0.6rem;
+      border-bottom: 1px solid var(--border); background: var(--surface-alt);
+    }
+    #content td { padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--border-light); vertical-align: top; }
+    #content tbody tr:last-child td { border-bottom: none; }
+    #content .loading, #content .error { color: var(--label); }
+
+    #doc-footer {
+      max-width: 46rem; margin: 0 auto; width: 100%;
+      padding: 0 1rem 2rem; font-size: 0.8rem; color: var(--label);
+    }
+    #doc-footer a { color: var(--label); }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <img src="./icon.svg" alt="" width="32" height="32" />
+    <strong>KarmaMap</strong>
+
+    <a href="./changes/">changes</a>
+    <a href="./users/">users</a>
+    <a href="./suspect/">suspects</a>
+    <a href="./how-it-works.html" aria-current="page">how it works</a>
+  </div>
+
+  <main id="doc">
+    <article id="content" aria-busy="true">
+      <p class="loading">Loading the guide… if this does not load, read
+        <a href="./HOW_IT_WORKS.md">HOW_IT_WORKS.md</a> directly.</p>
+      <noscript>
+        <p>This page renders the Markdown guide in your browser, which needs
+        JavaScript enabled. <a href="./HOW_IT_WORKS.md">Read HOW_IT_WORKS.md</a> instead.</p>
+      </noscript>
+    </article>
+    <footer id="doc-footer">
+      Source: <a href="./HOW_IT_WORKS.md" type="text/markdown">HOW_IT_WORKS.md</a>
+    </footer>
+  </main>
+
+  <script type="module" src="./how-it-works.js"></script>
+</body>
+</html>

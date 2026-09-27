@@ -241,6 +241,9 @@ Then open `http://localhost:8080/`.
   `(uid, change_date)` days from `suspect.parquet` (update-only), with each
   day's total change count, an edit-burst marker (>500 modified/deleted
   objects in one hour), far-move count and ranking.
+- **`/how-it-works.html`** — the reader-facing guide: what each of the three
+  viewers shows and how to read its numbers. It renders `web/HOW_IT_WORKS.md`
+  client-side, so the Markdown file stays the single source of truth.
 
 Clients read the files with byte-range requests: hyparquet's
 `asyncBufferFromUrl` opens each file and fetches the footer, row-group
