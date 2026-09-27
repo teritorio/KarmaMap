@@ -19,7 +19,6 @@
 
   <style>
     html, body { background: var(--page-bg); }
-    #controls { flex-wrap: wrap; }
     #status { margin-left: auto; }
 
     #profile {
@@ -71,12 +70,11 @@
 <body>
   <div id="controls">
     <img src="../icon.svg" alt="" width="32" height="32" />
-    <strong>KarmaMap</strong>
+    <h1>KarmaMap</h1>
 
     <a href="../changes/">changes</a>
     <a href="../users/">users</a>
     <a href="../suspect/">suspects</a>
-    <a href="../how-it-works.html">how it works</a>
 
     <span class="divider"></span>
 
@@ -85,6 +83,9 @@
     <button id="search" type="button">Search</button>
 
     <span id="status">Loading...</span>
+
+    <p class="page-desc">A contributor's 0-100 ranking, their counters, and their day-by-day edits.
+      <a href="../how-it-works.html">Know more about it &rarr;</a></p>
   </div>
 
   <div id="results" hidden>

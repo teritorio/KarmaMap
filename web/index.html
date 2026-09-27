@@ -9,19 +9,27 @@
   <style>
     html, body { background: var(--header-bg); color: white; }
     #wrap { max-width: 640px; margin: 0 auto; padding: 3rem 1rem; }
-    h1 { font-size: 1.4rem; margin: 0 0 0.25rem; }
-    p { color: var(--text-soft); margin: 0 0 2rem; }
     ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.75rem; }
-    a { display: block; padding: 1rem; border-radius: 8px; background: var(--panel); color: white; text-decoration: none; }
-    a:hover { background: var(--panel-hover); }
-    strong { display: block; font-size: 1.05rem; }
-    small { color: var(--muted); }
+    #wrap a { display: block; padding: 1rem; border-radius: 8px; background: var(--panel); color: white; text-decoration: none; }
+    #wrap a:hover { background: var(--panel-hover); }
+    #wrap strong { display: block; font-size: 1.05rem; }
+    #wrap small { color: var(--muted); }
   </style>
 </head>
 <body>
+  <div id="controls">
+    <img src="./icon.svg" alt="" width="32" height="32" />
+    <h1>KarmaMap</h1>
+
+    <a href="./changes/">changes</a>
+    <a href="./users/">users</a>
+    <a href="./suspect/">suspects</a>
+
+    <p class="page-desc">Views over the OSM full-history change index dataset.
+      <a href="./how-it-works.html">Know more about it &rarr;</a></p>
+  </div>
+
   <div id="wrap">
-    <h1><img src="./icon.svg" alt="" width="40" height="40" style="vertical-align: middle;" /> KarmaMap</h1>
-    <p>Views over the OSM full-history change index dataset.</p>
     <ul>
       <li>
         <a href="./changes/">
@@ -42,7 +50,6 @@
         </a>
       </li>
     </ul>
-    <p><a href="./how-it-works.html" style="background: none; padding: 0; display: inline;">How it works &rarr; what each page shows and what its numbers mean</a></p>
   </div>
 </body>
 </html>
