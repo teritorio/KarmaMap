@@ -5,6 +5,10 @@
 // counts the nine history counters: the six node/way changes plus the three
 // relation counters. The y-axis is logarithmic by default.
 //
+// The container ships hidden and the chart is created on the first
+// setHistogramData() with days, so the page never shows an empty graph while
+// no user is loaded (or when one has no history yet).
+//
 // Days carrying suspect_flag bits (users_history.parquet) get a solid
 // full-height red markArea band and an altered blue volume bar; the tooltip
 // lists the activated screens (paper sec. 5).
@@ -21,13 +25,22 @@ const FLAG_COLOR = '#d63c3c'
 
 const DAY_MS = 86400000
 
+let container = null
 let chart = null
 let resizeObserver = null
 let logScale = true
 let lastData = null // { byDay, flagByDay }
 
+// Records the container only. The ECharts instance is built by the first
+// setHistogramData() that has days to draw, so the chart is never created on
+// the hidden (zero-size) div the page ships with; that keeps the axes, the
+// canvas and the ResizeObserver out of the way until there is a timeline.
 export function initHistogram(containerEl) {
-  chart = echarts.init(containerEl)
+  container = containerEl
+}
+
+function createChart() {
+  chart = echarts.init(container)
 
   chart.setOption({
     grid: { left: 72, right: 16, top: 12, bottom: 44 },
@@ -40,8 +53,10 @@ export function initHistogram(containerEl) {
     series: [{ type: 'bar', name: 'Edits (+ relations)', data: [] }],
   })
 
-  resizeObserver = new ResizeObserver(() => chart?.resize())
-  resizeObserver.observe(containerEl)
+  resizeObserver = new ResizeObserver(() => {
+    if (!container.hidden) chart?.resize()
+  })
+  resizeObserver.observe(container)
   chart.resize() // may not fire initially via ResizeObserver
 }
 
@@ -103,8 +118,23 @@ function renderBars() {
   chart.setOption({ series: [{ data: volume, markArea }] })
 }
 
+// Owns the timeline's visibility and reports it back, so the caller gates its
+// own controls on this state instead of re-deriving it: a user with no history
+// days has no graph at all, and an emptied map also drops the bars so the next
+// lookup cannot flash the previous user's activity.
+//
+// Precondition: an un-hidden ancestor chain, so the first call with data does
+// not init ECharts on a zero-size box.
 export function setHistogramData(byDay, flagByDay) {
-  if (!chart) return
+  if (!container) return false
   lastData = { byDay, flagByDay }
+  if (byDay.size === 0) {
+    container.hidden = true
+    chart?.setOption({ series: [{ data: [], markArea: { data: [] } }] })
+    return false
+  }
+  container.hidden = false
+  if (!chart) createChart()
   renderBars()
+  return true
 }

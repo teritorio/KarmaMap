@@ -18,13 +18,29 @@ const BASE_URL = '../data'
 const usernameEl = document.getElementById('username')
 const searchBtn = document.getElementById('search')
 const statusEl = document.getElementById('status')
+const resultsEl = document.getElementById('results')
 const profileEl = document.getElementById('profile')
 const scoreEl = document.getElementById('score')
 const scoresEl = document.getElementById('scores')
 const timelineEl = document.getElementById('timeline')
 
+// Built in main() once the manifest confirms the user datasets exist.
+let logScaleEl = null
+
 function setStatus(text) {
   statusEl.textContent = text
+}
+
+// Profile, ranking, counters and timeline: the page shows nothing but the
+// search bar until a lookup returns a user.
+function setResultsVisible(visible) {
+  resultsEl.hidden = !visible
+}
+
+// The histogram module owns the timeline's visibility and reports it; the
+// log/linear toggle in the header is the graph's only control, so it follows.
+function setLogScaleVisible(visible) {
+  if (logScaleEl) logScaleEl.hidden = !visible
 }
 
 function escapeHtml(text) {
@@ -155,6 +171,17 @@ function renderScores(scores) {
 
 let inFlight = false
 
+// Back to the bare search bar: no user, so no profile, ranking, counters or
+// graph.
+function clearResults() {
+  setResultsVisible(false)
+  profileEl.innerHTML = ''
+  scoreEl.innerHTML = ''
+  scoresEl.innerHTML = ''
+  setHistogramData(new Map(), new Map())
+  setLogScaleVisible(false)
+}
+
 async function search(manifest) {
   const name = usernameEl.value.trim()
   if (!name) {
@@ -172,10 +199,7 @@ async function search(manifest) {
       ? await queryRankingByUsername(BASE_URL, rankDataset.path, name, rankDataset.footer_size)
       : { rows: [], stats: {} }
     if (ranks.length === 0) {
-      profileEl.innerHTML = ''
-      scoreEl.innerHTML = ''
-      scoresEl.innerHTML = ''
-      setHistogramData(new Map(), new Map())
+      clearResults()
       setStatus(`No profile found for "${name}".`)
       return
     }
@@ -185,13 +209,17 @@ async function search(manifest) {
     const history = await queryHistory(BASE_URL, historyDataset.path, uids, historyDataset.footer_size)
     const scores = computeScores(ranks, history, stats)
 
+    setResultsVisible(true)
     renderProfile(name, scores)
     renderScore(scores)
     renderScores(scores)
-    setHistogramData(scores.byDay, scores.flagByDay)
+    const timelineUp = setHistogramData(scores.byDay, scores.flagByDay)
+    setLogScaleVisible(timelineUp)
     setStatus(`${name}: ranking ${scores.ranking.value}, ${scores.totalEdits} edits across ${scores.byDay.size} active day${scores.byDay.size === 1 ? '' : 's'}.`)
   } catch (err) {
     console.error(err)
+    // A failed lookup must not leave the previous user's data on screen.
+    clearResults()
     setStatus(`Query failed: ${err.message}`)
   } finally {
     inFlight = false
@@ -220,13 +248,16 @@ async function main() {
     return
   }
 
-  // Log/linear toggle for the histogram y-axis; display-only.
+  // Log/linear toggle for the histogram y-axis; display-only. It stays hidden
+  // until a loaded user gives the timeline something to draw.
   const logScaleBtn = document.createElement('label')
   logScaleBtn.innerHTML = '<input type="checkbox" id="log-scale" checked /> Log scale'
   document.getElementById('controls').insertBefore(logScaleBtn, statusEl)
   logScaleBtn.querySelector('input').addEventListener('change', (e) => {
     setLogScale(e.target.checked)
   })
+  logScaleEl = logScaleBtn
+  setLogScaleVisible(false)
   setLogScale(true)
 
   searchBtn.addEventListener('click', () => search(manifest))
@@ -234,7 +265,11 @@ async function main() {
     if (e.key === 'Enter') search(manifest)
   })
 
-  if (usernameEl.value) search(manifest)
+  if (usernameEl.value) {
+    search(manifest)
+  } else {
+    setStatus('Enter an OSM username to see its ranking and edit-activity timeline.')
+  }
 }
 
 main()

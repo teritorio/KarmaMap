@@ -236,7 +236,8 @@ Then open `http://localhost:8080/`.
   (debounced).
 - **`/users/`** — the users viewer: look up an OSM username to see their
   OSMPatrol ranking (0-100), per-user history totals and an edit-activity
-  timeline.
+  timeline. Nothing but the search bar is shown until a lookup returns a
+  user.
 - **`/suspect/`** — the suspects viewer: the 100 latest flagged
   `(uid, change_date)` days from `suspect.parquet` (update-only), with each
   day's total change count, an edit-burst marker (>500 modified/deleted
