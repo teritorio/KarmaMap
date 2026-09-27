@@ -8,7 +8,9 @@
 // into place.
 
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <utility>
 
 namespace sort_pass {
 
@@ -22,7 +24,9 @@ inline constexpr const char* karmamap_source_seq = "karmamap_source_seq";
 // dataset root). Year directories that already hold only data.parquet
 // (both nodes.parquet and ways.parquet absent) are left untouched.
 // `change_group_rows` bounds the size of each data.parquet row group.
-void merge_and_sort_partitions(const std::string& root_dir, int64_t change_group_rows);
+// Returns the weighted spatial center (lon, lat) of the merged data, or
+// nullopt if no data.
+std::optional<std::pair<double, double>> merge_and_sort_partitions(const std::string& root_dir, int64_t change_group_rows);
 
 // Merges base data.parquet with the update staging partitions of a run into
 // one merged table, sorted and stamped with `applied_seq` under the
@@ -31,8 +35,10 @@ void merge_and_sort_partitions(const std::string& root_dir, int64_t change_group
 // and are removed once folded in; a partition already stamped with a sequence
 // >= applied_seq has its orphaned staging removed and is left untouched.
 // Only year directories that carry staging partitions are rewritten.
-void merge_update_partitions(const std::string& root_dir, int64_t change_group_rows,
-                             uint64_t applied_seq);
+// Returns the weighted spatial center (lon, lat) of the merged data, or
+// nullopt if no data.
+std::optional<std::pair<double, double>> merge_update_partitions(const std::string& root_dir, int64_t change_group_rows,
+                                                                 uint64_t applied_seq);
 
 // Reads the karmamap_source_seq footer stamp of a data partition (0 when the
 // file carries no such metadata or does not exist).

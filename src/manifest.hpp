@@ -28,6 +28,8 @@ namespace manifest {
 
 void write_manifest(const std::string& output_dir, int h3_resolution,
                     const std::optional<replication_state::State>& source =
+                        std::nullopt,
+                    const std::optional<std::pair<double, double>>& spatial_center =
                         std::nullopt);
 
 // Reads back the source provenance block of output-dir/manifest.json (the

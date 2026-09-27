@@ -31,6 +31,29 @@ bool ends_with(const std::string& s, const std::string& suffix) {
            s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
+// Computes the weighted spatial center (lon, lat) and total weight from a
+// merged CountMap. Weights are the total count per cell (summed across
+// all dates). Returns nullopt if no data.
+struct SpatialCenter {
+    double lon;
+    double lat;
+    uint64_t weight;
+};
+
+std::optional<SpatialCenter> compute_spatial_center(const parquet_out::CountMap& merged) {
+    double sum_lon = 0.0;
+    double sum_lat = 0.0;
+    uint64_t total = 0;
+    for (const auto& [key, count] : merged) {
+        auto [lat, lon] = h3_utils::cell_to_latlng(key.h3_cell);
+        sum_lat += static_cast<double>(count) * lat;
+        sum_lon += static_cast<double>(count) * lon;
+        total += count;
+    }
+    if (total == 0) return std::nullopt;
+    return SpatialCenter{sum_lon / total, sum_lat / total, total};
+}
+
 // The replication sequence of an update staging name (nodes.<seq>.parquet /
 // ways.<seq>.parquet); nullopt for the full-run staging name (nodes.parquet /
 // ways.parquet) and any name that does not carry a numeric sequence.
@@ -133,7 +156,7 @@ std::shared_ptr<arrow::Table> build_merged_table(const parquet_out::CountMap& me
         {arrow::compute::SortKey("h3_cell"), arrow::compute::SortKey("change_date")});
 }
 
-void merge_one_year(const std::string& year_dir, int64_t change_group_rows) {
+std::optional<std::pair<std::pair<double, double>, uint64_t>> merge_one_year(const std::string& year_dir, int64_t change_group_rows) {
     const std::string nodes_path = year_dir + "/nodes.parquet";
     const std::string ways_path = year_dir + "/ways.parquet";
     const std::string output_path = year_dir + "/data.parquet";
@@ -142,7 +165,7 @@ void merge_one_year(const std::string& year_dir, int64_t change_group_rows) {
     const bool has_nodes = std::filesystem::exists(nodes_path);
     const bool has_ways = std::filesystem::exists(ways_path);
     const bool has_data = std::filesystem::exists(output_path);
-    if (!has_nodes && !has_ways) return;  // nothing new to merge (already merged, or empty)
+    if (!has_nodes && !has_ways) return std::nullopt;  // nothing new to merge (already merged, or empty)
 
     std::cerr << "[sort pass] " << year_dir << "\n";
 
@@ -160,6 +183,8 @@ void merge_one_year(const std::string& year_dir, int64_t change_group_rows) {
         merge_source(arrow_table_io::read_table(output_path), merged);
     }
 
+    auto center = compute_spatial_center(merged);
+
     // Columns are built in map order; sort_by_keys reorders them by
     // (h3_cell, change_date) for compact row-group min/max ranges.
     std::shared_ptr<arrow::Table> merged_table = build_merged_table(merged);
@@ -175,11 +200,16 @@ void merge_one_year(const std::string& year_dir, int64_t change_group_rows) {
     std::filesystem::rename(tmp_path, output_path);
     if (has_nodes) std::filesystem::remove(nodes_path);
     if (has_ways) std::filesystem::remove(ways_path);
+
+    if (center) {
+        return std::make_pair(std::make_pair(center->lon, center->lat), center->weight);
+    }
+    return std::nullopt;
 }
 
 }  // namespace
 
-void merge_and_sort_partitions(const std::string& root_dir, int64_t change_group_rows) {
+std::optional<std::pair<double, double>> merge_and_sort_partitions(const std::string& root_dir, int64_t change_group_rows) {
     // Registers Arrow's compute kernels (e.g. sort_indices, take); without
     // this the functions are missing from the registry and sorting fails.
     auto init_status = arrow::compute::Initialize();
@@ -187,13 +217,29 @@ void merge_and_sort_partitions(const std::string& root_dir, int64_t change_group
         throw std::runtime_error("Failed to initialize Arrow compute: " +
                                  init_status.ToString());
     }
-    if (!std::filesystem::exists(root_dir)) return;
+    if (!std::filesystem::exists(root_dir)) return std::nullopt;
+
+    double sum_lon = 0.0;
+    double sum_lat = 0.0;
+    uint64_t total_weight = 0;
+    bool any = false;
 
     for (const auto& year_entry : std::filesystem::directory_iterator(root_dir)) {
         if (year_entry.is_directory()) {
-            merge_one_year(year_entry.path().string(), change_group_rows);
+            auto result = merge_one_year(year_entry.path().string(), change_group_rows);
+            if (result) {
+                any = true;
+                const auto& center = result->first;
+                uint64_t weight = result->second;
+                sum_lon += center.first * weight;
+                sum_lat += center.second * weight;
+                total_weight += weight;
+            }
         }
     }
+
+    if (!any) return std::nullopt;
+    return std::make_pair(sum_lon / total_weight, sum_lat / total_weight);
 }
 
 uint64_t read_source_sequence(const std::string& data_path) {
@@ -210,14 +256,19 @@ uint64_t read_source_sequence(const std::string& data_path) {
     }
 }
 
-void merge_update_partitions(const std::string& root_dir, int64_t change_group_rows,
-                             uint64_t applied_seq) {
+std::optional<std::pair<double, double>> merge_update_partitions(const std::string& root_dir, int64_t change_group_rows,
+                                                                 uint64_t applied_seq) {
     auto init_status = arrow::compute::Initialize();
     if (!init_status.ok()) {
         throw std::runtime_error("Failed to initialize Arrow compute: " +
                                  init_status.ToString());
     }
-    if (!std::filesystem::exists(root_dir)) return;
+    if (!std::filesystem::exists(root_dir)) return std::nullopt;
+
+    double sum_lon = 0.0;
+    double sum_lat = 0.0;
+    uint64_t total_weight = 0;
+    bool any = false;
 
     for (const auto& year_entry : std::filesystem::directory_iterator(root_dir)) {
         if (!year_entry.is_directory()) continue;
@@ -289,6 +340,14 @@ void merge_update_partitions(const std::string& root_dir, int64_t change_group_r
             merge_source(arrow_table_io::read_table(p), merged);
         }
 
+        auto center = compute_spatial_center(merged);
+        if (center) {
+            any = true;
+            sum_lon += center->lon * center->weight;
+            sum_lat += center->lat * center->weight;
+            total_weight += center->weight;
+        }
+
         std::shared_ptr<arrow::Table> merged_table = build_merged_table(merged);
         arrow_table_io::write_table(
             tmp_path, merged_table,
@@ -298,6 +357,9 @@ void merge_update_partitions(const std::string& root_dir, int64_t change_group_r
         std::filesystem::rename(tmp_path, output_path);
         remove_staging();
     }
+
+    if (!any) return std::nullopt;
+    return std::make_pair(sum_lon / total_weight, sum_lat / total_weight);
 }
 
 }  // namespace sort_pass

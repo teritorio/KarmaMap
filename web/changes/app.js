@@ -214,7 +214,18 @@ async function main() {
   try {
     setupDateRangeInputs(manifest, permalink)
 
-    const map = initMap('map', permalink)
+    let initialView = permalink
+    if (permalink.lng == null || permalink.lat == null) {
+      if (manifest.spatial_center) {
+        initialView = {
+          lng: manifest.spatial_center[0],
+          lat: manifest.spatial_center[1],
+          zoom: permalink.zoom ?? 12,
+        }
+      }
+    }
+
+    const map = initMap('map', initialView)
     initHistogram(histogramEl, manifest)
     setHistogramWindow(startDateEl.value, endDateEl.value)
 

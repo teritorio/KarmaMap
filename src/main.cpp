@@ -161,18 +161,20 @@ void run_way_pass(const Options& opts) {
     handler.print_stats();
 }
 
-void run_sort_pass(const Options& opts) {
+std::optional<std::pair<double, double>> run_sort_pass(const Options& opts) {
     std::cerr << "[sort pass] merging and sorting partitions under " << opts.output_dir << "/changes\n";
 
     auto start = std::chrono::steady_clock::now();
 
-    sort_pass::merge_and_sort_partitions(opts.output_dir + "/changes",
-                                         opts.change_group_rows);
+    auto center = sort_pass::merge_and_sort_partitions(opts.output_dir + "/changes",
+                                                       opts.change_group_rows);
 
     auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                        std::chrono::steady_clock::now() - start)
                        .count();
     std::cerr << "[sort pass] done in " << elapsed << "s\n";
+
+    return center;
 }
 
 void run_step4_pass(const Options& opts) {
@@ -239,9 +241,10 @@ void run_users_history_pass(const Options& opts) {
 // rebuilt (base + overlay minus deletions) and the staging partitions are
 // merged into data.parquet, so N diffs never rewrite the dataset N times.
 // Returns the provenance to write to manifest (the applied sequence, with
-// the fetched state.txt timestamp).
+// the fetched state.txt timestamp), and sets spatial_center if computed.
 std::optional<replication_state::State> run_update_mode(
-    const Options& opts, const replication_state::State& current) {
+    const Options& opts, const replication_state::State& current,
+    std::optional<std::pair<double, double>>& spatial_center) {
     std::cerr << "[update] fetching diff stream state below " << current.url << "\n";
     const std::string cookie = resolve_update_cookie(opts);
 
@@ -347,7 +350,7 @@ std::optional<replication_state::State> run_update_mode(
     node_state.rebuild(opts.node_cache_last_path, opts.h3_resolution);
 
     std::cerr << "[update] merging staging partitions into " << changes_root << "\n";
-    sort_pass::merge_update_partitions(changes_root, opts.change_group_rows, applied);
+    auto center = sort_pass::merge_update_partitions(changes_root, opts.change_group_rows, applied);
 
     // Filter 2: fold this run's staged minute buckets into the persisted
     // binary minute store first, so the daily suspect flag written below
@@ -370,6 +373,7 @@ std::optional<replication_state::State> run_update_mode(
     // (the newest applied day's).
     replication_state::State new_source = current;
     new_source.sequence_number = applied;
+    spatial_center = center;
     return new_source;
 }
 
@@ -459,12 +463,11 @@ int main(int argc, char** argv) {
             source = preserved;
         }
 
+        std::optional<std::pair<double, double>> spatial_center;
+
         switch (opts.stage) {
             case Options::Stage::prepare_update:
                 run_step4_pass(opts);
-                break;
-            case Options::Stage::update:
-                source = run_update_mode(opts, *source);
                 break;
             case Options::Stage::import:
                 if (opts.run_node_pass) {
@@ -474,14 +477,17 @@ int main(int argc, char** argv) {
                     run_way_pass(opts);
                 }
                 if (opts.run_sort_pass) {
-                    run_sort_pass(opts);
+                    spatial_center = run_sort_pass(opts);
                 }
                 run_users_history_pass(opts);
                 break;
+            case Options::Stage::update:
+                source = run_update_mode(opts, *source, spatial_center);
+                break;
         }
 
-        std::cerr << "[manifest] writing " << opts.output_dir << "/manifest.json\n";
-        manifest::write_manifest(opts.output_dir, opts.h3_resolution, source);
+    std::cerr << "[manifest] writing " << opts.output_dir << "/manifest.json\n";
+    manifest::write_manifest(opts.output_dir, opts.h3_resolution, source, spatial_center);
 
     } catch (const std::exception& e) {
         std::cerr << "ERROR: " << e.what() << "\n";

@@ -246,7 +246,8 @@ std::optional<uint32_t> footer_size(const std::string& path) {
 }  // namespace
 
 void write_manifest(const std::string& output_dir, int h3_resolution,
-                    const std::optional<replication_state::State>& source) {
+                    const std::optional<replication_state::State>& source,
+                    const std::optional<std::pair<double, double>>& spatial_center) {
     auto partitions = list_partitions(output_dir + "/changes");
 
     std::ofstream out(output_dir + "/manifest.json");
@@ -275,6 +276,10 @@ void write_manifest(const std::string& output_dir, int h3_resolution,
         out << "    \"sequence_number\": " << source->sequence_number << ",\n";
         out << "    \"timestamp\": \"" << json_escape(source->timestamp) << "\"\n";
         out << "  },\n";
+    }
+
+    if (spatial_center) {
+        out << "  \"spatial_center\": [" << spatial_center->first << ", " << spatial_center->second << "],\n";
     }
 
     if (bounds) {
