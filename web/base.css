@@ -34,6 +34,11 @@ html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; }
 
 #status { font-size: 0.85rem; opacity: 0.85; }
 
+/* Extract name and last update date, filled from manifest.json; collapsed
+   until it has something to show. */
+.extract-info { font-size: 0.85rem; color: var(--text-soft); }
+.extract-info:empty { display: none; }
+
 /* Second header row: one line describing the page, plus the guide link. */
 .page-desc {
   flex: 0 0 100%; margin: 0; font-size: 0.85rem; color: var(--text-soft);

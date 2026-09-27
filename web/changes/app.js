@@ -1,4 +1,5 @@
 import { loadManifest, coverageDays } from '../lib/api.js'
+import { showExtractInfo } from '../lib/header.js'
 import { bboxToCells, cellsMinMaxSet } from './h3-bbox.js'
 import { queryChanges } from './query.js'
 import { initMap, renderResults, getViewportBbox, setResultsLogScale } from './map.js'
@@ -203,6 +204,8 @@ async function main() {
     setStatus(`Failed to load manifest.json from ${BASE_URL}. Is the data server running? (${err.message})`)
     return
   }
+
+  showExtractInfo(manifest)
 
   const permalink = readPermalink()
   logScaleEl.checked = permalink.log !== false

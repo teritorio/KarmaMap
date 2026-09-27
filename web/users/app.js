@@ -7,6 +7,7 @@
 // shared data-access lib in web/lib), but no spatial component.
 
 import { loadManifest, dayKey, userProfileUrls } from '../lib/api.js'
+import { showExtractInfo } from '../lib/header.js'
 import { readPermalink, writePermalink } from './permalink.js'
 import { queryRankingByUsername, queryHistory } from './query.js'
 import { computeScores, TAG_COUNTERS, RANK_CAPS, RANK_FORMULA } from './ranking.js'
@@ -236,6 +237,8 @@ async function main() {
     setStatus(`Failed to load manifest.json from ${BASE_URL}. Is the data server running? (${err.message})`)
     return
   }
+
+  showExtractInfo(manifest)
 
   initHistogram(timelineEl)
 

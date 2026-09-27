@@ -24,6 +24,48 @@ export function coverageDays(manifest) {
   return { minDate: range.min_date, maxDate: range.max_date }
 }
 
+// Extract identity from the manifest's source block: osmosis serves
+// replication streams from a <region>/<extract>-updates/ directory, and the
+// timestamp is osmosis-escaped ("2026-09-25T20\\:24\\:36Z").
+function updateUrlSegments(url) {
+  if (!url) return []
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return []
+    return parsed.pathname.split('/').filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
+function isoDate(timestamp) {
+  const match = /^(\d{4}-\d{2}-\d{2})/.exec(timestamp ?? '')
+  return match ? match[1] : null
+}
+
+function readableTimestamp(timestamp) {
+  return String(timestamp).replace(/\\(.)/g, '$1')
+}
+
+export function extractInfo(manifest) {
+  const source = manifest.source ?? {}
+  const segments = updateUrlSegments(source.url)
+  const name = segments.length
+    ? segments[segments.length - 1].replace(/-updates$/, '')
+    : ''
+
+  const detail = []
+  if (source.timestamp) detail.push(readableTimestamp(source.timestamp))
+  if (source.url) detail.push(source.url)
+
+  return {
+    region: segments.length > 1 ? segments[segments.length - 2] : null,
+    name: name || null,
+    updatedOn: isoDate(source.timestamp),
+    detail: detail.join(' — '),
+  }
+}
+
 // UTC day count from a midnight-UTC JS Date, matching the uint16
 // change_date values stored in the Parquet files.
 export function epochDay(date) {

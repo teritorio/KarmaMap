@@ -9,6 +9,7 @@
 // shared lib in web/lib).
 
 import { loadManifest, dayKey, userProfileUrls } from '../lib/api.js'
+import { showExtractInfo } from '../lib/header.js'
 import { querySuspectLatest } from './query.js'
 import { FLAG_FILTER_2 } from '../users/ranking.js'
 
@@ -63,6 +64,8 @@ async function main() {
     setStatus(`Failed to load manifest.json from ${BASE_URL}. Is the data server running? (${err.message})`)
     return
   }
+
+  showExtractInfo(manifest)
 
   const datasets = manifest.datasets ?? {}
   if (!datasets.suspect) {
