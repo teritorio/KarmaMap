@@ -30,6 +30,7 @@ let logScaleEl = null
 
 function setStatus(text) {
   statusEl.textContent = text
+  statusEl.title = text
 }
 
 // Profile, ranking, counters and timeline: the page shows nothing but the
@@ -255,7 +256,7 @@ async function main() {
   // until a loaded user gives the timeline something to draw.
   const logScaleBtn = document.createElement('label')
   logScaleBtn.innerHTML = '<input type="checkbox" id="log-scale" checked /> Log scale'
-  document.getElementById('controls').insertBefore(logScaleBtn, statusEl)
+  document.getElementById('page-options').appendChild(logScaleBtn)
   logScaleBtn.querySelector('input').addEventListener('change', (e) => {
     setLogScale(e.target.checked)
   })

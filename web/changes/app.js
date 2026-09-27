@@ -23,6 +23,7 @@ const logScaleEl = document.getElementById('log-scale')
 
 function setStatus(text) {
   statusEl.textContent = text
+  statusEl.title = text
 }
 
 function pad2(n) {

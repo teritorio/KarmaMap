@@ -24,6 +24,7 @@ const tbodyEl = document.querySelector('#suspect tbody')
 
 function setStatus(text) {
   statusEl.textContent = text
+  statusEl.title = text
 }
 
 function escapeHtml(text) {

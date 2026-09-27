@@ -18,7 +18,6 @@
 
   <style>
     html, body { background: var(--page-bg); }
-    #status { margin-left: auto; }
 
     #table-wrap {
       margin: 1rem; background: var(--surface);
@@ -39,24 +38,32 @@
   </style>
 </head>
 <body>
-  <div id="controls">
+  <div id="header">
+    <div class="header-row">
       <a class="brand" href="../">
         <img src="../icon.svg" alt="" width="32" height="32" />
         <h1>KarmaMap</h1>
       </a>
 
-    <a href="../changes/">changes</a>
-    <a href="../users/">users</a>
-    <a href="../suspect/">suspects</a>
+      <nav class="header-nav" aria-label="Pages">
+        <a href="../changes/">changes</a>
+        <a href="../users/">users</a>
+        <a href="../suspect/" aria-current="page">suspects</a>
+      </nav>
 
-    <span id="extract-info" class="extract-info"></span>
+      <span id="extract-info" class="extract-info"></span>
+    </div>
 
-    <span class="divider"></span>
+    <div class="header-row">
+      <p class="page-desc">
+        <span class="page-desc-text">The 100 most recent user-days a review filter flagged, newest first.</span>
+        <a href="../how-it-works.html">Know more about it &rarr;</a>
+      </p>
+    </div>
 
-    <span id="status">Loading...</span>
-
-    <p class="page-desc">The 100 most recent user-days a review filter flagged, newest first.
-      <a href="../how-it-works.html">Know more about it &rarr;</a></p>
+    <div class="header-row">
+      <span id="status">Loading...</span>
+    </div>
   </div>
 
   <div id="table-wrap">

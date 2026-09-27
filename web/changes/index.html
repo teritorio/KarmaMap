@@ -23,11 +23,6 @@
 
   <style>
     #app { display: flex; flex-direction: column; height: 100%; }
-    #controls { position: relative; }
-    #status {
-      position: absolute; right: 1rem; top: 50%; transform: translateY(-50%);
-      max-width: 50%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    }
     #map { flex: 1; }
 
     #histogram {
@@ -40,32 +35,44 @@
 </head>
 <body>
   <div id="app">
-    <div id="controls">
-      <a class="brand" href="../">
-        <img src="../icon.svg" alt="" width="32" height="32" />
-        <h1>KarmaMap</h1>
-      </a>
+    <div id="header">
+      <div class="header-row">
+        <a class="brand" href="../">
+          <img src="../icon.svg" alt="" width="32" height="32" />
+          <h1>KarmaMap</h1>
+        </a>
 
-      <a href="../changes/">changes</a>
-      <a href="../users/">users</a>
-      <a href="../suspect/">suspects</a>
+        <nav class="header-nav" aria-label="Pages">
+          <a href="../changes/" aria-current="page">changes</a>
+          <a href="../users/">users</a>
+          <a href="../suspect/">suspects</a>
+        </nav>
 
-      <span id="extract-info" class="extract-info"></span>
+        <span id="extract-info" class="extract-info"></span>
+      </div>
 
-      <span class="divider"></span>
+      <div class="header-row">
+        <p class="page-desc">
+          <span class="page-desc-text">Every map edit, by hex cell and by day.</span>
+          <a href="../how-it-works.html">Know more about it &rarr;</a>
+        </p>
+      </div>
 
-      <label for="start-date">From</label>
-      <input type="date" id="start-date" />
+      <div class="header-row">
+        <div class="page-options" id="page-options">
+          <label for="start-date">From</label>
+          <input type="date" id="start-date" />
 
-      <label for="end-date">To</label>
-      <input type="date" id="end-date" />
+          <label for="end-date">To</label>
+          <input type="date" id="end-date" />
 
-      <label for="log-scale"><input type="checkbox" id="log-scale" checked /> Log scale</label>
+          <span class="divider"></span>
 
-      <span id="status">Loading...</span>
+          <label for="log-scale"><input type="checkbox" id="log-scale" checked /> Log scale</label>
+        </div>
 
-      <p class="page-desc">Every map edit, by hex cell and by day.
-        <a href="../how-it-works.html">Know more about it &rarr;</a></p>
+        <span id="status">Loading...</span>
+      </div>
     </div>
     <div id="histogram"></div>
     <div id="map"></div>

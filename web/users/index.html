@@ -19,7 +19,6 @@
 
   <style>
     html, body { background: var(--page-bg); }
-    #status { margin-left: auto; }
 
     #profile {
       display: flex; gap: 1.5rem; flex-wrap: wrap; align-items: center;
@@ -68,28 +67,38 @@
   </style>
 </head>
 <body>
-  <div id="controls">
+  <div id="header">
+    <div class="header-row">
       <a class="brand" href="../">
         <img src="../icon.svg" alt="" width="32" height="32" />
         <h1>KarmaMap</h1>
       </a>
 
-    <a href="../changes/">changes</a>
-    <a href="../users/">users</a>
-    <a href="../suspect/">suspects</a>
+      <nav class="header-nav" aria-label="Pages">
+        <a href="../changes/">changes</a>
+        <a href="../users/" aria-current="page">users</a>
+        <a href="../suspect/">suspects</a>
+      </nav>
 
-    <span id="extract-info" class="extract-info"></span>
+      <span id="extract-info" class="extract-info"></span>
+    </div>
 
-    <span class="divider"></span>
+    <div class="header-row">
+      <p class="page-desc">
+        <span class="page-desc-text">A contributor's 0-100 ranking, their counters, and their day-by-day edits.</span>
+        <a href="../how-it-works.html">Know more about it &rarr;</a>
+      </p>
+    </div>
 
-    <label for="username">OSM username</label>
-    <input type="text" id="username" placeholder="e.g. alice" autocomplete="off" />
-    <button id="search" type="button">Search</button>
+    <div class="header-row">
+      <div class="page-options" id="page-options">
+        <label for="username">OSM username</label>
+        <input type="text" id="username" placeholder="e.g. alice" autocomplete="off" />
+        <button id="search" type="button">Search</button>
+      </div>
 
-    <span id="status">Loading...</span>
-
-    <p class="page-desc">A contributor's 0-100 ranking, their counters, and their day-by-day edits.
-      <a href="../how-it-works.html">Know more about it &rarr;</a></p>
+      <span id="status">Loading...</span>
+    </div>
   </div>
 
   <div id="results" hidden>

@@ -73,17 +73,25 @@
   </style>
 </head>
 <body>
-  <div id="controls">
-    <a class="brand" href="./">
-      <img src="./icon.svg" alt="" width="32" height="32" />
-      <h1>KarmaMap</h1>
-    </a>
+  <div id="header">
+    <div class="header-row">
+      <a class="brand" href="./">
+        <img src="./icon.svg" alt="" width="32" height="32" />
+        <h1>KarmaMap</h1>
+      </a>
 
-    <a href="./changes/">changes</a>
-    <a href="./users/">users</a>
-    <a href="./suspect/">suspects</a>
+      <nav class="header-nav" aria-label="Main navigation">
+        <a href="./changes/">changes</a>
+        <a href="./users/">users</a>
+        <a href="./suspect/">suspects</a>
+      </nav>
+    </div>
 
-    <p class="page-desc">What each page shows and what its numbers mean.</p>
+    <div class="header-row">
+      <p class="page-desc">
+        <span class="page-desc-text">What each page shows and what its numbers mean.</span>
+      </p>
+    </div>
   </div>
 
   <main id="doc">
