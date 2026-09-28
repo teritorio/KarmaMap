@@ -56,6 +56,7 @@
 // |old point -> new point| move by up to one cell radius — adequate for the
 // 500 m screen, not for the paper's finer 11 m edit-analysis flag.
 
+#include <algorithm>
 #include <cstdint>
 #include <map>
 #include <string>
@@ -82,6 +83,7 @@ inline constexpr uint8_t kFilter1RankingThreshold = 5;
 inline constexpr uint8_t kFlagFilter2 = 0x01;
 inline constexpr uint8_t kFlagFilter3 = 0x02;
 inline constexpr uint8_t kFlagFilter1 = 0x04;
+inline constexpr uint8_t kFlagFilter4 = 0x08;
 
 // Trailing window width in minutes (inclusive of the current minute).
 inline constexpr uint32_t kHourSpanMinutes = 60;
@@ -130,6 +132,79 @@ public:
 
 private:
     std::unordered_map<UserMinuteKey, UserMinuteEntry, UserMinuteKeyHash> minutes_;
+};
+
+// NEW: Filter 4 - per (uid, minute, h3_cell) modified+deleted counts
+struct UserMinuteCellKey {
+    int64_t uid;
+    uint32_t minute;
+    uint64_t h3_cell;  // packed 6-byte cell (resolution <= 13)
+
+    bool operator==(const UserMinuteCellKey& o) const {
+        return uid == o.uid && minute == o.minute && h3_cell == o.h3_cell;
+    }
+};
+
+struct UserMinuteCellKeyHash {
+    size_t operator()(const UserMinuteCellKey& k) const noexcept {
+        return std::hash<int64_t>()(k.uid) ^
+               (std::hash<uint32_t>()(k.minute) + 0x9e3779b97f4a7c15ULL) ^
+               (std::hash<uint64_t>()(k.h3_cell) << 1);
+    }
+};
+
+struct UserMinuteCellEntry {
+    std::string username;  // first username seen for this (uid, minute, cell)
+    uint32_t modified_deleted = 0;
+};
+
+// Pure, osmium-free per-(uid, minute, h3_cell) aggregation for Filter 4.
+// Nodes: count in their H3 cell. Ways: count once per distinct cell of their nodes.
+// Creates (visible version 1) are ignored. Relations are skipped.
+class MinuteCellStats {
+public:
+    MinuteCellStats() = default;
+
+    void add_node(int64_t uid, std::string_view username, uint32_t minute, uint64_t h3_cell,
+                  bool visible, uint32_t version) {
+        if (visible && version == 1) return;  // created, not a mod/del
+        UserMinuteCellEntry& e = cells_[UserMinuteCellKey{uid, minute, h3_cell}];
+        if (e.username.empty()) e.username = std::string(username);
+        e.modified_deleted++;
+    }
+
+    void add_way(int64_t uid, std::string_view username, uint32_t minute,
+                 const std::vector<uint64_t>& way_cells, bool visible, uint32_t version) {
+        if (visible && version == 1) return;  // created, not a mod/del
+        // Deduplicate cells (defensive: caller should deduplicate, but we don't trust it)
+        if (way_cells.size() > 1) {
+            std::vector<uint64_t> uniq = way_cells;
+            std::sort(uniq.begin(), uniq.end());
+            uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
+            for (uint64_t cell : uniq) {
+                UserMinuteCellEntry& e = cells_[UserMinuteCellKey{uid, minute, cell}];
+                if (e.username.empty()) e.username = std::string(username);
+                e.modified_deleted++;
+            }
+        } else {
+            for (uint64_t cell : way_cells) {
+                UserMinuteCellEntry& e = cells_[UserMinuteCellKey{uid, minute, cell}];
+                if (e.username.empty()) e.username = std::string(username);
+                e.modified_deleted++;
+            }
+        }
+    }
+
+    const std::unordered_map<UserMinuteCellKey, UserMinuteCellEntry, UserMinuteCellKeyHash>& cells() const {
+        return cells_;
+    }
+
+    void clear() { cells_.clear(); }
+
+    size_t size() const { return cells_.size(); }
+
+private:
+    std::unordered_map<UserMinuteCellKey, UserMinuteCellEntry, UserMinuteCellKeyHash> cells_;
 };
 
 // One merged (uid, minute) row plus its derived window. hour_span sums
@@ -246,5 +321,23 @@ struct MoveDay {
 // by the caller, so folding a rerun's regenerated stages is a no-op.
 std::map<std::pair<int64_t, uint16_t>, MoveDay> flagged_move_days(
     const std::string& stage_root);
+
+// --- Filter 4: H3 cell activity tracking ---
+
+// Scans one replication diff (.osc.gz change file) into a fresh stage_dir,
+// counting modified+deleted objects per (uid, minute, h3_cell).
+// Nodes are counted in their H3 cell. Ways are counted once per distinct
+// cell of their nodes. Relations are skipped.
+void run_scan_diff_cells(const std::string& diff_path, const std::string& stage_dir, int h3_resolution);
+
+// Folds one update run's staged per-(uid, minute, h3_cell) count buckets under
+// `cells_root` (one parquet file per diff flush) into the persisted binary
+// cell store at `cells_path`, summing equal (uid, minute, h3_cell) keys.
+// `applied_seq` is the last replication sequence folded this run: it is stamped
+// into the store header and lets a rerun of an already-folded sequence skip
+// the fold instead of double-counting. `h3_resolution` is stored in the header
+// and validated on read.
+void fold_cell_counts(const std::string& cells_root, const std::string& cells_path,
+                      uint64_t applied_seq, int h3_resolution);
 
 }  // namespace suspect

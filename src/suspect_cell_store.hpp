@@ -1,0 +1,402 @@
+#pragma once
+
+// The persisted per-(uid, minute, h3_cell) modified+deleted count store
+// for Filter 4 (H3 cell activity tracking). One shared, single-file store
+// holds the merged per-(uid, minute, h3_cell) counts for the whole update
+// period; the update finalize sums the incoming diffs' staged buckets into
+// it ("merge with the incoming update").
+//
+// Record format (24 bytes):
+//   [uid:8][minute:4][h3_cell:8][count:4]
+//
+// File format (same block/compression scheme as suspect_store):
+//   [header 40B][block 0]...[block N-1][directory 12*N]
+//
+// uid is big-endian with the sign bit flipped so the encoded bytes sort in
+// numeric order; minute/count are plain big-endian; h3_cell is plain big-endian
+// (packed 6-byte cell in low 48 bits, resolution re-applied from header).
+// Records are unique per (uid, minute, h3_cell) — the finalize sums before
+// writing. The writer streams into ZSTD-compressed 2^18-record blocks and
+// swaps the result into place with a rename. The header carries the
+// applied-sequence stamp, making a rerun of an already-folded sequence a no-op.
+
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <zstd.h>
+
+#include <cstdint>
+#include <filesystem>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include "h3_utils.hpp"
+
+namespace suspect_cell_store {
+
+constexpr uint32_t kMagic = 0x43454C4C;  // "CELL"
+constexpr uint32_t kVersion = 1;
+constexpr size_t kRecordSize = 24;  // uid (8) + minute (4) + h3_cell (8) + count (4)
+constexpr size_t kHeaderSize = 40;
+constexpr size_t kRecordsPerBlock = 1 << 18;  // 262144 records = ~6 MiB raw
+constexpr size_t kLog2RecordsPerBlock = 18;
+constexpr int kZstdLevel = 3;
+constexpr size_t kDirectoryEntrySize = 12;  // first_uid (8) + compressed_size (4)
+
+inline bool ensure_write(int fd, const void* data, size_t len, const char* what) {
+    const char* p = static_cast<const char*>(data);
+    while (len > 0) {
+        const ssize_t n = ::write(fd, p, len);
+        if (n <= 0) {
+            throw std::runtime_error(std::string("Failed to write ") + what);
+        }
+        p += n;
+        len -= static_cast<size_t>(n);
+    }
+    return true;
+}
+
+inline uint64_t encode_uid(int64_t uid) {
+    return static_cast<uint64_t>(uid) ^ (1ULL << 63);
+}
+
+inline int64_t decode_uid(const uint8_t* p) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; ++i) v = (v << 8) | p[i];
+    return static_cast<int64_t>(v ^ (1ULL << 63));
+}
+
+inline void put_be64(char* dst, uint64_t v) {
+    for (int i = 7; i >= 0; --i) {
+        dst[i] = static_cast<char>(v & 0xFF);
+        v >>= 8;
+    }
+}
+
+inline void put_be32(char* dst, uint32_t v) {
+    dst[0] = static_cast<char>(v >> 24);
+    dst[1] = static_cast<char>(v >> 16);
+    dst[2] = static_cast<char>(v >> 8);
+    dst[3] = static_cast<char>(v & 0xFF);
+}
+
+inline uint32_t be32(const uint8_t* p) {
+    return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
+           (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
+}
+
+inline uint64_t be64(const uint8_t* p) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; ++i) v = (v << 8) | p[i];
+    return v;
+}
+
+// Buffers records into ZSTD blocks and writes them out as they fill. Input
+// must be strictly ascending by (uid, minute, h3_cell) with no repeated key;
+// the merge in fold_cell_counts guarantees that. Writes to <path>.tmp and
+// renames over <path> at finish().
+class Writer {
+public:
+    explicit Writer(const std::string& path, int h3_resolution)
+        : final_path_(path), tmp_path_(path + ".tmp"), h3_resolution_(h3_resolution) {
+        const std::filesystem::path dir = std::filesystem::path(final_path_).parent_path();
+        if (!dir.empty()) std::filesystem::create_directories(dir);
+        fd_ = ::open(tmp_path_.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd_ < 0) {
+            throw std::runtime_error("Failed to create cell store " + tmp_path_);
+        }
+        char header[kHeaderSize] = {};
+        put_be32(header, kMagic);
+        put_be32(header + 4, kVersion);
+        put_be32(header + 8, static_cast<uint32_t>(kRecordSize));
+        put_be32(header + 12, static_cast<uint32_t>(h3_resolution_));  // H3 resolution
+        put_be64(header + 16, 0);  // record count, patched at finish()
+        put_be64(header + 24, 0);  // block count, patched at finish()
+        put_be64(header + 32, 0);  // applied sequence, patched at finish()
+        ensure_write(fd_, header, sizeof(header), "cell store header");
+    }
+
+    ~Writer() {
+        if (fd_ >= 0) ::close(fd_);
+    }
+
+    void add(int64_t uid, uint32_t minute, uint64_t h3_cell, uint32_t count) {
+        if (has_pending_) {
+            if (pending_uid_ > uid ||
+                (pending_uid_ == uid && pending_minute_ > minute) ||
+                (pending_uid_ == uid && pending_minute_ == minute && pending_cell_ >= h3_cell)) {
+                throw std::runtime_error(
+                    "Cell store input not sorted or duplicated: (uid=" +
+                    std::to_string(uid) + ", minute=" + std::to_string(minute) +
+                    ", cell=" + std::to_string(h3_cell) +
+                    ") is not after (uid=" + std::to_string(pending_uid_) +
+                    ", minute=" + std::to_string(pending_minute_) +
+                    ", cell=" + std::to_string(pending_cell_) + ")");
+            }
+        }
+        flush_pending();
+        pending_uid_ = uid;
+        pending_minute_ = minute;
+        pending_cell_ = h3_cell;
+        pending_count_ = count;
+        has_pending_ = true;
+    }
+
+    // Sets the source-sequence stamp written into the header.
+    void set_applied_seq(uint64_t seq) { applied_seq_ = seq; }
+
+    // Finalizes the header and directory on the tmp file, then renames it
+    // over the final path so a previous store is only ever replaced whole.
+    void finish() {
+        if (fd_ < 0) return;
+        flush_pending();
+        flush_block();  // last partial block (no-op if empty)
+
+        char counts[16];
+        put_be64(counts, records_);
+        put_be64(counts + 8, blocks_);
+        if (::pwrite(fd_, counts, sizeof(counts), 16) != static_cast<ssize_t>(sizeof(counts))) {
+            throw std::runtime_error("Failed to finalize cell store header");
+        }
+        char stamp[8];
+        put_be64(stamp, applied_seq_);
+        if (::pwrite(fd_, stamp, sizeof(stamp), 32) != static_cast<ssize_t>(sizeof(stamp))) {
+            throw std::runtime_error("Failed to stamp cell store header");
+        }
+
+        std::vector<uint8_t> dir(directory_.size() * kDirectoryEntrySize);
+        for (size_t i = 0; i < directory_.size(); ++i) {
+            char* p = reinterpret_cast<char*>(dir.data()) + i * kDirectoryEntrySize;
+            put_be64(p, directory_[i].first_uid);
+            put_be32(p + 8, directory_[i].comp_size);
+        }
+        if (!dir.empty()) {
+            ensure_write(fd_, dir.data(), dir.size(), "cell store directory");
+        }
+        bytes_ += dir.size();
+
+        if (::fsync(fd_) != 0) {
+            throw std::runtime_error("Failed to fsync cell store");
+        }
+        ::close(fd_);
+        fd_ = -1;
+
+        std::filesystem::rename(tmp_path_, final_path_);
+    }
+
+    uint64_t records() const { return records_ + (has_pending_ ? 1 : 0); }
+
+private:
+    void flush_pending() {
+        if (!has_pending_) return;
+        char rec[kRecordSize];
+        put_be64(rec, encode_uid(pending_uid_));
+        put_be32(rec + 8, pending_minute_);
+        put_be64(rec + 12, pending_cell_);
+        put_be32(rec + 20, pending_count_);
+        if (buffer_.empty()) block_first_uid_ = encode_uid(pending_uid_);
+        buffer_.insert(buffer_.end(), rec, rec + kRecordSize);
+        records_++;
+        has_pending_ = false;
+        if (buffer_.size() >= kRecordsPerBlock * kRecordSize) flush_block();
+    }
+
+    void flush_block() {
+        if (buffer_.empty()) return;
+        const size_t max_comp = ZSTD_compressBound(buffer_.size());
+        if (comp_scratch_.size() < max_comp) comp_scratch_.resize(max_comp);
+        const size_t comp_size = ZSTD_compress(comp_scratch_.data(), max_comp,
+                                               buffer_.data(), buffer_.size(),
+                                               kZstdLevel);
+        if (ZSTD_isError(comp_size)) {
+            throw std::runtime_error(std::string("ZSTD_compress failed: ") +
+                                     ZSTD_getErrorName(comp_size));
+        }
+        ensure_write(fd_, comp_scratch_.data(), comp_size, "cell store block");
+        directory_.push_back({block_first_uid_, static_cast<uint32_t>(comp_size)});
+        bytes_ += comp_size;
+        blocks_++;
+        buffer_.clear();
+    }
+
+    struct DirectoryEntry {
+        uint64_t first_uid;  // encoded (sign-flipped)
+        uint32_t comp_size;
+    };
+
+    std::string final_path_;
+    std::string tmp_path_;
+    int fd_ = -1;
+    int h3_resolution_ = 0;
+
+    bool has_pending_ = false;
+    int64_t pending_uid_ = 0;
+    uint32_t pending_minute_ = 0;
+    uint64_t pending_cell_ = 0;
+    uint32_t pending_count_ = 0;
+
+    std::vector<uint8_t> buffer_;
+    std::vector<uint8_t> comp_scratch_;
+    std::vector<DirectoryEntry> directory_;
+    uint64_t block_first_uid_ = 0;
+    uint64_t records_ = 0;
+    uint64_t blocks_ = 0;
+    uint64_t bytes_ = kHeaderSize;
+    uint64_t applied_seq_ = 0;
+};
+
+// Read-only mmap'd view of a cell store. Same block/directory access as the
+// node cache; records are returned through a one-block decompression cache so
+// the pointer is only valid until the next access of another block.
+class Reader {
+public:
+    explicit Reader(const std::string& path, int expected_h3_resolution) {
+        int fd = ::open(path.c_str(), O_RDONLY);
+        if (fd < 0) {
+            throw std::runtime_error("Cell store " + path + " not found");
+        }
+
+        uint8_t header[kHeaderSize];
+        ssize_t n = ::read(fd, header, sizeof(header));
+        if (n != static_cast<ssize_t>(kHeaderSize)) {
+            ::close(fd);
+            throw std::runtime_error("Cell store " + path + " too small");
+        }
+
+        const uint32_t magic = be32(header);
+        const uint32_t version = be32(header + 4);
+        const uint32_t record_size = be32(header + 8);
+        const uint32_t stored_resolution = be32(header + 12);
+        count_ = be64(header + 16);
+        block_count_ = be64(header + 24);
+        applied_seq_ = be64(header + 32);
+
+        if (stored_resolution != static_cast<uint32_t>(expected_h3_resolution)) {
+            ::close(fd);
+            throw std::runtime_error("Cell store " + path +
+                                     " H3 resolution mismatch: stored=" + std::to_string(stored_resolution) +
+                                     ", expected=" + std::to_string(expected_h3_resolution));
+        }
+
+        struct stat st {};
+        if (::fstat(fd, &st) != 0) {
+            ::close(fd);
+            throw std::runtime_error("Failed to stat cell store " + path);
+        }
+        const uint64_t file_size = static_cast<uint64_t>(st.st_size);
+
+        if (magic != kMagic || version != kVersion || record_size != kRecordSize) {
+            ::close(fd);
+            throw std::runtime_error("Incompatible cell store " + path +
+                                     " (wrong format or record size)");
+        }
+        if (block_count_ != (count_ + kRecordsPerBlock - 1) / kRecordsPerBlock) {
+            ::close(fd);
+            throw std::runtime_error("Incompatible cell store " + path +
+                                     " (not a compressed block format)");
+        }
+
+        const uint64_t dir_size = block_count_ * kDirectoryEntrySize;
+        if (file_size < kHeaderSize + dir_size) {
+            ::close(fd);
+            throw std::runtime_error("Cell store " + path + " truncated or incompatible");
+        }
+
+        size_ = static_cast<size_t>(file_size);
+        data_ = static_cast<const uint8_t*>(
+            ::mmap(nullptr, size_, PROT_READ, MAP_PRIVATE, fd, 0));
+        if (data_ == MAP_FAILED) {
+            ::close(fd);
+            throw std::runtime_error("Failed to mmap cell store " + path);
+        }
+        ::close(fd);
+        ::madvise(const_cast<uint8_t*>(data_), size_, MADV_SEQUENTIAL);
+
+        const uint64_t dir_start = size_ - dir_size;
+        directory_.reserve(static_cast<size_t>(block_count_));
+        uint64_t offset = kHeaderSize;
+        for (uint64_t i = 0; i < block_count_; ++i) {
+            const uint8_t* p = data_ + dir_start + i * kDirectoryEntrySize;
+            const uint32_t comp_size = be32(p + 8);
+            directory_.push_back({decode_uid(p), offset, comp_size});
+            offset += comp_size;
+        }
+        if (offset != dir_start) {
+            throw std::runtime_error("Cell store " + path +
+                                     " corrupted block directory");
+        }
+    }
+
+    ~Reader() {
+        if (data_ && data_ != MAP_FAILED) ::munmap(const_cast<uint8_t*>(data_), size_);
+    }
+
+    size_t size() const { return static_cast<size_t>(count_); }
+    uint64_t applied_seq() const { return applied_seq_; }
+
+    // The returned pointer is only valid until the next access of another
+    // block (one-block decompression cache).
+    const uint8_t* record(size_t i) const {
+        const size_t block = i >> kLog2RecordsPerBlock;
+        ensure_block(block);
+        return cached_buf_.data() + (i & (kRecordsPerBlock - 1)) * kRecordSize;
+    }
+    int64_t uid_at(size_t i) const { return decode_uid(record(i)); }
+    uint32_t minute_at(size_t i) const { return be32(record(i) + 8); }
+    uint64_t cell_at(size_t i) const { return be64(record(i) + 12); }
+    uint32_t count_at(size_t i) const { return be32(record(i) + 20); }
+
+private:
+    struct Block {
+        int64_t first_uid;
+        uint64_t offset;
+        uint32_t comp_size;
+    };
+
+    void ensure_block(size_t block) const {
+        if (cached_block_ == block) return;
+        if (block >= directory_.size()) {
+            throw std::runtime_error("Cell store block index out of range");
+        }
+        const Block& b = directory_[block];
+        const size_t raw_size =
+            (block + 1 == directory_.size()
+                 ? static_cast<size_t>(count_ - block * kRecordsPerBlock)
+                 : kRecordsPerBlock) *
+            kRecordSize;
+        if (cached_buf_.size() < raw_size) cached_buf_.resize(raw_size);
+        const size_t sz = ZSTD_decompress(cached_buf_.data(), raw_size,
+                                          data_ + b.offset, b.comp_size);
+        if (ZSTD_isError(sz) || sz != raw_size) {
+            throw std::runtime_error(std::string("ZSTD_decompress failed: ") +
+                                     (ZSTD_isError(sz) ? ZSTD_getErrorName(sz) : "size mismatch"));
+        }
+        cached_block_ = block;
+    }
+
+    uint64_t count_ = 0;
+    uint64_t block_count_ = 0;
+    uint64_t applied_seq_ = 0;
+    size_t size_ = 0;
+    const uint8_t* data_ = nullptr;
+    std::vector<Block> directory_;
+    mutable std::vector<uint8_t> cached_buf_;
+    mutable size_t cached_block_ = static_cast<size_t>(-1);
+};
+
+// Reads only the applied-sequence stamp of an existing store (0 when the file
+// does not exist or is too small to carry a header).
+inline uint64_t applied_seq_of(const std::string& path) {
+    int fd = ::open(path.c_str(), O_RDONLY);
+    if (fd < 0) return 0;
+    uint8_t header[kHeaderSize];
+    const ssize_t n = ::read(fd, header, sizeof(header));
+    ::close(fd);
+    if (n != static_cast<ssize_t>(kHeaderSize)) return 0;
+    return be64(header + 32);
+}
+
+}  // namespace suspect_cell_store

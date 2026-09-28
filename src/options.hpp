@@ -21,10 +21,11 @@ struct Options {
     // Last-known-position cache, <node-cache>.last by default; prepare-update
     // writes it, update reads and rebuilds it.
     std::string node_cache_last_path;
-    // Diff download cache dir and persisted suspect minute store; both live
+    // Diff download cache dir and persisted suspect minute/cell stores; both live
     // next to the node caches (parent dir of the default node cache path).
     std::string diffs_dir;
     std::string suspect_minutes_path;
+    std::string suspect_cells_path;
     // Output directory for the Parquet datasets (default: $DATA_DIR/output,
     // i.e. data/output, or /data/output in the container where DATA_DIR=/data).
     std::string output_dir;

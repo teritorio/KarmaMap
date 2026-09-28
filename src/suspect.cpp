@@ -26,6 +26,7 @@
 #include "arrow_table_io.hpp"
 #include "h3_utils.hpp"
 #include "suspect_store.hpp"
+#include "suspect_cell_store.hpp"
 
 namespace suspect {
 
@@ -240,6 +241,57 @@ void write_moves_stage_file(const std::string& path, size_t n, const std::vector
                                 arrow::Table::Make(moves_stage_schema(), {uid, minute}));
 }
 
+// ---------------------------------------------------------------------------
+// Filter 4 stage I/O (per-(uid, minute, h3_cell) modified+deleted counts)
+// ---------------------------------------------------------------------------
+
+std::shared_ptr<arrow::Schema> cells_stage_schema() {
+    return arrow::schema({
+        arrow::field("uid", arrow::int64(), false),
+        arrow::field("username", arrow::utf8(), false),
+        arrow::field("minute", arrow::uint32(), false),
+        arrow::field("h3_cell", arrow::uint64(), false),
+        arrow::field("modified_deleted", arrow::uint32(), false),
+    });
+}
+
+void write_cells_stage_file(
+    const std::string& path,
+    const std::unordered_map<UserMinuteCellKey, UserMinuteCellEntry, UserMinuteCellKeyHash>& rows) {
+    if (rows.empty()) return;
+
+    const int64_t n = static_cast<int64_t>(rows.size());
+    arrow::Int64Builder uid_builder;
+    arrow::StringBuilder username_builder;
+    arrow::UInt32Builder minute_builder;
+    arrow::UInt64Builder cell_builder;
+    arrow::UInt32Builder count_builder;
+
+    if (!uid_builder.Reserve(n).ok() || !username_builder.Reserve(n).ok() ||
+        !minute_builder.Reserve(n).ok() || !cell_builder.Reserve(n).ok() ||
+        !count_builder.Reserve(n).ok()) {
+        throw std::runtime_error("Reserve() failed while flushing suspect cell stage");
+    }
+    for (const auto& [key, entry] : rows) {
+        append_checked(uid_builder, key.uid);
+        append_checked(username_builder, entry.username);
+        append_checked(minute_builder, key.minute);
+        append_checked(cell_builder, key.h3_cell);
+        append_checked(count_builder, entry.modified_deleted);
+    }
+
+    std::shared_ptr<arrow::Array> uid, username, minute, cell, count;
+    finish_checked(uid_builder, &uid);
+    finish_checked(username_builder, &username);
+    finish_checked(minute_builder, &minute);
+    finish_checked(cell_builder, &cell);
+    finish_checked(count_builder, &count);
+
+    arrow_table_io::write_table(path,
+                                arrow::Table::Make(cells_stage_schema(),
+                                                   {uid, username, minute, cell, count}));
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -323,6 +375,122 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir) {
               << " stage_files=" << handler.stage_files() << "\n";
 }
 
+// ---------------------------------------------------------------------------
+// Filter 4: Cell scan
+// ---------------------------------------------------------------------------
+
+namespace {
+
+class SuspectCellScanHandler : public osmium::handler::Handler {
+public:
+    explicit SuspectCellScanHandler(std::string stage_dir, int h3_resolution)
+        : stage_dir_(std::move(stage_dir)), h3_resolution_(h3_resolution) {}
+
+    void node(const osmium::Node& node) {
+        if (!node.location().valid()) return;
+        uint64_t cell = h3_utils::location_to_cell(node.location().lat(), node.location().lon(), h3_resolution_);
+        add_node(static_cast<int64_t>(node.uid()), object_user(node),
+                 node.timestamp(), cell, node.visible(), static_cast<uint32_t>(node.version()));
+    }
+
+    void way(const osmium::Way& way) {
+        // Collect distinct H3 cells of way's nodes
+        std::vector<uint64_t> cells;
+        cells.reserve(way.nodes().size());
+        for (const auto& wn : way.nodes()) {
+            if (!wn.location().valid()) continue;
+            uint64_t cell = h3_utils::location_to_cell(wn.location().lat(), wn.location().lon(), h3_resolution_);
+            cells.push_back(cell);
+        }
+        // Deduplicate: way counts once per cell (sort+unique is O(n log n) vs O(n^2) for find)
+        if (!cells.empty()) {
+            std::sort(cells.begin(), cells.end());
+            cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
+            add_way(static_cast<int64_t>(way.uid()), object_user(way),
+                    way.timestamp(), cells, way.visible(), static_cast<uint32_t>(way.version()));
+        }
+    }
+
+    void relation(const osmium::Relation&) {
+        // Skip relations per Filter 4 design (relations don't have direct geometry)
+        skipped_relations_++;
+    }
+
+    void finish() { flush_stage(); }
+
+    // INSTR
+    uint64_t objects() const { return objects_; }
+    size_t stage_files() const { return stage_files_; }
+    size_t stage_rows() const { return stage_rows_flushed_; }
+    uint64_t skipped_relations() const { return skipped_relations_; }
+
+private:
+    static std::string object_user(const osmium::OSMObject& object) {
+        const char* user = object.user();
+        return std::string(user ? user : "");
+    }
+
+    void add_node(int64_t uid, const std::string& username, const osmium::Timestamp& ts,
+                  uint64_t cell, bool visible, uint32_t version) {
+        objects_++;
+        stats_.add_node(uid, username, h3_utils::timestamp_to_utc_minute(ts.seconds_since_epoch()),
+                        cell, visible, version);
+        if (stats_.size() >= kFlushThreshold) flush_stage();
+    }
+
+    void add_way(int64_t uid, const std::string& username, const osmium::Timestamp& ts,
+                 const std::vector<uint64_t>& cells, bool visible, uint32_t version) {
+        objects_++;
+        uint32_t minute = h3_utils::timestamp_to_utc_minute(ts.seconds_since_epoch());
+        stats_.add_way(uid, username, minute, cells, visible, version);
+        if (stats_.size() >= kFlushThreshold) flush_stage();
+    }
+
+    void flush_stage() {
+        if (stats_.cells().empty()) return;
+        char name[32];
+        std::snprintf(name, sizeof(name), "stage_%05zu.parquet", stage_files_);
+        write_cells_stage_file(stage_dir_ + "/" + name, stats_.cells());
+        stage_rows_flushed_ += stats_.size();
+        stats_.clear();
+        stage_files_++;
+    }
+
+    std::string stage_dir_;
+    int h3_resolution_;
+    MinuteCellStats stats_;
+
+    // INSTR
+    uint64_t objects_ = 0;
+    size_t stage_files_ = 0;
+    size_t stage_rows_flushed_ = 0;
+    uint64_t skipped_relations_ = 0;
+};
+
+}  // namespace
+
+void run_scan_diff_cells(const std::string& diff_path, const std::string& stage_dir, int h3_resolution) {
+    std::filesystem::remove_all(stage_dir);  // a rerun never reuses stale stage files
+    std::filesystem::create_directories(stage_dir);
+
+    osmium::io::File input_file(diff_path);
+    osmium::io::Reader reader(input_file,
+                              osmium::osm_entity_bits::node | osmium::osm_entity_bits::way |
+                                  osmium::osm_entity_bits::relation);
+
+    SuspectCellScanHandler handler(stage_dir, h3_resolution);
+    while (osmium::memory::Buffer buf = reader.read()) {
+        osmium::apply(buf, handler);
+    }
+    reader.close();
+    handler.finish();
+
+    std::cerr << "[suspect] cell diff scan objects=" << handler.objects()
+              << " stage_rows=" << handler.stage_rows()
+              << " stage_files=" << handler.stage_files()
+              << " skipped_relations=" << handler.skipped_relations() << "\n";
+}
+
 void fold_minute_counts(const std::string& counts_root, const std::string& minutes_path,
                         uint64_t applied_seq) {
     const std::vector<std::string> count_stage = collect_parquet_recursive(counts_root);
@@ -389,6 +557,71 @@ void fold_minute_counts(const std::string& counts_root, const std::string& minut
     std::cerr << "[suspect] folded " << merged.size() << " minute buckets into "
               << minutes_path << "\n";
     std::filesystem::remove_all(counts_root);
+}
+
+// ---------------------------------------------------------------------------
+// Filter 4: Fold cell counts
+// ---------------------------------------------------------------------------
+
+void fold_cell_counts(const std::string& cells_root, const std::string& cells_path,
+                      uint64_t applied_seq, int h3_resolution) {
+    const std::vector<std::string> cell_stage = collect_parquet_recursive(cells_root);
+    const bool have_base = std::filesystem::exists(cells_path);
+
+    // A base store already stamped with a sequence >= the run's means a
+    // previous run folded the same diffs; skip instead of double-counting.
+    if (have_base && applied_seq > 0 &&
+        suspect_cell_store::applied_seq_of(cells_path) >= applied_seq) {
+        std::cerr << "[suspect] cell buckets already folded through " << applied_seq
+                  << ", skipping\n";
+        std::filesystem::remove_all(cells_root);
+        return;
+    }
+    if (cell_stage.empty()) {
+        std::cerr << "[suspect] no cell bucket stage files under " << cells_root
+                  << ", nothing to fold\n";
+        std::filesystem::remove_all(cells_root);
+        return;
+    }
+
+    const uint64_t base_seq =
+        have_base ? suspect_cell_store::applied_seq_of(cells_path) : 0;
+
+    // Merge base + every newly staged diff, summing equal (uid, minute, h3_cell) keys.
+    // The map hands the writer its guaranteed (uid, minute, h3_cell) ascending order.
+    std::map<std::tuple<int64_t, uint32_t, uint64_t>, uint32_t> merged;
+    if (have_base) {
+        suspect_cell_store::Reader base(cells_path, h3_resolution);
+        for (size_t i = 0; i < base.size(); ++i) {
+            merged[{base.uid_at(i), base.minute_at(i), base.cell_at(i)}] += base.count_at(i);
+        }
+    }
+    for (const std::string& path : cell_stage) {
+        if (base_seq > 0 && staged_seq(path) <= base_seq) {
+            std::cerr << "[suspect] cell stage " << path
+                      << " already folded (seq <= " << base_seq << "), skipping\n";
+            continue;
+        }
+        const std::shared_ptr<arrow::Table> table = combine_chunks(
+            arrow_table_io::read_table(path));
+        const auto* uids = typed_column<arrow::Int64Array>(table, "uid");
+        const auto* minutes = typed_column<arrow::UInt32Array>(table, "minute");
+        const auto* cells = typed_column<arrow::UInt64Array>(table, "h3_cell");
+        const auto* counts = typed_column<arrow::UInt32Array>(table, "modified_deleted");
+        for (int64_t i = 0; i < table->num_rows(); ++i) {
+            merged[{uids->Value(i), minutes->Value(i), cells->Value(i)}] += counts->Value(i);
+        }
+    }
+
+    suspect_cell_store::Writer writer(cells_path, h3_resolution);
+    writer.set_applied_seq(applied_seq);
+    for (const auto& [key, count] : merged) {
+        writer.add(std::get<0>(key), std::get<1>(key), std::get<2>(key), count);
+    }
+    writer.finish();
+    std::cerr << "[suspect] folded " << merged.size() << " cell buckets into "
+              << cells_path << "\n";
+    std::filesystem::remove_all(cells_root);
 }
 
 std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_days(const std::string& minutes_path) {

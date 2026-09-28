@@ -322,7 +322,8 @@ std::optional<replication_state::State> run_update_mode(
     std::filesystem::remove_all(history_stage_root);
     std::filesystem::remove_all(suspect_stage_root);
     // Filter 2 stages go under suspect_update_stage/counts/seq_<n>; the
-    // move sink stages filter 3 under suspect_update_stage/moves/seq_<n>.
+    // move sink stages filter 3 under suspect_update_stage/moves/seq_<n>;
+    // Filter 4 stages go under suspect_update_stage/cells/seq_<n>.
     suspect::NodeMoveSink move_sink(suspect_stage_root + "/moves");
     uint64_t applied = base_seq;
     for (uint64_t seq = first; seq <= target; ++seq) {
@@ -337,6 +338,8 @@ std::optional<replication_state::State> run_update_mode(
             diff_path, history_stage_root + "/seq_" + std::to_string(seq));
         suspect::run_scan_diff(
             diff_path, suspect_stage_root + "/counts/seq_" + std::to_string(seq));
+        suspect::run_scan_diff_cells(
+            diff_path, suspect_stage_root + "/cells/seq_" + std::to_string(seq), opts.h3_resolution);
         move_sink.finish_seq();
         // `diff_path` is provably applied after every pass over it succeeded;
         // a throw anywhere above leaves the file for fetch_diff to reuse on a
@@ -356,9 +359,11 @@ std::optional<replication_state::State> run_update_mode(
     // binary minute store first, so the daily suspect flag written below
     // already reflects every diff of this run. Filter 3 (any node moved
     // > 500 m) folds into per-day flags the same way, and both staging roots
-    // are consumed here.
+    // are consumed here. Filter 4: fold cell buckets into suspect_cells.bin.
     const std::string minutes_path = opts.suspect_minutes_path;
     suspect::fold_minute_counts(suspect_stage_root + "/counts", minutes_path, applied);
+    const std::string cells_path = opts.suspect_cells_path;
+    suspect::fold_cell_counts(suspect_stage_root + "/cells", cells_path, applied, opts.h3_resolution);
     const std::map<std::pair<int64_t, uint16_t>, suspect::MoveDay> move_flags =
         suspect::flagged_move_days(suspect_stage_root);
 

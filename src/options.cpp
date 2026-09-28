@@ -243,13 +243,15 @@ bool parse_args(int argc, char** argv, Options* opts) {
     if (opts->node_cache_last_path.empty()) {
         opts->node_cache_last_path = opts->node_cache_path + ".last";
     }
-    // The diff cache and the minute store sit next to the node caches, not
+    // The diff cache and the suspect stores sit next to the node caches, not
     // under output-dir (both default to $DATA_DIR, output-dir's parent).
     const std::filesystem::path cache_parent =
         std::filesystem::path(opts->node_cache_path).parent_path();
     opts->diffs_dir = (cache_parent / "diffs").lexically_normal().string();
     opts->suspect_minutes_path =
         (cache_parent / "suspect_minutes.bin").lexically_normal().string();
+    opts->suspect_cells_path =
+        (cache_parent / "suspect_cells.bin").lexically_normal().string();
     if (opts->h3_resolution < 0 ||
         opts->h3_resolution > h3_utils::kMaxPackedCellResolution) {
         throw std::runtime_error(

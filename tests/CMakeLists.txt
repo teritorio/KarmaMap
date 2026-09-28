@@ -26,6 +26,7 @@ add_executable(unit_tests
   unit/state_test.cpp
   unit/suspect_test.cpp
   unit/suspect_store_test.cpp
+  unit/suspect_cell_test.cpp
 )
 
 target_compile_features(unit_tests PRIVATE cxx_std_17)
