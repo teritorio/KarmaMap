@@ -30,12 +30,14 @@ export const FLAG_FILTER_2 = 0x01
 export const FLAG_FILTER_3 = 0x02
 export const FLAG_FILTER_1 = 0x04
 export const FLAG_FILTER_4 = 0x08
+export const FLAG_FILTER_5 = 0x10
 
 export const FLAG_LABELS = [
   { mask: FLAG_FILTER_2, label: 'Filter 2: >500 modified/deleted in one hour' },
   { mask: FLAG_FILTER_3, label: 'Filter 3: node moved >500 m' },
   { mask: FLAG_FILTER_1, label: 'Filter 1: ranking <5% (set on new edits)' },
-  { mask: FLAG_FILTER_4, label: 'Filter 4: >=20 edits across >=3 cells totaling 20 km\u00b2 in one hour' },
+  { mask: FLAG_FILTER_4, label: 'Filter 4: >=20 edits across >=3 cells totaling 20 km² in one hour' },
+  { mask: FLAG_FILTER_5, label: 'Filter 5: one tag key on >90% of >=100 modified/deleted objects in one hour' },
 ]
 
 // OSMPatrol ranking caps (Neis, Goetz & Zipf 2012, §4). The ranking is

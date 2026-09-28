@@ -108,8 +108,11 @@ inline constexpr uint8_t kFlagFilter2 = 0x01;
 inline constexpr uint8_t kFlagFilter3 = 0x02;
 inline constexpr uint8_t kFlagFilter1 = 0x04;
 // bit 3 (kFlagFilter4): distinct H3 cells in trailing 1h exceed a surface-area budget.
-// Not from the original OSMPatrol paper; a local extension.
+//  Not from the original OSMPatrol paper; a local extension.
 inline constexpr uint8_t kFlagFilter4 = 0x08;
+// bit 4 (kFlagFilter5): one tag key on >90% of a 1-hour window's
+//  modified/deleted objects (min 100 objects). Local extension.
+inline constexpr uint8_t kFlagFilter5 = 0x10;
 
 // Trailing window width in minutes (inclusive of the current minute).
 inline constexpr uint32_t kHourSpanMinutes = 60;
@@ -118,6 +121,10 @@ inline constexpr uint32_t kHourSpanMinutes = 60;
 inline constexpr uint32_t kFilter4MinCount  = 20;     // true edits in the 60-minute window
 inline constexpr uint32_t kFilter4MinCells  = 3;      // distinct cells in the window
 inline constexpr double   kFilter4SpreadKm2 = 20.0;   // area budget (distinct_cells * cell_area)
+
+// Filter 5 thresholds.
+inline constexpr double   kFilter5TagCoverage = 0.90; // share of window's objects carrying one key
+inline constexpr uint32_t kFilter5MinObjects  = 100;  // gate: ratio ignored below this total
 
 struct UserMinuteKey {
     int64_t uid;
@@ -238,6 +245,54 @@ private:
     std::unordered_map<UserMinuteCellKey, UserMinuteCellEntry, UserMinuteCellKeyHash> cells_;
 };
 
+// Filter 5 - per (uid, minute, tag_key) modified+deleted counts
+struct UserMinuteTagKey {
+    int64_t uid;
+    uint32_t minute;
+    std::string tag_key;
+
+    bool operator==(const UserMinuteTagKey& o) const {
+        return uid == o.uid && minute == o.minute && tag_key == o.tag_key;
+    }
+};
+
+struct UserMinuteTagKeyHash {
+    size_t operator()(const UserMinuteTagKey& k) const noexcept {
+        size_t h = std::hash<int64_t>()(k.uid);
+        h ^= std::hash<uint32_t>()(k.minute) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        h ^= std::hash<std::string>()(k.tag_key) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+struct UserMinuteTagEntry {
+    std::string username;  // first username seen for this (uid, minute, tag_key)
+    uint32_t count = 0;
+};
+
+// Pure, osmium-free per-(uid, minute, tag_key) aggregation for Filter 5.
+// All object types (nodes, ways, relations) and change types
+// (modify, delete) are counted; creates are excluded to share scope
+// with the minute store used as the denominator. Tag keys are
+// deduplicated per object.
+class MinuteTagStats {
+public:
+    MinuteTagStats() = default;
+
+    void add_object(int64_t uid, std::string_view username, uint32_t minute,
+                    const std::vector<std::string>& tag_keys,
+                    bool visible, uint32_t version);
+
+    const std::unordered_map<UserMinuteTagKey, UserMinuteTagEntry, UserMinuteTagKeyHash>& tags() const;
+
+    void clear();
+
+    size_t size() const;
+
+private:
+    std::unordered_map<UserMinuteTagKey, UserMinuteTagEntry, UserMinuteTagKeyHash> tags_;
+};
+
 // --- Filter 4: cell spread flag ---
 
 struct CellCountRow {
@@ -251,6 +306,14 @@ struct CellSpreadRow {
     uint32_t object_count;
     uint32_t distinct_cells;
     double spread_km2;
+    uint8_t flagged;
+};
+
+struct TagCoverageRow {
+    uint32_t minute;
+    uint32_t object_total;
+    uint32_t top_key_count;
+    double coverage;
     uint8_t flagged;
 };
 
@@ -282,6 +345,32 @@ private:
     std::unordered_map<uint64_t, uint32_t> cell_counts_;
 };
 
+// Sliding-window evaluator for one uid. Feeds tag rows (minute, tag_key, count)
+// and object rows (minute, count) in ascending minute order. The window is the
+// trailing kHourSpanMinutes minutes inclusive of the current minute. Memory is
+// bounded by the window rather than by the number of rows fed.
+//
+// Order of operations is load-bearing: add_tag()/add_object() only append, so
+// a caller that feeds rows from before the current minute and then calls
+// evict() will have those rows counted. Call evaluate() for a minute m only
+// after feeding every row through m and calling evict(m) exactly once, which
+// leaves the window holding exactly the rows in (m - kHourSpanMinutes, m].
+class TagCoverageAccumulator {
+public:
+    explicit TagCoverageAccumulator();
+
+    void add_tag(uint32_t minute, std::string_view tag_key, uint32_t count);
+    void add_object(uint32_t minute, uint32_t count);
+    void evict(uint32_t minute);
+    TagCoverageRow evaluate(uint32_t minute) const;
+
+private:
+    uint64_t object_total_ = 0;
+    std::deque<std::pair<uint32_t, uint32_t>> object_deque_;  // (minute, count)
+    std::deque<std::tuple<uint32_t, std::string, uint32_t>> tag_deque_;  // (minute, tag_key, count)
+    std::unordered_map<std::string, uint32_t> key_counts_;
+};
+
 // Thin wrapper around CellSpreadAccumulator for the vector-based API.
 // Mirrors the shape of hour_spans: one CellSpreadRow per minute of the union
 // of the two input streams, in ascending order. Both streams must be sorted
@@ -290,41 +379,20 @@ private:
 // differently: relations, deleted nodes with no location, and ways whose refs
 // all resolve to cell 0 reach the minute store but never the cell store, so a
 // user can cross the object-count gate on a minute that carries no cell row.
-inline std::vector<CellSpreadRow> cell_spreads(
+std::vector<CellSpreadRow> cell_spreads(
     const std::vector<CellCountRow>& rows,
     const std::vector<std::pair<uint32_t, uint32_t>>& object_counts,
-    double cell_area_km2) {
-    std::vector<CellSpreadRow> out;
-    out.reserve(rows.size() + object_counts.size());
-    CellSpreadAccumulator acc(cell_area_km2);
-    size_t obj_idx = 0;
-    size_t row_idx = 0;
-    while (row_idx < rows.size() || obj_idx < object_counts.size()) {
-        uint32_t m;
-        if (row_idx >= rows.size()) {
-            m = object_counts[obj_idx].first;
-        } else if (obj_idx >= object_counts.size()) {
-            m = rows[row_idx].minute;
-        } else {
-            m = std::min(rows[row_idx].minute, object_counts[obj_idx].first);
-        }
-        // Feed every object row through minute m, then every cell row of minute
-        // m, so the window state read below covers both through m inclusive.
-        while (obj_idx < object_counts.size() && object_counts[obj_idx].first <= m) {
-            acc.add_object(object_counts[obj_idx].first, object_counts[obj_idx].second);
-            ++obj_idx;
-        }
-        while (row_idx < rows.size() && rows[row_idx].minute == m) {
-            acc.add_cell(rows[row_idx].minute, rows[row_idx].h3_cell, rows[row_idx].modified_deleted);
-            ++row_idx;
-        }
-        // Evict after the adds, so a row admitted during this step that predates
-        // the window is dropped before the window state is read.
-        acc.evict(m);
-        out.push_back(acc.evaluate(m));
-    }
-    return out;
-}
+    double cell_area_km2);
+
+// Thin wrapper around TagCoverageAccumulator for the vector-based API.
+// Mirrors the shape of cell_spreads: one TagCoverageRow per minute of the union
+// of the two input streams, in ascending order. Both streams must be sorted
+// ascending and non-decreasing in minute. Evaluating on the union is required
+// because an object with no tag keys reaches the minute store but produces no
+// tag row, so a minute can carry objects with no tag rows.
+std::vector<TagCoverageRow> tag_coverages(
+    const std::vector<std::tuple<uint32_t, std::string, uint32_t>>& tag_rows,
+    const std::vector<std::pair<uint32_t, uint32_t>>& object_counts);
 
 // Reads the persisted cell store and the minute store, computes the Filter 4
 // flag per (uid, day) and returns a map keyed by (uid, day) with value
@@ -332,6 +400,16 @@ inline std::vector<CellSpreadRow> cell_spreads(
 // per-(uid, minute) modified+deleted count for the >= kFilter4MinCount gate.
 std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_cell_days(
     const std::string& cells_path, const std::string& minutes_path, int h3_resolution);
+
+// Reads the persisted tag store and the minute store, computes the Filter 5
+// flag per (uid, day) and returns a map keyed by (uid, day) with value
+// kFlagFilter5 (or 0 if not flagged). The tag store provides per-(uid, minute,
+// tag_key) counts; the minute store provides the modified+deleted total for
+// the coverage denominator. A day is flagged when some trailing 60-minute
+// window has object_total >= kFilter5MinObjects and top_key_count /
+// object_total > kFilter5TagCoverage.
+std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_tag_days(
+    const std::string& tags_path, const std::string& minutes_path);
 
 // One merged (uid, minute) row plus its derived window. hour_span sums
 // modified_deleted over the trailing kHourSpanMinutes minutes ending at
@@ -467,5 +545,22 @@ void run_scan_diff_cells(const std::string& diff_path, const std::string& stage_
 // and validated on read.
 void fold_cell_counts(const std::string& cells_root, const std::string& cells_path,
                       uint64_t applied_seq, int h3_resolution);
+
+// --- Filter 5: tag activity tracking ---
+
+// Scans one replication diff (.osc.gz change file) into a fresh stage_dir,
+// counting all tag keys on all object changes per (uid, minute, tag_key).
+// Nodes, ways, and relations are all processed. All change types
+// (create, modify, delete) are counted.
+void run_scan_diff_tags(const std::string& diff_path, const std::string& stage_dir);
+
+// Folds one update run's staged per-(uid, minute, tag_key) count buckets under
+// `tags_root` (one parquet file per diff flush) into the persisted binary
+// tag store at `tags_path`, summing equal (uid, minute, tag_key) keys.
+// `applied_seq` is the last replication sequence folded this run: it is stamped
+// into the store header and lets a rerun of an already-folded sequence skip
+// the fold instead of double-counting.
+void fold_tag_counts(const std::string& tags_root, const std::string& tags_path,
+                     uint64_t applied_seq);
 
 }  // namespace suspect

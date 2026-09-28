@@ -252,6 +252,8 @@ bool parse_args(int argc, char** argv, Options* opts) {
         (cache_parent / "suspect_minutes.bin").lexically_normal().string();
     opts->suspect_cells_path =
         (cache_parent / "suspect_cells.bin").lexically_normal().string();
+    opts->suspect_tags_path =
+        (cache_parent / "suspect_tags.bin").lexically_normal().string();
     if (opts->h3_resolution < 0 ||
         opts->h3_resolution > h3_utils::kMaxPackedCellResolution) {
         throw std::runtime_error(

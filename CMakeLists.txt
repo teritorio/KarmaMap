@@ -82,6 +82,7 @@ add_library(karmamap_core STATIC
   src/update.cpp
   src/users_history.cpp
   src/suspect.cpp
+  src/suspect_tag.cpp
 )
 
 target_include_directories(karmamap_core PUBLIC src)

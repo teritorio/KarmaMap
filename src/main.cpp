@@ -323,7 +323,8 @@ std::optional<replication_state::State> run_update_mode(
     std::filesystem::remove_all(suspect_stage_root);
     // Filter 2 stages go under suspect_update_stage/counts/seq_<n>; the
     // move sink stages filter 3 under suspect_update_stage/moves/seq_<n>;
-    // Filter 4 stages go under suspect_update_stage/cells/seq_<n>.
+    // Filter 4 stages go under suspect_update_stage/cells/seq_<n>;
+    // Filter 5 stages go under suspect_update_stage/tags/seq_<n>.
     suspect::NodeMoveSink move_sink(suspect_stage_root + "/moves");
     uint64_t applied = base_seq;
     for (uint64_t seq = first; seq <= target; ++seq) {
@@ -340,6 +341,8 @@ std::optional<replication_state::State> run_update_mode(
             diff_path, suspect_stage_root + "/counts/seq_" + std::to_string(seq));
         suspect::run_scan_diff_cells(
             diff_path, suspect_stage_root + "/cells/seq_" + std::to_string(seq), opts.h3_resolution, node_state);
+        suspect::run_scan_diff_tags(
+            diff_path, suspect_stage_root + "/tags/seq_" + std::to_string(seq));
         move_sink.finish_seq();
         // `diff_path` is provably applied after every pass over it succeeded;
         // a throw anywhere above leaves the file for fetch_diff to reuse on a
@@ -360,21 +363,27 @@ std::optional<replication_state::State> run_update_mode(
     // already reflects every diff of this run. Filter 3 (any node moved
     // > 500 m) folds into per-day flags the same way, and both staging roots
     // are consumed here. Filter 4: fold cell buckets into suspect_cells.bin.
+    // Filter 5: fold tag buckets into suspect_tags.bin.
     const std::string minutes_path = opts.suspect_minutes_path;
     suspect::fold_minute_counts(suspect_stage_root + "/counts", minutes_path, applied);
     const std::string cells_path = opts.suspect_cells_path;
     suspect::fold_cell_counts(suspect_stage_root + "/cells", cells_path, applied, opts.h3_resolution);
+    const std::string tags_path = opts.suspect_tags_path;
+    suspect::fold_tag_counts(suspect_stage_root + "/tags", tags_path, applied);
     const std::map<std::pair<int64_t, uint16_t>, suspect::MoveDay> move_flags =
         suspect::flagged_move_days(suspect_stage_root);
     // Filter 4: compute spatial spread flags from the cell and minute stores.
     const std::map<std::pair<int64_t, uint16_t>, uint8_t> filter4_days =
         suspect::flagged_cell_days(cells_path, minutes_path, opts.h3_resolution);
+    // Filter 5: compute tag coverage flags from the tag and minute stores.
+    const std::map<std::pair<int64_t, uint16_t>, uint8_t> filter5_days =
+        suspect::flagged_tag_days(tags_path, minutes_path);
 
     users_history::run_update_finalize(history_stage_root,
                                        opts.output_dir + "/users_history.parquet",
                                        opts.users_history_group_rows,
                                        opts.ranking_group_rows, minutes_path,
-                                       move_flags, filter4_days);
+                                       move_flags, filter4_days, filter5_days);
 
     // Provenance records the applied state: the sequence is the last applied
     // diff (indexed by "update N"), the timestamp is the fetched state.txt's

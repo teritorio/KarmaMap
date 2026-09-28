@@ -195,20 +195,23 @@ and the page says so.
 | **Changes** | Everything that user changed that day, nodes, ways and relations together. A burst day shows a large number here. |
 | **Edit burst** | *Yes* when filter 2 fired. |
 | **Spatial spread** | *Yes* when filter 4 fired. |
+| **Tag activity** | *Yes* when filter 5 fired (one tag key on >90% of 1h window's objects). |
 | **Far moves** | How many times that day the user dragged a node more than 500 m. |
 
 `Ranking at day` and `Far moves` are recorded once, the first time a day is
 flagged, and then kept as they were — they are not recomputed as the user's
 ranking grows or as later edits arrive. A value of `0` far moves therefore
 does not always mean none happened; it can also mean the day was first
-flagged by another filter. `Edit burst` and `Spatial spread` carry no stored
-value: each is just a read of the day's own flag bits, so they always match
-the filter that fired.
+flagged by another filter. `Edit burst`, `Spatial spread` and `Tag activity`
+carry no stored value: each is just a read of the day's own flag bits, so they
+always match the filter that fired.
 
 ### The filters
 
 The three filters are the ones proposed in the paper this project follows.
-A fourth filter is a local extension, **not from the paper**.
+A fourth and fifth filter are local extensions, **not from the paper**; Filter 5
+flags when one tag key covers >90% of a 1-hour window's modified/deleted objects
+(minimum 100 objects).
 A filter is only an automatic rule that marks days for review: it forms no
 judgement about the edit itself, and nothing is hidden, blocked or reverted
 because of it.
@@ -219,6 +222,7 @@ because of it.
 | 2. Edit burst | More than 500 objects modified or deleted within one hour | `Edit burst = Yes` |
 | 3. Far move | A node dragged more than 500 m | A raised `Far moves` count |
 | 4. Spatial spread | Edits in 1h span ≥3 H3 cells whose combined area ≥ 20 km² | `Spatial spread = Yes` |
+| 5. Tag activity | One tag key on >90% of modified/deleted objects in a 1h window with ≥100 total | `Tag activity = Yes` |
 
 Two details about how they are applied:
 
@@ -226,7 +230,7 @@ Two details about how they are applied:
   contributor edits *from now on*. As someone builds a history their
   ranking rises, and the days already marked stay marked — but the past is
   never re-examined because a ranking later dropped.
-- **Filters 2, 3 and 4 follow bursts and mistakes, not people.** All three
+- **Filters 2, 3, 4 and 5 follow bursts and mistakes, not people.** All four
   fire on activity, so a single flagged day says nothing about a contributor's
   usual behaviour; the whole timeline on the users page is the context.
 

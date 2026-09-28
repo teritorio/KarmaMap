@@ -213,6 +213,9 @@ place preserves the folded minutes and the applied-sequence stamp; do that
 before updating, or the period before the upgrade stops contributing to the
 filter-2 day bits.
 
+The `suspect_tags.bin` tag store is likewise self-identifying (magic `TAGS`,
+variable-length records, no file name), and follows the same pattern.
+
 The suspect engine (OSMPatrol filters 2 and 3, see
 `docs/osmpatrol-neis-2012.md`) runs in the same loop. Every diff is scanned
 into per-`(uid, minute)` modified+deleted buckets under
@@ -275,6 +278,10 @@ resolution's average hexagon area) is `>= 20 km²`, gated on `>= 20` true
 edits in the window (the true edit count comes from `suspect_minutes.bin`,
 so a long way counts as one edit but contributes all its cells to the spread).
 `suspect_cells.bin` is the update-only persistent store behind this flag.
+Bit 4 (`kFlagFilter5`) is a local extension: a trailing 1-hour window whose
+modified/deleted object count is `>= 100` and where one tag key covers `> 90%`
+of those objects. The per-`(uid, minute, tag_key)` modified+deleted counts are
+persisted in `suspect_tags.bin` (version 1).
 
 ## Suspect pass
 
@@ -349,6 +356,27 @@ cell size (about 190 cells at the default resolution 9, 1 at resolution 6), and
 the metric counts cells touched rather than measuring the distance between them.
 Since `distinct_cells * cell_area` is monotone in `distinct_cells`, exactly one
 of the `kFilter4MinCells` and area gates binds at any given resolution.
+
+Filter 5 (local extension, **not from the original OSMPatrol paper**) flags a
+day when a user's modified/deleted objects in a trailing 1-hour window are
+dominated by a single tag key. The diff scan (`suspect::run_scan_diff_tags`)
+counts **modified+deleted** objects per `(uid, minute, tag_key)` on nodes,
+ways, and relations (creates are excluded, matching the scope of
+`suspect_minutes.bin` which provides the denominator). The per-diff buckets are
+staged under `suspect_update_stage/tags/seq_<n>/`, folded by
+`fold_tag_counts` into the persisted binary block store `suspect_tags.bin`
+(same block format but variable-length records keyed by `(uid, minute, tag_key)`,
+max 272 bytes, version 1). `suspect::flagged_tag_days` reads both
+`suspect_tags.bin` and `suspect_minutes.bin` in lockstep: for each uid, it slides
+a 60-minute window over both streams simultaneously — the tag stream gives the
+per-key counts, the minute stream gives the total modified+deleted count for the
+gate — and flags the day when the window has `>= 100` objects and one tag key
+covers `> 90%` of them. The flag lands in bit 4 of `suspect_flag` (0x10) and is
+monotonic like the other bits. Import writes it as 0 (no tag buckets exist for
+the full-history scan). **Limitation:** a create-only mass import (e.g. a bulk
+upload of new buildings all tagged `building=yes`) is not flagged, because
+creates are excluded from both numerator and denominator to share scope with the
+minute store.
 
 ## Web viewer queries
 

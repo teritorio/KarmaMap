@@ -25,11 +25,14 @@ ranking scoring follows [Neis, Goetz & Zipf, *ISPRS Int. J. Geo-Inf.*
   carries the per-day suspect flags (a `suspect_flag` column): bit 0 = filter 2
   (edit burst > 500/h), bit 1 = filter 3 (node move > 500 m), bit 2 = filter 1
   (ranking < 5%), bit 3 = filter 4 (spatial spread of H3 cells in 1h window;
-  not from the original OSMPatrol paper).
+  not from the original OSMPatrol paper), bit 4 = filter 5 (one tag key on
+  >90% of modified/deleted objects in a 1-hour window with ≥ 100 total; local
+  extension).
 - Suspect-screen outputs of every `update` run: `suspect_minutes.bin` (the
   persisted per-`(uid, minute)` modified+deleted bucket store behind filter 2),
   `suspect_cells.bin` (the persisted per-`(uid, minute, h3_cell)` modified+deleted
-  bucket store behind filter 4), the bit-coded per-day `suspect_flag` in
+  bucket store behind filter 4), `suspect_tags.bin` (the persisted per-`(uid, minute, tag_key)`
+  modified+deleted bucket store behind filter 5), the bit-coded per-day `suspect_flag` in
   `users_history.parquet` (filters 2/3 have no persisted node-moves dataset —
   they survive only as carried day bits, and bit 2 is forward-only too: import
   writes 0 and updates set it only on the new rows they write for a
@@ -242,7 +245,8 @@ Then open `http://localhost:8080/`.
 - **`/suspect/`** — the suspects viewer: the 100 latest flagged
   `(uid, change_date)` days from `suspect.parquet` (update-only), with each
   day's total change count, an edit-burst marker (>500 modified/deleted
-  objects in one hour), far-move count and ranking.
+  objects in one hour), a tag-activity marker (one tag key on >90% of a 1-hour
+  window's objects, min 100), far-move count and ranking.
 - **`/how-it-works.html`** — the reader-facing guide: what each of the three
   viewers shows and how to read its numbers. It renders `web/HOW_IT_WORKS.md`
   client-side, so the Markdown file stays the single source of truth.

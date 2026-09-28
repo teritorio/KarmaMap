@@ -899,4 +899,69 @@ TEST(UsersHistoryFinalize, UpdateFlagsCombineFilter4WithExistingBits) {
     EXPECT_EQ(v.flag[1], suspect::kFlagFilter2 | suspect::kFlagFilter4);
 }
 
+// Filter 5 (tag coverage) merges identically: ORs into the per-day flag, is
+// monotonic, and a day flagged only by filter 5 reaches suspect.parquet.
+TEST(UsersHistoryFinalize, UpdateFlagsCombineFilter5WithExistingBits) {
+    TempDir dir;
+    const std::string history = dir.join("users_history.parquet");
+
+    const std::string base_stage = dir.join("base_stage");
+    std::filesystem::create_directories(base_stage);
+    write_stage(base_stage + "/stage_00000.parquet",
+                {
+                    {10, "alice", 1000, 50, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                    {11, "bob", 2000, 40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                });
+    users_history::run_finalize(base_stage, history, kDefaultUsersHistoryGroupRows,
+                                kDefaultRankingGroupRows);
+
+    const std::string minutes = dir.join("suspect_minutes.bin");
+    {
+        suspect_store::Writer w(minutes);
+        w.add(10, 1440u * 1000u + 30, 501);
+        w.finish();
+    }
+
+    const std::string stage_root = dir.join("update_stage");
+    std::filesystem::create_directories(stage_root + "/seq_2847600");
+    write_stage(stage_root + "/seq_2847600/stage.parquet",
+                {
+                    {12, "carol", 3000, 200, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                });
+
+    // Filter 5 flags uid 10 day 1000 (already carrying filter 2) and uid 11
+    // day 2000, which no other screen flagged.
+    const std::map<std::pair<int64_t, uint16_t>, uint8_t> filter5_days{
+        {{10, 1000}, suspect::kFlagFilter5},
+        {{11, 2000}, suspect::kFlagFilter5},
+    };
+    users_history::run_update_finalize(stage_root, history, kDefaultUsersHistoryGroupRows,
+                                       kDefaultRankingGroupRows, minutes, {}, {}, filter5_days);
+
+    const auto ind = read_history(history);
+    //   uid 10 day 1000: filter 2 + filter 5 -> 0x11
+    //   uid 11 day 2000: filter 5 only -> 0x10
+    //   uid 12 day 3000: no flag (ranking above threshold)
+    ASSERT_EQ(ind.uid.size(), 3);
+    EXPECT_EQ(ind.uid[0], 10);
+    EXPECT_EQ(ind.day[0], 1000);
+    EXPECT_EQ(ind.flag[0], suspect::kFlagFilter2 | suspect::kFlagFilter5);
+    EXPECT_EQ(ind.uid[1], 11);
+    EXPECT_EQ(ind.day[1], 2000);
+    EXPECT_EQ(ind.flag[1], suspect::kFlagFilter5);
+    EXPECT_EQ(ind.uid[2], 12);
+    EXPECT_EQ(ind.flag[2], 0);
+
+    // A day flagged only by filter 5 is exported to suspect.parquet like any
+    // other flagged day.
+    const auto v = read_suspect(dir.join("suspect.parquet"));
+    ASSERT_EQ(v.uid.size(), 2);
+    EXPECT_EQ(v.day[0], 2000);
+    EXPECT_EQ(v.uid[0], 11);
+    EXPECT_EQ(v.flag[0], suspect::kFlagFilter5);
+    EXPECT_EQ(v.day[1], 1000);
+    EXPECT_EQ(v.uid[1], 10);
+    EXPECT_EQ(v.flag[1], suspect::kFlagFilter2 | suspect::kFlagFilter5);
+}
+
 }  // namespace

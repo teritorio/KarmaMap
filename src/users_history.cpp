@@ -662,7 +662,8 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
                          int64_t users_history_group_rows, int64_t ranking_group_rows,
                          const std::string& minutes_path,
                          const std::map<std::pair<int64_t, uint16_t>, suspect::MoveDay>& move_flags,
-                         const std::map<std::pair<int64_t, uint16_t>, uint8_t>& filter4_days) {
+                         const std::map<std::pair<int64_t, uint16_t>, uint8_t>& filter4_days,
+                         const std::map<std::pair<int64_t, uint16_t>, uint8_t>& filter5_days) {
     // Registers Arrow's compute kernels (sort_indices, take).
     auto init_status = arrow::compute::Initialize();
     if (!init_status.ok()) {
@@ -880,10 +881,11 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
 
     // Rebuild the whole-history flags from the persisted sources: bit 0 from
     // the minute store, bit 1 from the run's folded move-flagged days, bit 3
-    // from the cell spread store. Every filter2_days value is kFlagFilter2,
-    // every move_flags entry carries kFlagFilter3, and every filter4_days
-    // entry carries kFlagFilter4. ORing them into the carried-forward base bits
-    // yields the combined per-day field.
+    // from the cell spread store, bit 4 from the tag coverage store. Every
+    // filter2_days value is kFlagFilter2, every move_flags entry carries
+    // kFlagFilter3, every filter4_days entry carries kFlagFilter4, and every
+    // filter5_days entry carries kFlagFilter5. ORing them into the carried-
+    // forward base bits yields the combined per-day field.
     const auto filter2_days = suspect::flagged_days(minutes_path);
     for (const auto& [key, flag] : filter2_days) {
         merged_flags[key] |= flag;
@@ -892,6 +894,9 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
         merged_flags[key] |= value.flags;
     }
     for (const auto& [key, flag] : filter4_days) {
+        merged_flags[key] |= flag;
+    }
+    for (const auto& [key, flag] : filter5_days) {
         merged_flags[key] |= flag;
     }
 

@@ -19,6 +19,7 @@
 #include "update.hpp"
 #include "suspect.hpp"
 #include "suspect_store.hpp"
+#include "suspect_tag_store.hpp"
 
 namespace {
 
@@ -313,6 +314,110 @@ TEST(SuspectFlaggedDays, GuardsDayUint16Range) {
 TEST(SuspectFlaggedDays, MissingStoreIsEmpty) {
     TempDir dir;
     EXPECT_EQ(suspect::flagged_days(dir.join("nope.bin")).size(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// flagged_tag_days (Filter 5 -> day-level bit-4 flags).
+// ---------------------------------------------------------------------------
+
+TEST(SuspectTagDays, CoverageThresholdTriggersFlag) {
+    TempDir dir;
+    const std::string tags = dir.join("suspect_tags.bin");
+    const std::string minutes = dir.join("suspect_minutes.bin");
+    {
+        // Build a tag store: uid 10 at minute 100 has 100 objects, 95 with "highway"
+        suspect_tag_store::Writer tw(tags);
+        tw.add(10, 100, "highway", 95);
+        tw.add(10, 100, "name", 5);
+        tw.finish();
+        // Build the minute store: uid 10 at minute 100 has 100 modified/deleted
+        suspect_store::Writer mw(minutes);
+        mw.add(10, 100, 100);
+        mw.finish();
+    }
+    const auto flags = suspect::flagged_tag_days(tags, minutes);
+    // minute 100 / 1440 = day 0. 95/100 = 95% > 90%, total 100 >= 100 -> flagged
+    EXPECT_EQ(flags.at({10, 0}), suspect::kFlagFilter5);
+}
+
+TEST(SuspectTagDays, BelowCoverageNoFlag) {
+    TempDir dir;
+    const std::string tags = dir.join("suspect_tags.bin");
+    const std::string minutes = dir.join("suspect_minutes.bin");
+    {
+        suspect_tag_store::Writer tw(tags);
+        tw.add(10, 100, "highway", 89);  // 89% < 90%
+        tw.add(10, 100, "name", 11);
+        tw.finish();
+        suspect_store::Writer mw(minutes);
+        mw.add(10, 100, 100);
+        mw.finish();
+    }
+    const auto flags = suspect::flagged_tag_days(tags, minutes);
+    EXPECT_TRUE(flags.empty());
+}
+
+TEST(SuspectTagDays, BelowObjectGateNoFlag) {
+    TempDir dir;
+    const std::string tags = dir.join("suspect_tags.bin");
+    const std::string minutes = dir.join("suspect_minutes.bin");
+    {
+        suspect_tag_store::Writer tw(tags);
+        tw.add(10, 100, "highway", 99);  // 99/99 = 100% but total < 100
+        tw.finish();
+        suspect_store::Writer mw(minutes);
+        mw.add(10, 100, 99);  // below kFilter5MinObjects = 100
+        mw.finish();
+    }
+    const auto flags = suspect::flagged_tag_days(tags, minutes);
+    EXPECT_TRUE(flags.empty());
+}
+
+TEST(SuspectTagDays, MultipleMinutesAccumulate) {
+    TempDir dir;
+    const std::string tags = dir.join("suspect_tags.bin");
+    const std::string minutes = dir.join("suspect_minutes.bin");
+    {
+        suspect_tag_store::Writer tw(tags);
+        tw.add(10, 100, "highway", 45);
+        tw.add(10, 100, "name", 5);
+        tw.add(10, 110, "building", 5);
+        tw.add(10, 110, "highway", 55);
+        tw.finish();
+        suspect_store::Writer mw(minutes);
+        mw.add(10, 100, 50);
+        mw.add(10, 110, 60);
+        mw.finish();
+    }
+    const auto flags = suspect::flagged_tag_days(tags, minutes);
+    // Window at minute 110: total 50+60=110, highway 45+55=100 -> 100/110 = 90.9% > 90%
+    EXPECT_EQ(flags.at({10, 0}), suspect::kFlagFilter5);
+}
+
+TEST(SuspectTagDays, MissingEitherStoreIsEmpty) {
+    TempDir dir;
+    EXPECT_EQ(suspect::flagged_tag_days(dir.join("nope.bin"), dir.join("minutes.bin")).size(), 0);
+    EXPECT_EQ(suspect::flagged_tag_days(dir.join("tags.bin"), dir.join("nope.bin")).size(), 0);
+}
+
+TEST(SuspectTagDays, DifferentUidsSeparate) {
+    TempDir dir;
+    const std::string tags = dir.join("suspect_tags.bin");
+    const std::string minutes = dir.join("suspect_minutes.bin");
+    {
+        suspect_tag_store::Writer tw(tags);
+        tw.add(10, 100, "highway", 95);
+        tw.add(11, 100, "highway", 50);
+        tw.finish();
+        suspect_store::Writer mw(minutes);
+        mw.add(10, 100, 100);
+        mw.add(11, 100, 100);
+        mw.finish();
+    }
+    const auto flags = suspect::flagged_tag_days(tags, minutes);
+    EXPECT_EQ(flags.size(), 1);
+    EXPECT_EQ(flags.at({10, 0}), suspect::kFlagFilter5);
+    EXPECT_EQ(flags.count({11, 0}), 0);
 }
 
 // ---------------------------------------------------------------------------

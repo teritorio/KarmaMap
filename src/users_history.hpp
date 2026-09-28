@@ -307,14 +307,16 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
 // change count, the day's far-move count and the ranking frozen at the
 // day's first flag, sorted by (change_date, uid) with change_date descending
 // (newest first)); a pure import never produces it.
-// `filter4_days` is the spatial-spread extension described above and is not
-// part of the original OSMPatrol paper.
+// `filter4_days` is the spatial-spread extension (Filter 4).
+// `filter5_days` is the tag-coverage extension (Filter 5).
 void run_update_finalize(const std::string& stage_root, const std::string& history_path,
                          int64_t users_history_group_rows, int64_t ranking_group_rows,
                          const std::string& minutes_path,
                          const std::map<std::pair<int64_t, uint16_t>, suspect::MoveDay>&
                              move_flags,
                          const std::map<std::pair<int64_t, uint16_t>, uint8_t>&
-                             filter4_days = {});
+                             filter4_days = {},
+                         const std::map<std::pair<int64_t, uint16_t>, uint8_t>&
+                             filter5_days = {});
 
 }  // namespace users_history

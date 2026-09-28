@@ -14,7 +14,7 @@
 import { loadManifest, dayKey, userProfileUrls } from '../lib/api.js'
 import { showExtractInfo } from '../lib/header.js'
 import { querySuspectLatest } from './query.js'
-import { FLAG_FILTER_2, FLAG_FILTER_4 } from '../users/ranking.js'
+import { FLAG_FILTER_2, FLAG_FILTER_4, FLAG_FILTER_5 } from '../users/ranking.js'
 
 // Data root: the data/ directory one level above the viewer pages.
 const BASE_URL = '../data'
@@ -47,6 +47,7 @@ function renderRows(rows) {
   tbodyEl.innerHTML = rows.map((row) => {
     const editBurst = (Number(row.suspect_flag ?? 0) & FLAG_FILTER_2) !== 0
     const spatialSpread = (Number(row.suspect_flag ?? 0) & FLAG_FILTER_4) !== 0
+    const tagActivity = (Number(row.suspect_flag ?? 0) & FLAG_FILTER_5) !== 0
     return `<tr>` +
       `<td>${escapeHtml(dayKey(row.change_date))}</td>` +
       `<td class="value"><a href="../users/#user=${row.username}">#${Number(row.ranking_at_day ?? 0)}</a></td>` +
@@ -55,6 +56,7 @@ function renderRows(rows) {
       `<td class="value">${Number(row.changes ?? 0).toLocaleString()}</td>` +
       `<td>${editBurst ? 'Yes' : ''}</td>` +
       `<td>${spatialSpread ? 'Yes' : ''}</td>` +
+      `<td>${tagActivity ? 'Yes' : ''}</td>` +
       `<td class="value">${Number(row.far_move_count ?? 0).toLocaleString()}</td>` +
       `</tr>`
   }).join('')

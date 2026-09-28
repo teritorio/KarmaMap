@@ -37,6 +37,7 @@ node_positions.cache      # full-history node cache (import/prepare-update)
 node_positions.cache.last  # incremental cache (prepare-update/update)
 suspect_minutes.bin       # update-only; binary block store (filter 2)
 suspect_cells.bin         # update-only; binary block store (filter 4)
+suspect_tags.bin          # update-only; binary block store (filter 5)
 diffs/                    # update-only; in-flight diff download cache
 ```
 
@@ -148,7 +149,7 @@ are two non-partitioned single files.
   | `uid` | `int64` | OSM user id |
   | `change_date` | `uint16` | UTC day (same encoding as `changes/`) |
   | `count` | `uint32` | Total activity that day: the six node/way change counters plus the three relation counters (created, modified, deleted) |
-  | `suspect_flag` | `uint8` | Per-day OSMPatrol flag: bit 0 (`0x01`) = any of the day's minutes had > 500 modified+deleted objects within a one-hour window; bit 1 (`0x02`) = a modified node moved more than 500 m that day; bit 2 (`0x04`) = the day's user has ranking < 5% (filter 1, "new users or low ranking"; a contributor who created nothing ranks 0); bit 3 (`0x08`) = distinct H3 cells touched in a trailing 1h window exceed a surface-area budget (filter 4, local extension, not from the paper). All bits are monotonic and forward-only: import writes 0; bits 0/1/3 are ORed by every update finalize from `suspect_minutes.bin`/`suspect_cells.bin` plus the run's move-flagged days, and bit 2 is set only on the rows that update run newly writes for a below-threshold contributor. Base rows are carried unchanged, so once set a bit persists and a ranking drop never re-flags the past |
+  | `suspect_flag` | `uint8` | Per-day OSMPatrol flag: bit 0 (`0x01`) = any of the day's minutes had > 500 modified+deleted objects within a one-hour window; bit 1 (`0x02`) = a modified node moved more than 500 m that day; bit 2 (`0x04`) = the day's user has ranking < 5% (filter 1, "new users or low ranking"; a contributor who created nothing ranks 0); bit 3 (`0x08`) = distinct H3 cells touched in a trailing 1h window exceed a surface-area budget (filter 4, local extension, not from the paper); bit 4 (`0x10`) = one tag key on > 90% of the modified/deleted objects in a trailing 1h window with >= 100 total objects (filter 5, local extension). All bits are monotonic and forward-only: import writes 0; bits 0/1/3/4 are ORed by every update finalize from `suspect_minutes.bin`/`suspect_cells.bin`/`suspect_tags.bin` plus the run's move-flagged days, and bit 2 is set only on the rows that update run newly writes for a below-threshold contributor. Base rows are carried unchanged, so once set a bit persists and a ranking drop never re-flags the past |
 
   The per-day `tag_*` counters are aggregated during finalize and only their
   per-user sums are written (in `user_ranking.parquet`), so they never
@@ -225,13 +226,15 @@ LIMIT 20;
 The suspect outputs are update-only: they cover the period after the
 recorded replication sequence and are absent after a pure import. They
 implement the OSMPatrol filters 2 (`> 500 modified/deleted in one hour`), 3
-(node moved beyond 500 m), and a local extension filter 4 (spatial spread of
-H3 cells in a trailing 1h window, **not from the original OSMPatrol paper**).
+(node moved beyond 500 m), and local extensions filter 4 (spatial spread of
+H3 cells in a trailing 1h window) and filter 5 (tag activity tracking per
+`(uid, minute, tag_key)`), **not from the original OSMPatrol paper**.
 Filter 1 (new users / ranking < 5%) is a forward-only bit (bit 2 of
 `suspect_flag`) that the users-history update finalize sets on the rows it
-newly writes. Filters 2/3/4 fold into the per-day `suspect_flag` bits of
+newly writes. Filters 2/3/4/5 fold into the per-day `suspect_flag` bits of
 `users_history.parquet`; filter 2 draws on one binary store, filter 3's move
-staging is transient, filter 4 draws on its own binary store.
+staging is transient, filter 4 draws on its own binary store, filter 5 draws
+on its own binary store.
 
 - `suspect_minutes.bin` — the **binary** per-`(uid, minute)` modified+
   deleted counts behind the filter-2 flag (bit 0 of `suspect_flag`); it is a
@@ -257,6 +260,21 @@ staging is transient, filter 4 draws on its own binary store.
   edit count from `suspect_minutes.bin`, so a long way counts once), `>= 3`
   distinct H3 cells in that window, and the total surface area
   (`distinct_cells * average_hexagon_area_km2(resolution)`) `>= 20 km²`.
+
+- `suspect_tags.bin` — the **binary** per-`(uid, minute, tag_key)` counts
+  behind the filter-5 flag (bit 4 of `suspect_flag`); same block format as
+  `suspect_minutes.bin` but variable-length records
+  `(uid:8, minute:4, tag_key_len:1, tag_key:N, count:4)` with max 272 bytes,
+  and a 40-byte header with magic `TAGS` (0x53474154), version=1, record_size=0
+  (variable), H3 resolution=0 (N/A), record/block counts, and the
+  applied-sequence stamp. Each finalize run merges its staged buckets into this
+  store. The store tracks **modified+deleted** objects (creates excluded, to
+  share scope with `suspect_minutes.bin` which provides the denominator) on
+  **nodes, ways, and relations**, case-sensitive, OSM key limit 255 chars. The
+  flag triggers when a user has `>= 100` modified/deleted objects in a trailing
+  1-hour window and one tag key covers `> 90%` of them; the binary store is the
+  complete source of truth for per-tag activity analysis. **Limitation:** a
+  create-only mass import is not flagged.
 
 - Filter 3 stages the run's detected node moves (`> 500` m, as `(uid, minute)`
   rows, gated by the sink) under the update stage root.

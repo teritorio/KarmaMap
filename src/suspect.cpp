@@ -1,4 +1,6 @@
 #include "suspect.hpp"
+#include "suspect_store.hpp"
+#include "suspect_tag_store.hpp"
 
 #include <osmium/handler.hpp>
 #include <osmium/io/any_input.hpp>
@@ -799,6 +801,180 @@ std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_cell_days(
                     throw std::runtime_error("Cell spread minute day out of uint16 range");
                 }
                 days[{uid, static_cast<uint16_t>(day)}] = kFlagFilter4;
+            }
+        }
+    }
+    return days;
+}
+
+// ---------------------------------------------------------------------------
+// Filter 5: tag coverage flag
+// ---------------------------------------------------------------------------
+
+TagCoverageAccumulator::TagCoverageAccumulator() = default;
+
+void TagCoverageAccumulator::evict(uint32_t minute) {
+    while (!object_deque_.empty() && object_deque_.front().first + kHourSpanMinutes <= minute) {
+        object_total_ -= object_deque_.front().second;
+        object_deque_.pop_front();
+    }
+    while (!tag_deque_.empty() && std::get<0>(tag_deque_.front()) + kHourSpanMinutes <= minute) {
+        const auto& front = tag_deque_.front();
+        const std::string& key = std::get<1>(front);
+        uint32_t count = std::get<2>(front);
+        auto it = key_counts_.find(key);
+        if (it != key_counts_.end()) {
+            if (it->second <= count) {
+                key_counts_.erase(it);
+            } else {
+                it->second -= count;
+            }
+        }
+        tag_deque_.pop_front();
+    }
+}
+
+void TagCoverageAccumulator::add_tag(uint32_t minute, std::string_view tag_key, uint32_t count) {
+    tag_deque_.emplace_back(minute, std::string(tag_key), count);
+    key_counts_[std::string(tag_key)] += count;
+}
+
+void TagCoverageAccumulator::add_object(uint32_t minute, uint32_t count) {
+    object_deque_.emplace_back(minute, count);
+    object_total_ += count;
+}
+
+TagCoverageRow TagCoverageAccumulator::evaluate(uint32_t minute) const {
+    uint32_t top_key_count = 0;
+    for (const auto& [key, count] : key_counts_) {
+        if (count > top_key_count) top_key_count = count;
+    }
+    double coverage = object_total_ > 0 ? static_cast<double>(top_key_count) / object_total_ : 0.0;
+    uint8_t flagged = 0;
+    if (object_total_ >= kFilter5MinObjects && coverage > kFilter5TagCoverage) {
+        flagged = kFlagFilter5;
+    }
+    return {minute, static_cast<uint32_t>(object_total_), top_key_count, coverage, flagged};
+}
+
+std::vector<TagCoverageRow> tag_coverages(
+    const std::vector<std::tuple<uint32_t, std::string, uint32_t>>& tag_rows,
+    const std::vector<std::pair<uint32_t, uint32_t>>& object_counts) {
+    std::vector<TagCoverageRow> out;
+    out.reserve(tag_rows.size() + object_counts.size());
+    TagCoverageAccumulator acc;
+    size_t obj_idx = 0;
+    size_t row_idx = 0;
+    while (row_idx < tag_rows.size() || obj_idx < object_counts.size()) {
+        uint32_t m;
+        if (row_idx >= tag_rows.size()) {
+            m = object_counts[obj_idx].first;
+        } else if (obj_idx >= object_counts.size()) {
+            m = std::get<0>(tag_rows[row_idx]);
+        } else {
+            m = std::min(std::get<0>(tag_rows[row_idx]), object_counts[obj_idx].first);
+        }
+        while (obj_idx < object_counts.size() && object_counts[obj_idx].first <= m) {
+            acc.add_object(object_counts[obj_idx].first, object_counts[obj_idx].second);
+            ++obj_idx;
+        }
+        while (row_idx < tag_rows.size() && std::get<0>(tag_rows[row_idx]) == m) {
+            acc.add_tag(std::get<0>(tag_rows[row_idx]), std::get<1>(tag_rows[row_idx]),
+                        std::get<2>(tag_rows[row_idx]));
+            ++row_idx;
+        }
+        acc.evict(m);
+        out.push_back(acc.evaluate(m));
+    }
+    return out;
+}
+
+std::vector<CellSpreadRow> cell_spreads(
+    const std::vector<CellCountRow>& rows,
+    const std::vector<std::pair<uint32_t, uint32_t>>& object_counts,
+    double cell_area_km2) {
+    std::vector<CellSpreadRow> out;
+    out.reserve(rows.size() + object_counts.size());
+    CellSpreadAccumulator acc(cell_area_km2);
+    size_t obj_idx = 0;
+    size_t row_idx = 0;
+    while (row_idx < rows.size() || obj_idx < object_counts.size()) {
+        uint32_t m;
+        if (row_idx >= rows.size()) {
+            m = object_counts[obj_idx].first;
+        } else if (obj_idx >= object_counts.size()) {
+            m = rows[row_idx].minute;
+        } else {
+            m = std::min(rows[row_idx].minute, object_counts[obj_idx].first);
+        }
+        // Feed every object row through minute m, then every cell row of minute
+        // m, so the window state read below covers both through m inclusive.
+        while (obj_idx < object_counts.size() && object_counts[obj_idx].first <= m) {
+            acc.add_object(object_counts[obj_idx].first, object_counts[obj_idx].second);
+            ++obj_idx;
+        }
+        while (row_idx < rows.size() && rows[row_idx].minute == m) {
+            acc.add_cell(rows[row_idx].minute, rows[row_idx].h3_cell, rows[row_idx].modified_deleted);
+            ++row_idx;
+        }
+        // Evict after the adds, so a row admitted during this step that predates
+        // the window is dropped before the window state is read.
+        acc.evict(m);
+        out.push_back(acc.evaluate(m));
+    }
+    return out;
+}
+
+std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_tag_days(
+    const std::string& tags_path, const std::string& minutes_path) {
+    std::map<std::pair<int64_t, uint16_t>, uint8_t> days;
+    if (!std::filesystem::exists(tags_path) || !std::filesystem::exists(minutes_path)) {
+        return days;
+    }
+    suspect_tag_store::Reader tag_reader(tags_path);
+    suspect_store::Reader minute_reader(minutes_path);
+
+    // Both stores are sorted by (uid, minute, ...), walk them in lockstep.
+    // A uid must appear in BOTH stores to be evaluated. If missing from either,
+    // it cannot produce a Filter 5 flag and is skipped.
+    size_t tag_i = 0, minute_i = 0;
+    while (tag_i < tag_reader.size() && minute_i < minute_reader.size()) {
+        int64_t tag_uid = tag_reader.uid_at(tag_i);
+        int64_t minute_uid = minute_reader.uid_at(minute_i);
+        if (tag_uid < minute_uid) {
+            while (tag_i < tag_reader.size() && tag_reader.uid_at(tag_i) == tag_uid) {
+                ++tag_i;
+            }
+            continue;
+        }
+        if (minute_uid < tag_uid) {
+            while (minute_i < minute_reader.size() && minute_reader.uid_at(minute_i) == minute_uid) {
+                ++minute_i;
+            }
+            continue;
+        }
+        // Same uid: collect all tag rows and minute rows for this uid.
+        int64_t uid = tag_uid;
+        std::vector<std::tuple<uint32_t, std::string, uint32_t>> tag_rows;
+        std::vector<std::pair<uint32_t, uint32_t>> obj_rows;
+        while (tag_i < tag_reader.size() && tag_reader.uid_at(tag_i) == uid) {
+            tag_rows.emplace_back(tag_reader.minute_at(tag_i),
+                                  tag_reader.tag_key_at(tag_i),
+                                  tag_reader.count_at(tag_i));
+            ++tag_i;
+        }
+        while (minute_i < minute_reader.size() && minute_reader.uid_at(minute_i) == uid) {
+            obj_rows.emplace_back(minute_reader.minute_at(minute_i), minute_reader.count_at(minute_i));
+            ++minute_i;
+        }
+        auto spreads = tag_coverages(tag_rows, obj_rows);
+        for (const auto& s : spreads) {
+            if (s.flagged) {
+                int64_t day = static_cast<int64_t>(s.minute) / 1440;
+                if (day > h3_utils::kMaxUint16Day) {
+                    throw std::runtime_error("Tag coverage minute day out of uint16 range");
+                }
+                days[{uid, static_cast<uint16_t>(day)}] = kFlagFilter5;
             }
         }
     }
