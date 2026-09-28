@@ -1,8 +1,9 @@
 #pragma once
 
 // Suspect history following the OSMPatrol filters of Neis, Goetz & Zipf
-// (2012) — see docs/osmpatrol-neis-2012.md. All three filters collapse into
-// the per-day `suspect_flag` bits field of users_history.parquet:
+// (2012) — see docs/osmpatrol-neis-2012.md — plus one local extension.
+// All four filters collapse into the per-day `suspect_flag` bits field of
+// users_history.parquet:
 //
 //   bit 0 (kFlagFilter2)  a day minute's trailing 60-minute modified+deleted
 //                         span exceeds kFilter2Threshold (paper: "modified
@@ -16,6 +17,11 @@
 //                         update finalize newly writes (0 on import).
 //                         "New users" are covered implicitly: a contributor
 //                         who created nothing ranks 0.
+//   bit 3 (kFlagFilter4)  a local extension, not from the paper: a 60-minute
+//                         window holds at least kFilter4MinCount modified+
+//                         deleted objects touching at least kFilter4MinCells
+//                         distinct H3 cells, whose combined cell area reaches
+//                         kFilter4SpreadKm2 km².
 //
 //   suspect_minutes.bin per-(uid, minute) count of modified+deleted objects
 //                       over the whole update period, persisted as a binary
@@ -24,18 +30,29 @@
 //                       summed per (uid, minute), exactly once. It is the
 //                       source of truth behind the bit-0 flag: flagged_days()
 //                       reads it and the users-history update finalize
-//                       writes its bits into users_history.parquet.
+//                       writes its bits into users_history.parquet. It is also
+//                       the object-count gate for bit 3.
+//
+//   suspect_cells.bin  per-(uid, minute, h3_cell) count of modified+deleted
+//                       objects over the whole update period
+//                       (suspect_cell_store.hpp), written by the same staging
+//                       pass that writes suspect_minutes.bin. This is the
+//                       distinct-cell input for bit 3. Ways count once per
+//                       distinct cell their nodes fall in; relations are
+//                       skipped. The store header pins the H3 resolution it
+//                       was written at and is validated on read.
 //
 // Buckets are UTC minutes since the epoch. A minute's trailing 60-minute span
 // is the sum of its modified_deleted plus the previous 59 minutes'. Folding is
 // idempotent: the store header carries the applied replication sequence, and
 // fold_minute_counts() skips a sequence that is already folded.
 //
-// Filters 2 and 3 are loaded at ingest: flagged_days() recomputes the
-// whole-history bit-0 set from the persisted store and the finalize ORs it
+// Filters 2, 3 and 4 are loaded at ingest: flagged_days() recomputes the
+// whole-history bit-0 set from the persisted store, flagged_cell_days() the
+// bit-3 set from the two stores, and the finalize ORs them
 // with the carried base bits, so a day's flag is monotonic (an update rerun
 // re-setting an already-set bit is harmless; no move store is kept — every
-// modified node's distance is thresholded and discarded). Both only cover the
+// modified node's distance is thresholded and discarded). They only cover the
 // period after the recorded replication sequence (the diffs applied by update
 // runs); import writes them as 0.
 //
@@ -58,12 +75,19 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+// Forward declaration: run_scan_diff_cells takes a reference to NodeState
+// to resolve way node cells. update.hpp includes this header, so we cannot
+// include it here (would cycle). NodeState is defined in ::update_pass.
+namespace update_pass { class NodeState; }
 
 namespace suspect {
 
@@ -83,10 +107,17 @@ inline constexpr uint8_t kFilter1RankingThreshold = 5;
 inline constexpr uint8_t kFlagFilter2 = 0x01;
 inline constexpr uint8_t kFlagFilter3 = 0x02;
 inline constexpr uint8_t kFlagFilter1 = 0x04;
+// bit 3 (kFlagFilter4): distinct H3 cells in trailing 1h exceed a surface-area budget.
+// Not from the original OSMPatrol paper; a local extension.
 inline constexpr uint8_t kFlagFilter4 = 0x08;
 
 // Trailing window width in minutes (inclusive of the current minute).
 inline constexpr uint32_t kHourSpanMinutes = 60;
+
+// Filter 4 thresholds.
+inline constexpr uint32_t kFilter4MinCount  = 20;     // true edits in the 60-minute window
+inline constexpr uint32_t kFilter4MinCells  = 3;      // distinct cells in the window
+inline constexpr double   kFilter4SpreadKm2 = 20.0;   // area budget (distinct_cells * cell_area)
 
 struct UserMinuteKey {
     int64_t uid;
@@ -206,6 +237,101 @@ public:
 private:
     std::unordered_map<UserMinuteCellKey, UserMinuteCellEntry, UserMinuteCellKeyHash> cells_;
 };
+
+// --- Filter 4: cell spread flag ---
+
+struct CellCountRow {
+    uint32_t minute;
+    uint64_t h3_cell;
+    uint32_t modified_deleted;
+};
+
+struct CellSpreadRow {
+    uint32_t minute;
+    uint32_t object_count;
+    uint32_t distinct_cells;
+    double spread_km2;
+    uint8_t flagged;
+};
+
+// Sliding-window evaluator for one uid. Feeds cell rows (minute, cell, count)
+// and object rows (minute, count) in ascending minute order. The window is the
+// trailing kHourSpanMinutes minutes inclusive of the current minute, matching
+// the rule of Filter 2's hour_spans. Memory is bounded by the window
+// (~60 min) rather than by the number of rows fed.
+//
+// Order of operations is load-bearing: add_cell()/add_object() only append, so
+// a caller that feeds rows from before the current minute and then calls
+// evict() will have those rows counted. Call evaluate() for a minute m only
+// after feeding every row through m and calling evict(m) exactly once, which
+// leaves the window holding exactly the rows in (m - kHourSpanMinutes, m].
+class CellSpreadAccumulator {
+public:
+    explicit CellSpreadAccumulator(double cell_area_km2);
+
+    void add_cell(uint32_t minute, uint64_t cell, uint32_t count);
+    void add_object(uint32_t minute, uint32_t count);
+    void evict(uint32_t minute);
+    CellSpreadRow evaluate(uint32_t minute) const;
+
+private:
+    double cell_area_km2_;
+    uint64_t object_total_ = 0;
+    std::deque<std::pair<uint32_t, uint32_t>> object_deque_;  // (minute, count)
+    std::deque<std::tuple<uint32_t, uint64_t, uint32_t>> cell_deque_;  // (minute, cell, count)
+    std::unordered_map<uint64_t, uint32_t> cell_counts_;
+};
+
+// Thin wrapper around CellSpreadAccumulator for the vector-based API.
+// Mirrors the shape of hour_spans: one CellSpreadRow per minute of the union
+// of the two input streams, in ascending order. Both streams must be sorted
+// ascending and non-decreasing in minute. Evaluating on the union rather than
+// on the cell rows alone matters because the two streams are populated
+// differently: relations, deleted nodes with no location, and ways whose refs
+// all resolve to cell 0 reach the minute store but never the cell store, so a
+// user can cross the object-count gate on a minute that carries no cell row.
+inline std::vector<CellSpreadRow> cell_spreads(
+    const std::vector<CellCountRow>& rows,
+    const std::vector<std::pair<uint32_t, uint32_t>>& object_counts,
+    double cell_area_km2) {
+    std::vector<CellSpreadRow> out;
+    out.reserve(rows.size() + object_counts.size());
+    CellSpreadAccumulator acc(cell_area_km2);
+    size_t obj_idx = 0;
+    size_t row_idx = 0;
+    while (row_idx < rows.size() || obj_idx < object_counts.size()) {
+        uint32_t m;
+        if (row_idx >= rows.size()) {
+            m = object_counts[obj_idx].first;
+        } else if (obj_idx >= object_counts.size()) {
+            m = rows[row_idx].minute;
+        } else {
+            m = std::min(rows[row_idx].minute, object_counts[obj_idx].first);
+        }
+        // Feed every object row through minute m, then every cell row of minute
+        // m, so the window state read below covers both through m inclusive.
+        while (obj_idx < object_counts.size() && object_counts[obj_idx].first <= m) {
+            acc.add_object(object_counts[obj_idx].first, object_counts[obj_idx].second);
+            ++obj_idx;
+        }
+        while (row_idx < rows.size() && rows[row_idx].minute == m) {
+            acc.add_cell(rows[row_idx].minute, rows[row_idx].h3_cell, rows[row_idx].modified_deleted);
+            ++row_idx;
+        }
+        // Evict after the adds, so a row admitted during this step that predates
+        // the window is dropped before the window state is read.
+        acc.evict(m);
+        out.push_back(acc.evaluate(m));
+    }
+    return out;
+}
+
+// Reads the persisted cell store and the minute store, computes the Filter 4
+// flag per (uid, day) and returns a map keyed by (uid, day) with value
+// kFlagFilter4 (or 0 if not flagged). The minute store provides the true
+// per-(uid, minute) modified+deleted count for the >= kFilter4MinCount gate.
+std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_cell_days(
+    const std::string& cells_path, const std::string& minutes_path, int h3_resolution);
 
 // One merged (uid, minute) row plus its derived window. hour_span sums
 // modified_deleted over the trailing kHourSpanMinutes minutes ending at
@@ -327,8 +453,10 @@ std::map<std::pair<int64_t, uint16_t>, MoveDay> flagged_move_days(
 // Scans one replication diff (.osc.gz change file) into a fresh stage_dir,
 // counting modified+deleted objects per (uid, minute, h3_cell).
 // Nodes are counted in their H3 cell. Ways are counted once per distinct
-// cell of their nodes. Relations are skipped.
-void run_scan_diff_cells(const std::string& diff_path, const std::string& stage_dir, int h3_resolution);
+// cell of their nodes, resolved through NodeState (post() for visible ways,
+// pre() for deleted ways). Relations are skipped.
+void run_scan_diff_cells(const std::string& diff_path, const std::string& stage_dir,
+                         int h3_resolution, const ::update_pass::NodeState& node_state);
 
 // Folds one update run's staged per-(uid, minute, h3_cell) count buckets under
 // `cells_root` (one parquet file per diff flush) into the persisted binary

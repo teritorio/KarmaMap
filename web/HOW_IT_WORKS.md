@@ -194,17 +194,21 @@ and the page says so.
 | **User** / **uid** | The account and its numeric id. |
 | **Changes** | Everything that user changed that day, nodes, ways and relations together. A burst day shows a large number here. |
 | **Edit burst** | *Yes* when filter 2 fired. |
+| **Spatial spread** | *Yes* when filter 4 fired. |
 | **Far moves** | How many times that day the user dragged a node more than 500 m. |
 
 `Ranking at day` and `Far moves` are recorded once, the first time a day is
 flagged, and then kept as they were — they are not recomputed as the user's
 ranking grows or as later edits arrive. A value of `0` far moves therefore
 does not always mean none happened; it can also mean the day was first
-flagged by another filter.
+flagged by another filter. `Edit burst` and `Spatial spread` carry no stored
+value: each is just a read of the day's own flag bits, so they always match
+the filter that fired.
 
 ### The filters
 
 The three filters are the ones proposed in the paper this project follows.
+A fourth filter is a local extension, **not from the paper**.
 A filter is only an automatic rule that marks days for review: it forms no
 judgement about the edit itself, and nothing is hidden, blocked or reverted
 because of it.
@@ -214,6 +218,7 @@ because of it.
 | 1. Low ranking | A new contributor, or one with a ranking below 5%, has their edits shown for review | No column. A marker on new days only |
 | 2. Edit burst | More than 500 objects modified or deleted within one hour | `Edit burst = Yes` |
 | 3. Far move | A node dragged more than 500 m | A raised `Far moves` count |
+| 4. Spatial spread | Edits in 1h span ≥3 H3 cells whose combined area ≥ 20 km² | `Spatial spread = Yes` |
 
 Two details about how they are applied:
 
@@ -221,8 +226,8 @@ Two details about how they are applied:
   contributor edits *from now on*. As someone builds a history their
   ranking rises, and the days already marked stay marked — but the past is
   never re-examined because a ranking later dropped.
-- **Filters 2 and 3 follow bursts and mistakes, not people.** Both fire on
-  activity, so a single flagged day says nothing about a contributor's
+- **Filters 2, 3 and 4 follow bursts and mistakes, not people.** All three
+  fire on activity, so a single flagged day says nothing about a contributor's
   usual behaviour; the whole timeline on the users page is the context.
 
 ## Reference

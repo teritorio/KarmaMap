@@ -104,4 +104,21 @@ inline uint64_t unpack_cell(uint64_t packed, int resolution) {
            (packed << 6) | 0x3Full;
 }
 
+// Average hexagon area in km² at the given resolution. Used by Filter 4 to
+// turn a distinct-cell count into a surface area. The area budget is expressed
+// in km² so the same constant applies across resolutions, though the
+// corresponding number of distinct cells still scales with cell size.
+inline double average_hexagon_area_km2(int resolution) {
+    if (resolution < 0 || resolution > kMaxPackedCellResolution) {
+        throw std::runtime_error("H3 resolution must be 0..13 for area lookup");
+    }
+    double area_km2 = 0.0;
+    H3Error err = getHexagonAreaAvgKm2(resolution, &area_km2);
+    if (err != E_SUCCESS) {
+        throw std::runtime_error("getHexagonAreaAvgKm2 failed for resolution " +
+                                 std::to_string(resolution));
+    }
+    return area_km2;
+}
+
 }  // namespace h3_utils

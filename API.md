@@ -10,12 +10,13 @@ The two access parts:
   count)` change counts (node + way changes merged per cell per day).
 - **Users** — `users_history.parquet` and
   `user_ranking.parquet`: per-user, per-day activity and ranking.
-- **Suspect** — `suspect_minutes.bin` (binary, not Parquet): the
-  update-only OSMPatrol filter-2 source; filter-3 fold stages are transient.
-  The per-day flags (bits for filters 2 and 3) land in
-  `users_history.parquet`, and `suspect.parquet` (update-only) re-exports
-  the flagged days with their daily change count, far-move count and frozen
-  ranking.
+- **Suspect** — `suspect_minutes.bin` and `suspect_cells.bin` (binary, not
+  Parquet): the update-only OSMPatrol filter-2 and filter-4 sources;
+  filter-3 fold stages are transient. The per-day flags (bits 0=filter 2,
+  1=filter 3, 2=filter 1, 3=filter 4) land in `users_history.parquet`, and
+  `suspect.parquet` (update-only) re-exports the flagged days with their daily
+  change count, far-move count and frozen ranking. Filter 4 is a local
+  extension, not from the original OSMPatrol paper.
 
 ## Output layout
 
@@ -34,7 +35,8 @@ output-dir/
 # Next to the node caches (output-dir's parent by default):
 node_positions.cache      # full-history node cache (import/prepare-update)
 node_positions.cache.last  # incremental cache (prepare-update/update)
-suspect_minutes.bin       # update-only; binary block store
+suspect_minutes.bin       # update-only; binary block store (filter 2)
+suspect_cells.bin         # update-only; binary block store (filter 4)
 diffs/                    # update-only; in-flight diff download cache
 ```
 
@@ -146,7 +148,7 @@ are two non-partitioned single files.
   | `uid` | `int64` | OSM user id |
   | `change_date` | `uint16` | UTC day (same encoding as `changes/`) |
   | `count` | `uint32` | Total activity that day: the six node/way change counters plus the three relation counters (created, modified, deleted) |
-  | `suspect_flag` | `uint8` | Per-day OSMPatrol flag: bit 0 (`0x01`) = any of the day's minutes had > 500 modified+deleted objects within a one-hour window; bit 1 (`0x02`) = a modified node moved more than 500 m that day; bit 2 (`0x04`) = the day's user has ranking < 5% (filter 1, "new users or low ranking"; a contributor who created nothing ranks 0). All bits are monotonic and forward-only: import writes 0; bits 0/1 are ORed by every update finalize from `suspect_minutes.bin` plus the run's move-flagged days, and bit 2 is set only on the rows that update run newly writes for a below-threshold contributor. Base rows are carried unchanged, so once set a bit persists and a ranking drop never re-flags the past |
+  | `suspect_flag` | `uint8` | Per-day OSMPatrol flag: bit 0 (`0x01`) = any of the day's minutes had > 500 modified+deleted objects within a one-hour window; bit 1 (`0x02`) = a modified node moved more than 500 m that day; bit 2 (`0x04`) = the day's user has ranking < 5% (filter 1, "new users or low ranking"; a contributor who created nothing ranks 0); bit 3 (`0x08`) = distinct H3 cells touched in a trailing 1h window exceed a surface-area budget (filter 4, local extension, not from the paper). All bits are monotonic and forward-only: import writes 0; bits 0/1/3 are ORed by every update finalize from `suspect_minutes.bin`/`suspect_cells.bin` plus the run's move-flagged days, and bit 2 is set only on the rows that update run newly writes for a below-threshold contributor. Base rows are carried unchanged, so once set a bit persists and a ranking drop never re-flags the past |
 
   The per-day `tag_*` counters are aggregated during finalize and only their
   per-user sums are written (in `user_ranking.parquet`), so they never
@@ -222,12 +224,14 @@ LIMIT 20;
 
 The suspect outputs are update-only: they cover the period after the
 recorded replication sequence and are absent after a pure import. They
-implement the OSMPatrol filters 2 (`> 500 modified/deleted in one hour`) and 3
-(node moved beyond 500 m); filter 1 (new users / ranking < 5%) is a
-forward-only bit (bit 2 of `suspect_flag`) that the users-history update
-finalize sets on the rows it newly writes. Filters 2/3 fold into the per-day
-`suspect_flag` bits of `users_history.parquet`; filter 2 draws on one binary
-store and filter 3's move staging is transient.
+implement the OSMPatrol filters 2 (`> 500 modified/deleted in one hour`), 3
+(node moved beyond 500 m), and a local extension filter 4 (spatial spread of
+H3 cells in a trailing 1h window, **not from the original OSMPatrol paper**).
+Filter 1 (new users / ranking < 5%) is a forward-only bit (bit 2 of
+`suspect_flag`) that the users-history update finalize sets on the rows it
+newly writes. Filters 2/3/4 fold into the per-day `suspect_flag` bits of
+`users_history.parquet`; filter 2 draws on one binary store, filter 3's move
+staging is transient, filter 4 draws on its own binary store.
 
 - `suspect_minutes.bin` — the **binary** per-`(uid, minute)` modified+
   deleted counts behind the filter-2 flag (bit 0 of `suspect_flag`); it is a
@@ -240,6 +244,19 @@ store and filter 3's move staging is transient.
   `minute`/`count` big-endian, all strictly ascending and unique per
   `(uid, minute)`. Each finalize run merges its staged buckets into this store
   and stamps it, so it is the flag's complete source of truth.
+
+- `suspect_cells.bin` — the **binary** per-`(uid, minute, h3_cell)` modified+
+  deleted counts behind the filter-4 flag (bit 3 of `suspect_flag`); same
+  block format as `suspect_minutes.bin` but 24-byte records
+  `(uid, minute, h3_cell, count)` and a 40-byte header with magic `VCEL`,
+  version, record size, record/block counts, H3 resolution (0..13), and the
+  applied-sequence stamp. The H3 resolution in the header is validated on read
+  so a store built at one resolution cannot be misread at another. Each
+  finalize run merges its staged buckets into this store. The filter-4 flag
+  triggers when a user has `>= 20` edits in a trailing 60-minute window (true
+  edit count from `suspect_minutes.bin`, so a long way counts once), `>= 3`
+  distinct H3 cells in that window, and the total surface area
+  (`distinct_cells * average_hexagon_area_km2(resolution)`) `>= 20 km²`.
 
 - Filter 3 stages the run's detected node moves (`> 500` m, as `(uid, minute)`
   rows, gated by the sink) under the update stage root.

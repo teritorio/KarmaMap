@@ -339,7 +339,7 @@ std::optional<replication_state::State> run_update_mode(
         suspect::run_scan_diff(
             diff_path, suspect_stage_root + "/counts/seq_" + std::to_string(seq));
         suspect::run_scan_diff_cells(
-            diff_path, suspect_stage_root + "/cells/seq_" + std::to_string(seq), opts.h3_resolution);
+            diff_path, suspect_stage_root + "/cells/seq_" + std::to_string(seq), opts.h3_resolution, node_state);
         move_sink.finish_seq();
         // `diff_path` is provably applied after every pass over it succeeded;
         // a throw anywhere above leaves the file for fetch_diff to reuse on a
@@ -366,12 +366,15 @@ std::optional<replication_state::State> run_update_mode(
     suspect::fold_cell_counts(suspect_stage_root + "/cells", cells_path, applied, opts.h3_resolution);
     const std::map<std::pair<int64_t, uint16_t>, suspect::MoveDay> move_flags =
         suspect::flagged_move_days(suspect_stage_root);
+    // Filter 4: compute spatial spread flags from the cell and minute stores.
+    const std::map<std::pair<int64_t, uint16_t>, uint8_t> filter4_days =
+        suspect::flagged_cell_days(cells_path, minutes_path, opts.h3_resolution);
 
     users_history::run_update_finalize(history_stage_root,
                                        opts.output_dir + "/users_history.parquet",
                                        opts.users_history_group_rows,
                                        opts.ranking_group_rows, minutes_path,
-                                       move_flags);
+                                       move_flags, filter4_days);
 
     // Provenance records the applied state: the sequence is the last applied
     // diff (indexed by "update N"), the timestamp is the fetched state.txt's

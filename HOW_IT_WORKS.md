@@ -268,6 +268,13 @@ who later climbs above the threshold keeps the bit on the days already
 flagged. The update finalize derives it from the same `ranking::Result` it
 writes to `user_ranking.parquet`; a contributor who created nothing ranks 0,
 which covers the "new users" half of the screen without a separate rule.
+Bit 3 (`kFlagFilter4`) is a local extension, **not from the original OSMPatrol
+paper**: it flags a day when a user's edits in a trailing 1h window span
+`>= 3` distinct H3 cells whose combined surface area (cell count × the
+resolution's average hexagon area) is `>= 20 km²`, gated on `>= 20` true
+edits in the window (the true edit count comes from `suspect_minutes.bin`,
+so a long way counts as one edit but contributes all its cells to the spread).
+`suspect_cells.bin` is the update-only persistent store behind this flag.
 
 ## Suspect pass
 
@@ -317,6 +324,31 @@ edit-analysis flag. Filter 1 (new users / ranking < 5%) is a `kFlagFilter1`
 bit that the users-history update finalize sets forward-only on the rows it
 newly writes, from the run's recomputed ranking, instead of a diff-based
 screen; base rows are never re-flagged, so the bit is monotonic.
+
+Filter 4 (local extension, **not from the original OSMPatrol paper**) records
+the spatial spread of H3 cells in a trailing 1h window. The diff scan
+(`suspect::run_scan_diff_cells`) counts modified+deleted objects per
+`(uid, minute, h3_cell)`: nodes in their cell; ways once per distinct cell of
+their nodes (resolved through `NodeState` so the geometry is correct even for
+deleted ways); relations skipped. The per-diff buckets are staged under
+`suspect_update_stage/cells/seq_<n>/`, folded by `fold_cell_counts` into the
+persisted binary block store `suspect_cells.bin` (same block format as
+`suspect_minutes.bin` but 24-byte records keyed by `(uid, minute, h3_cell)`,
+with an H3 resolution stamp in the header). `suspect::flagged_cell_days`
+reads both `suspect_cells.bin` and `suspect_minutes.bin` in lockstep: for each
+uid, it slides a 60-minute window over both streams simultaneously — the cell
+stream gives the distinct cell count in the window, the minute stream gives the
+true edit count for the gate — and flags the day when the window has `>= 20`
+edits, `>= 3` distinct cells, and the surface area `distinct_cells *
+cell_area_km2(resolution) >= 20 km²`. The flag lands in bit 3 of
+`suspect_flag` and is monotonic like bits 0/1. Import writes it as 0 (no cell
+buckets exist for the full-history scan). Expressing the budget as an area means
+the constant `20` stays in km² when `--h3-resolution` changes, so it does not
+need retuning; the corresponding *number* of distinct cells still scales with
+cell size (about 190 cells at the default resolution 9, 1 at resolution 6), and
+the metric counts cells touched rather than measuring the distance between them.
+Since `distinct_cells * cell_area` is monotone in `distinct_cells`, exactly one
+of the `kFilter4MinCells` and area gates binds at any given resolution.
 
 ## Web viewer queries
 

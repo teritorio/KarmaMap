@@ -27,6 +27,7 @@
 #include "h3_utils.hpp"
 #include "suspect_store.hpp"
 #include "suspect_cell_store.hpp"
+#include "update.hpp"
 
 namespace suspect {
 
@@ -383,8 +384,10 @@ namespace {
 
 class SuspectCellScanHandler : public osmium::handler::Handler {
 public:
-    explicit SuspectCellScanHandler(std::string stage_dir, int h3_resolution)
-        : stage_dir_(std::move(stage_dir)), h3_resolution_(h3_resolution) {}
+    explicit SuspectCellScanHandler(std::string stage_dir, int h3_resolution,
+                                    const ::update_pass::NodeState& node_state)
+        : stage_dir_(std::move(stage_dir)), h3_resolution_(h3_resolution),
+          node_state_(node_state) {}
 
     void node(const osmium::Node& node) {
         if (!node.location().valid()) return;
@@ -394,12 +397,13 @@ public:
     }
 
     void way(const osmium::Way& way) {
-        // Collect distinct H3 cells of way's nodes
+        // Collect distinct H3 cells of way's nodes via NodeState.
+        // Visible ways use post() (new geometry), deleted ways use pre() (last known).
         std::vector<uint64_t> cells;
         cells.reserve(way.nodes().size());
         for (const auto& wn : way.nodes()) {
-            if (!wn.location().valid()) continue;
-            uint64_t cell = h3_utils::location_to_cell(wn.location().lat(), wn.location().lon(), h3_resolution_);
+            uint64_t cell = way.visible() ? node_state_.post(wn.ref()) : node_state_.pre(wn.ref());
+            if (cell == 0) continue;
             cells.push_back(cell);
         }
         // Deduplicate: way counts once per cell (sort+unique is O(n log n) vs O(n^2) for find)
@@ -458,6 +462,7 @@ private:
 
     std::string stage_dir_;
     int h3_resolution_;
+    const ::update_pass::NodeState& node_state_;
     MinuteCellStats stats_;
 
     // INSTR
@@ -469,7 +474,8 @@ private:
 
 }  // namespace
 
-void run_scan_diff_cells(const std::string& diff_path, const std::string& stage_dir, int h3_resolution) {
+void run_scan_diff_cells(const std::string& diff_path, const std::string& stage_dir,
+                         int h3_resolution, const ::update_pass::NodeState& node_state) {
     std::filesystem::remove_all(stage_dir);  // a rerun never reuses stale stage files
     std::filesystem::create_directories(stage_dir);
 
@@ -478,7 +484,7 @@ void run_scan_diff_cells(const std::string& diff_path, const std::string& stage_
                               osmium::osm_entity_bits::node | osmium::osm_entity_bits::way |
                                   osmium::osm_entity_bits::relation);
 
-    SuspectCellScanHandler handler(stage_dir, h3_resolution);
+    SuspectCellScanHandler handler(stage_dir, h3_resolution, node_state);
     while (osmium::memory::Buffer buf = reader.read()) {
         osmium::apply(buf, handler);
     }
@@ -688,6 +694,114 @@ std::map<std::pair<int64_t, uint16_t>, MoveDay> flagged_move_days(
     // The run's staging is now folded into the day flags; the counts/ sub-tree
     // was already consumed by fold_minute_counts, so remove the whole root.
     std::filesystem::remove_all(stage_root);
+    return days;
+}
+
+// ---------------------------------------------------------------------------
+// Filter 4: cell spread flag
+// ---------------------------------------------------------------------------
+
+CellSpreadAccumulator::CellSpreadAccumulator(double cell_area_km2)
+    : cell_area_km2_(cell_area_km2) {}
+
+void CellSpreadAccumulator::evict(uint32_t minute) {
+    // Evict object rows older than the window
+    while (!object_deque_.empty() && object_deque_.front().first + kHourSpanMinutes <= minute) {
+        object_total_ -= object_deque_.front().second;
+        object_deque_.pop_front();
+    }
+    // Evict cell rows older than the window
+    while (!cell_deque_.empty() && std::get<0>(cell_deque_.front()) + kHourSpanMinutes <= minute) {
+        const auto& front = cell_deque_.front();
+        uint64_t cell = std::get<1>(front);
+        uint32_t count = std::get<2>(front);
+        auto it = cell_counts_.find(cell);
+        if (it != cell_counts_.end()) {
+            if (it->second <= count) {
+                cell_counts_.erase(it);
+            } else {
+                it->second -= count;
+            }
+        }
+        cell_deque_.pop_front();
+    }
+}
+
+void CellSpreadAccumulator::add_cell(uint32_t minute, uint64_t cell, uint32_t count) {
+    cell_deque_.emplace_back(minute, cell, count);
+    cell_counts_[cell] += count;
+}
+
+void CellSpreadAccumulator::add_object(uint32_t minute, uint32_t count) {
+    object_deque_.emplace_back(minute, count);
+    object_total_ += count;
+}
+
+CellSpreadRow CellSpreadAccumulator::evaluate(uint32_t minute) const {
+    uint32_t distinct = static_cast<uint32_t>(cell_counts_.size());
+    double spread = distinct * cell_area_km2_;
+    uint8_t flagged = (object_total_ >= kFilter4MinCount &&
+                       distinct >= kFilter4MinCells &&
+                       spread >= kFilter4SpreadKm2) ? kFlagFilter4 : 0;
+    return {minute, static_cast<uint32_t>(object_total_), distinct, spread, flagged};
+}
+
+std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_cell_days(
+    const std::string& cells_path, const std::string& minutes_path, int h3_resolution) {
+    std::map<std::pair<int64_t, uint16_t>, uint8_t> days;
+    if (!std::filesystem::exists(cells_path) || !std::filesystem::exists(minutes_path)) {
+        return days;
+    }
+    suspect_cell_store::Reader cell_reader(cells_path, h3_resolution);
+    suspect_store::Reader minute_reader(minutes_path);
+
+    // Both stores are sorted by (uid, minute, ...), so we can walk them in lockstep.
+    // A uid must appear in BOTH stores to be evaluated: the cell store provides the
+    // distinct H3 cell count for the spread metric, and the minute store provides
+    // the true edit count for the gate. If a uid is missing from either store,
+    // it cannot produce a Filter 4 flag and is skipped.
+    size_t cell_i = 0, minute_i = 0;
+    while (cell_i < cell_reader.size() && minute_i < minute_reader.size()) {
+        int64_t cell_uid = cell_reader.uid_at(cell_i);
+        int64_t minute_uid = minute_reader.uid_at(minute_i);
+        if (cell_uid < minute_uid) {
+            // Skip this uid's cell rows (no minute data to pair with)
+            while (cell_i < cell_reader.size() && cell_reader.uid_at(cell_i) == cell_uid) {
+                ++cell_i;
+            }
+            continue;
+        }
+        if (minute_uid < cell_uid) {
+            // Skip this uid's minute rows (no cell data)
+            while (minute_i < minute_reader.size() && minute_reader.uid_at(minute_i) == minute_uid) {
+                ++minute_i;
+            }
+            continue;
+        }
+        // Same uid: collect all cell rows and minute rows for this uid.
+        int64_t uid = cell_uid;
+        std::vector<CellCountRow> cell_rows;
+        std::vector<std::pair<uint32_t, uint32_t>> obj_rows;
+        while (cell_i < cell_reader.size() && cell_reader.uid_at(cell_i) == uid) {
+            cell_rows.push_back({cell_reader.minute_at(cell_i), cell_reader.cell_at(cell_i), cell_reader.count_at(cell_i)});
+            ++cell_i;
+        }
+        while (minute_i < minute_reader.size() && minute_reader.uid_at(minute_i) == uid) {
+            obj_rows.emplace_back(minute_reader.minute_at(minute_i), minute_reader.count_at(minute_i));
+            ++minute_i;
+        }
+        double cell_area = h3_utils::average_hexagon_area_km2(h3_resolution);
+        auto spreads = cell_spreads(cell_rows, obj_rows, cell_area);
+        for (const auto& s : spreads) {
+            if (s.flagged) {
+                int64_t day = static_cast<int64_t>(s.minute) / 1440;
+                if (day > h3_utils::kMaxUint16Day) {
+                    throw std::runtime_error("Cell spread minute day out of uint16 range");
+                }
+                days[{uid, static_cast<uint16_t>(day)}] = kFlagFilter4;
+            }
+        }
+    }
     return days;
 }
 

@@ -24,16 +24,18 @@ export const TAG_COUNTERS = TOP12_TAGS.map((key) => `tag_${key}`)
 export const ALL_COUNTERS = [...CHANGE_COUNTERS, 'relation_created', ...TAG_COUNTERS]
 
 // Bits of the daily suspect_flag column of users_history.parquet,
-// mirroring src/suspect.hpp. Filter 2/3 are per-day occurrences; filter 1
+// mirroring src/suspect.hpp. Filter 2/3/4 are per-day occurrences; filter 1
 // is forward-only, set on new rows for a below-threshold contributor.
 export const FLAG_FILTER_2 = 0x01
 export const FLAG_FILTER_3 = 0x02
 export const FLAG_FILTER_1 = 0x04
+export const FLAG_FILTER_4 = 0x08
 
 export const FLAG_LABELS = [
   { mask: FLAG_FILTER_2, label: 'Filter 2: >500 modified/deleted in one hour' },
   { mask: FLAG_FILTER_3, label: 'Filter 3: node moved >500 m' },
   { mask: FLAG_FILTER_1, label: 'Filter 1: ranking <5% (set on new edits)' },
+  { mask: FLAG_FILTER_4, label: 'Filter 4: >=20 edits across >=3 cells totaling 20 km\u00b2 in one hour' },
 ]
 
 // OSMPatrol ranking caps (Neis, Goetz & Zipf 2012, §4). The ranking is

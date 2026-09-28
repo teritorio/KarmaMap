@@ -15,9 +15,14 @@
 //                            (kFlagFilter3): a modified node was moved
 //                            > 500 m that day; bit 2 (kFlagFilter1): the day's
 //                            user has ranking below 5% ("new users or low
-//                            ranking"). Bits 0/1 are filled from
-//                            the persisted minute store and the run's move
-//                            stages by the update finalize, 0 on import;
+//                            ranking"); bit 3 (kFlagFilter4): a local
+//                            extension, not from the paper, where a
+//                            60-minute window holds >= 20 modified+deleted
+//                            objects across >= 3 distinct H3 cells whose
+//                            combined area reaches 20 km². Bits 0/1/3 are
+//                            filled from the persisted minute and cell stores
+//                            and the run's move stages by the update
+//                            finalize, 0 on import;
 //                            bit 2 is forward-only, set only on rows the
 //                            update finalize newly writes for a below-threshold
 //                            contributor (also 0 on import), and monotonic:
@@ -287,9 +292,11 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
 // from the persisted minute store at `minutes_path` (suspect::flagged_days),
 // bit 1 (kFlagFilter3) from `move_flags`, the run's (uid, change_date) ->
 // kFlagFilter3 set produced by suspect::flagged_move_days, which the caller
-// must have folded first. All bits are monotonic and forward-only: the
+// must have folded first, and bit 3 (kFlagFilter4) from `filter4_days`, the
+// run's (uid, change_date) -> kFlagFilter4 set produced by
+// suspect::flagged_cell_days. All bits are monotonic and forward-only: the
 // existing file's flags are carried forward unchanged (import writes 0), this
-// run's bit-0/1 sets are ORed in, and bit 2 (kFlagFilter1, low ranking) is
+// run's bit-0/1/3 sets are ORed in, and bit 2 (kFlagFilter1, low ranking) is
 // set only on the run's newly-written rows (keys absent from the base
 // history) whose user's current ranking is below the threshold. A
 // ranking drop never re-flags the base rows and a once-set bit is never
@@ -300,10 +307,14 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
 // change count, the day's far-move count and the ranking frozen at the
 // day's first flag, sorted by (change_date, uid) with change_date descending
 // (newest first)); a pure import never produces it.
+// `filter4_days` is the spatial-spread extension described above and is not
+// part of the original OSMPatrol paper.
 void run_update_finalize(const std::string& stage_root, const std::string& history_path,
                          int64_t users_history_group_rows, int64_t ranking_group_rows,
                          const std::string& minutes_path,
                          const std::map<std::pair<int64_t, uint16_t>, suspect::MoveDay>&
-                             move_flags);
+                             move_flags,
+                         const std::map<std::pair<int64_t, uint16_t>, uint8_t>&
+                             filter4_days = {});
 
 }  // namespace users_history

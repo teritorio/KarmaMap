@@ -22,19 +22,20 @@ ranking scoring follows [Neis, Goetz & Zipf, *ISPRS Int. J. Geo-Inf.*
   merged per cell per day), partitioned by calendar year.
 - `users_history.parquet` and `user_ranking.parquet` — per-user, per-day
   activity and ranking, built by every run; the history file also
-  carries the per-day suspect flags of all three OSMPatrol screens (a
-  `suspect_flag` column).
+  carries the per-day suspect flags (a `suspect_flag` column): bit 0 = filter 2
+  (edit burst > 500/h), bit 1 = filter 3 (node move > 500 m), bit 2 = filter 1
+  (ranking < 5%), bit 3 = filter 4 (spatial spread of H3 cells in 1h window;
+  not from the original OSMPatrol paper).
 - Suspect-screen outputs of every `update` run: `suspect_minutes.bin` (the
-  persisted per-`(uid, minute)` modified+deleted bucket store behind the
-  flag), the bit-coded per-day `suspect_flag` in
-  `users_history.parquet` (bit 0 = filter 2, bit 1 = filter-3 node moves
-  over 500 m, bit 2 = filter 1, a ranking below 5%; filters 2/3 have no
-  persisted node-moves dataset — they survive only as carried day bits,
-  and bit 2 is forward-only too: import writes 0 and updates set it only
-  on the new rows they write for a below-threshold contributor (once set,
-  never removed), and `suspect.parquet` — an update-only re-export of
-  the flagged days carrying each day's total change count, its far-move
-  count and the ranking frozen at the day's first flag.
+  persisted per-`(uid, minute)` modified+deleted bucket store behind filter 2),
+  `suspect_cells.bin` (the persisted per-`(uid, minute, h3_cell)` modified+deleted
+  bucket store behind filter 4), the bit-coded per-day `suspect_flag` in
+  `users_history.parquet` (filters 2/3 have no persisted node-moves dataset —
+  they survive only as carried day bits, and bit 2 is forward-only too: import
+  writes 0 and updates set it only on the new rows they write for a
+  below-threshold contributor — once set, never removed), and `suspect.parquet`
+  — an update-only re-export of the flagged days carrying each day's total
+  change count, its far-move count and the ranking frozen at the day's first flag.
 
 ![Changes H3](changes-h3.webp)
 
