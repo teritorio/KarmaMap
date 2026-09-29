@@ -7,14 +7,19 @@
 import { queryRows } from '../lib/parquet.js'
 
 // The suspect file's full column set (uid, username, change_date,
-// suspect_flag, changes, far_move_count, ranking_at_day).
+// suspect_flag, changes, max_edits_per_hour, peak_spread_km2, changed_keys,
+// far_move_count, max_move_meters, ranking_at_day).
 const SUSPECT_COLUMNS = [
   'uid',
   'username',
   'change_date',
   'suspect_flag',
   'changes',
+  'max_edits_per_hour',
+  'peak_spread_km2',
+  'changed_keys',
   'far_move_count',
+  'max_move_meters',
   'ranking_at_day',
 ]
 

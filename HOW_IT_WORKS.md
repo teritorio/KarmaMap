@@ -197,12 +197,15 @@ and its timestamp once per run.
 
 That merge is by file name and schema: the finalize reads the previous
 `users_history.parquet`, `user_ranking.parquet` (the base of the recomputed
-ranking) and `suspect.parquet` (including its `ranking_at_day` column, the
-base of the carried flag values) as its three bases, and reads all of them
+ranking) and `suspect.parquet` (the `far_move_count`, `max_move_meters` and
+`ranking_at_day` columns, the base of the carried and frozen values) as its
+three bases, and reads all of them
 before it writes the first file of the run, so a base that does not match the
-current schema aborts the update with nothing replaced. An output directory not
-written by this build is therefore not updatable: re-import the snapshot into a
-fresh output directory.
+current schema aborts the update with nothing replaced. Every added column is
+therefore a schema change: an output directory written by an older build is not
+updatable, and re-importing the snapshot into a fresh output directory is the
+migration. An output directory not written by this build is likewise not
+updatable.
 
 The `suspect_minutes.bin` minute store is the one derived file with no schema
 check: a missing store is read as an empty base, so an update against a
@@ -235,15 +238,17 @@ The finalize three-step ordering is load-bearing:
    filter-3 bits; bit 2, the ranking-based filter 1, is forward-only —
    set only on the rows this run newly writes, see the users-history pass
    below). It also writes `suspect.parquet`, one row per flagged day with
-   the day's total change count, its far-move count and the ranking
+   the day's total change count, the peak value each store-derived filter
+   fired on, its far-move count with the largest of them and the ranking
    frozen at the day's first flag.
 3. `suspect::flagged_move_days` folds the staged node moves (> 500 m) into
-   those same per-day bits (filter 3) and a per-day far-move count; its
-   stage is transient and removed, so every finalize is idempotent.
-   `suspect_minutes.bin` likewise folds minutes (filter 2). There is no
-   persisted move dataset beyond the carried `far_move_count` column of
-   `suspect.parquet` — both filters land in `users_history.parquet`'s
-   `suspect_flag` bits and only the flagged days are re-exported.
+   those same per-day bits (filter 3), a per-day far-move count and the
+   largest distance among them; its stage is transient and removed, so
+   every finalize is idempotent. `suspect_minutes.bin` likewise folds
+   minutes (filter 2). There is no persisted move dataset beyond the carried
+   `far_move_count`/`max_move_meters` columns of `suspect.parquet` — both
+   filters land in `users_history.parquet`'s `suspect_flag` bits and only the
+   flagged days are re-exported.
 
 ## Users-history pass
 
@@ -304,14 +309,16 @@ an already-folded sequence (crash between the rename and stage cleanup) is
 skipped.
 
 `suspect::flagged_days` reads the store back into
-`(uid, day) -> flag`: each uid's contiguous minute series is run through
-`hour_spans`, the trailing 60-minute window (the minute's count plus the
-previous 59), and any day holding a minute whose span is strictly above 500
-is flagged (`day = minute / 1440`, so a burst crossing midnight still lands
-on the day of its peak minute). The users-history update finalize merges
-those flags into `users_history.parquet`'s `suspect_flag` column for the
-whole history. Import writes the column as 0: the full-history scan precedes
-the replication stream, so no minute buckets exist for it.
+`(uid, day) -> (flag, max_edits_per_hour)`: each uid's contiguous minute
+series is run through `hour_spans`, the trailing 60-minute window (the
+minute's count plus the previous 59), and any day holding a minute whose
+span is strictly above 500 is flagged, carrying the largest such span of the
+day as its `max_edits_per_hour` metric (`day = minute / 1440`, so a burst
+crossing midnight still lands on the day of its peak minute). The
+users-history update finalize merges those flags into `users_history.parquet`'s
+`suspect_flag` column for the whole history. Import writes the column as 0: the
+full-history scan precedes the replication stream, so no minute buckets exist
+for it.
 
 Filter 3 records modified-node moves (> 500 m) as the same updates apply:
 the update node pass already tracks each node's last known H3 cell
@@ -320,10 +327,11 @@ detected move beyond the 500 m screen to `suspect::NodeMoveSink`, which
 stages `(uid, minute)` rows under
 `suspect_update_stage/moves/seq_<n>/` (rows that do not clear the screen
 are dropped before staging). `flagged_move_days` folds them straight into
-this run's `(uid, day) -> filter-3 bit` flags and per-day far-move count used
-by the users-history finalize and removes the stage root, so there is **no
-persisted move dataset** — filter 3 survives only as the carried/ORed day bit
-in `users_history.parquet` and the frozen per-day `far_move_count` column of
+this run's `(uid, day) -> filter-3 bit` flags, per-day far-move count and
+the largest distance among them, used by the users-history finalize, and
+removes the stage root, so there is **no persisted move dataset** — filter 3
+survives only as the carried/ORed day bit in `users_history.parquet` and the
+frozen per-day `far_move_count`/`max_move_meters` columns of
 `suspect.parquet`. The distance is measured from the prior cell
 center to the new point, within one res-9 cell radius (~175 m) of the true
 prior: fine for the 500 m screen, not for the paper's finer 11 m
@@ -347,7 +355,8 @@ uid, it slides a 60-minute window over both streams simultaneously — the cell
 stream gives the distinct cell count in the window, the minute stream gives the
 true edit count for the gate — and flags the day when the window has `>= 20`
 edits, `>= 3` distinct cells, and the surface area `distinct_cells *
-cell_area_km2(resolution) >= 20 km²`. The flag lands in bit 3 of
+cell_area_km2(resolution) >= 20 km²`. The area of the largest flagging window
+is kept as that day's metric. The flag lands in bit 3 of
 `suspect_flag` and is monotonic like bits 0/1. Import writes it as 0 (no cell
 buckets exist for the full-history scan). Expressing the budget as an area means
 the constant `20` stays in km² when `--h3-resolution` changes, so it does not
@@ -371,7 +380,9 @@ max 272 bytes, version 1). `suspect::flagged_tag_days` reads both
 a 60-minute window over both streams simultaneously — the tag stream gives the
 per-key counts, the minute stream gives the total modified+deleted count for the
 gate — and flags the day when the window has `>= 100` objects and one tag key
-covers `> 90%` of them. The flag lands in bit 4 of `suspect_flag` (0x10) and is
+covers `> 90%` of them, keeping the sorted, de-duplicated set of keys that
+cleared the ratio as that day's metric (a window may have more than one, each
+just over the line). The flag lands in bit 4 of `suspect_flag` (0x10) and is
 monotonic like the other bits. Import writes it as 0 (no tag buckets exist for
 the full-history scan). **Limitation:** a create-only mass import (e.g. a bulk
 upload of new buildings all tagged `building=yes`) is not flagged, because
@@ -421,7 +432,8 @@ node/way-only (relations are ranking-only).
 date filter): hyparquet fetches only the leading row groups' pages, so the
 "100 last" table never scans the whole file. Each row is one flagged
 `(uid, change_date)` with the username, the combined `suspect_flag` bits,
-the day's total change count, its far-move count and the ranking frozen at
-the day's first flag. Of the flags the table shows one: a day carrying bit 0
-(`kFlagFilter2`, the >500 modified/deleted objects in one hour filter) is marked
-as an edit burst.
+the day's total change count, the peak edit count, spread and tag keys of
+whichever store-derived filter fired, its far-move count with the largest of
+them and the ranking frozen at the day's first flag. Of the flags the table
+shows one: a day carrying bit 0 (`kFlagFilter2`, the >500 modified/deleted
+objects in one hour filter) is marked as an edit burst.

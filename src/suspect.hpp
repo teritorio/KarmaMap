@@ -52,8 +52,9 @@
 // bit-3 set from the two stores, and the finalize ORs them
 // with the carried base bits, so a day's flag is monotonic (an update rerun
 // re-setting an already-set bit is harmless; no move store is kept — every
-// modified node's distance is thresholded and discarded). They only cover the
-// period after the recorded replication sequence (the diffs applied by update
+// modified node's distance is thresholded, and only the largest of the ones
+// clearing kFilter3Threshold is carried into suspect.parquet). They only cover
+// the period after the recorded replication sequence (the diffs applied by update
 // runs); import writes them as 0.
 //
 // Bit 2 is likewise monotonic and forward-only, but not diff-based. It is
@@ -77,6 +78,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <set>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -309,12 +311,17 @@ struct CellSpreadRow {
     uint8_t flagged;
 };
 
+// One merged (uid, minute) row plus its derived window: object_total is the
+// trailing 60-minute modified+deleted count, and keys holds every tag key whose
+// share of that window exceeds kFilter5TagCoverage, sorted. flagged =
+// object_total >= kFilter5MinObjects && !keys.empty(). A window can clear the
+// threshold on several keys at once, which is why the keys are listed rather
+// than reduced to one.
 struct TagCoverageRow {
     uint32_t minute;
     uint32_t object_total;
-    uint32_t top_key_count;
-    double coverage;
     uint8_t flagged;
+    std::vector<std::string> keys;
 };
 
 // Sliding-window evaluator for one uid. Feeds cell rows (minute, cell, count)
@@ -394,21 +401,46 @@ std::vector<TagCoverageRow> tag_coverages(
     const std::vector<std::tuple<uint32_t, std::string, uint32_t>>& tag_rows,
     const std::vector<std::pair<uint32_t, uint32_t>>& object_counts);
 
+// One (uid, day) filter-4 result: the day's flag plus the largest
+// kFilter4SpreadKm2-qualifying window's spread, in km². Ties keep the earliest
+// such window, so the fold is deterministic.
+struct CellSpreadDay {
+    uint8_t flags = 0;
+    double spread_km2 = 0.0;
+
+    bool operator==(const CellSpreadDay& o) const {
+        return flags == o.flags && spread_km2 == o.spread_km2;
+    }
+};
+
 // Reads the persisted cell store and the minute store, computes the Filter 4
-// flag per (uid, day) and returns a map keyed by (uid, day) with value
-// kFlagFilter4 (or 0 if not flagged). The minute store provides the true
+// flag per (uid, day) and returns a map keyed by (uid, day) holding
+// kFlagFilter4 (or 0 if not flagged) and the day's peak spread over the
+// windows that tripped it. The minute store provides the true
 // per-(uid, minute) modified+deleted count for the >= kFilter4MinCount gate.
-std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_cell_days(
+std::map<std::pair<int64_t, uint16_t>, CellSpreadDay> flagged_cell_days(
     const std::string& cells_path, const std::string& minutes_path, int h3_resolution);
 
+// One (uid, day) filter-5 result: the day's flag plus the union of the tag keys
+// that exceeded kFilter5TagCoverage in any of the day's qualifying windows.
+struct TagCoverageDay {
+    uint8_t flags = 0;
+    std::set<std::string> tags;
+
+    bool operator==(const TagCoverageDay& o) const {
+        return flags == o.flags && tags == o.tags;
+    }
+};
+
 // Reads the persisted tag store and the minute store, computes the Filter 5
-// flag per (uid, day) and returns a map keyed by (uid, day) with value
-// kFlagFilter5 (or 0 if not flagged). The tag store provides per-(uid, minute,
-// tag_key) counts; the minute store provides the modified+deleted total for
-// the coverage denominator. A day is flagged when some trailing 60-minute
-// window has object_total >= kFilter5MinObjects and top_key_count /
-// object_total > kFilter5TagCoverage.
-std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_tag_days(
+// flag per (uid, day) and returns a map keyed by (uid, day) holding
+// kFlagFilter5 (or 0 if not flagged) and the day's tag keys. The tag store
+// provides per-(uid, minute, tag_key) counts; the minute store provides the
+// modified+deleted total for the coverage denominator. A day is flagged when
+// some trailing 60-minute window has object_total >= kFilter5MinObjects and at
+// least one key on > kFilter5TagCoverage of it; every key clearing that share
+// in such a window is collected into the day's set.
+std::map<std::pair<int64_t, uint16_t>, TagCoverageDay> flagged_tag_days(
     const std::string& tags_path, const std::string& minutes_path);
 
 // One merged (uid, minute) row plus its derived window. hour_span sums
@@ -444,7 +476,8 @@ inline std::vector<MinuteSpanRow> hour_spans(
 
 // Collects modified-node moves during the update node pass (filter 3). Rows
 // are written into per-diff stage dirs under <stage_root>/seq_<seq> and folded
-// by flagged_move_days into the day-level bit-1 flag and far-move count.
+// by flagged_move_days into the day-level bit-1 flag, far-move count and
+// largest staged distance.
 class NodeMoveSink {
 public:
     explicit NodeMoveSink(std::string stage_root);
@@ -459,9 +492,9 @@ public:
 
     // Records a visible version>1 node with a valid new location and a known
     // prior cell. The move distance is computed from the prior cell center and
-    // only a move beyond kFilter3Threshold is staged, as a (uid, minute) row.
-    // Callers must read the prior cell from NodeState::pre() before
-    // set_position().
+    // only a move beyond kFilter3Threshold is staged, as a
+    // (uid, minute, meters) row. Callers must read the prior cell from
+    // NodeState::pre() before set_position().
     void record(int64_t uid, int64_t ts_seconds, uint64_t prev_cell, double new_lat,
                 double new_lon);
 
@@ -478,6 +511,7 @@ private:
     size_t stage_files_ = 0;
     std::vector<int64_t> uids_;
     std::vector<uint32_t> minutes_;
+    std::vector<uint32_t> meters_;
 };
 
 // Scans one replication diff (.osc.gz change file) into a fresh stage_dir,
@@ -499,30 +533,48 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
 void fold_minute_counts(const std::string& counts_root, const std::string& minutes_path,
                         uint64_t applied_seq);
 
-// Reads the persisted minute store and returns one (uid, day) -> flag entry
-// for every day holding at least one minute whose trailing-hour span exceeds
-// kFilter2Threshold; day = minute / 1440 (UTC) and the flag is kFlagFilter2.
-// Feeds the suspect_flag bits the users-history update finalize writes into
-// the daily history.
-std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_days(const std::string& minutes_path);
+// One (uid, day) filter-2 result: the day's flag plus the largest
+// kFilter2Threshold-clearing hour span on that day.
+struct FilterDay {
+    uint8_t flags = 0;
+    uint32_t max_edits_per_hour = 0;
 
-// One (uid, day) filter-3 result: the day's flag plus the number of staged
-// moves beyond kFilter3Threshold folded into that day.
+    bool operator==(const FilterDay& o) const {
+        return flags == o.flags && max_edits_per_hour == o.max_edits_per_hour;
+    }
+};
+
+// Reads the persisted minute store and returns one (uid, day) -> FilterDay
+// entry for every day holding at least one minute whose trailing-hour span
+// exceeds kFilter2Threshold; day = minute / 1440 (UTC) and the flag is
+// kFlagFilter2. max_edits_per_hour is the peak trailing-hour span over that
+// day's flagged minutes. Feeds the suspect_flag bits and the
+// max_edits_per_hour column the users-history update finalize writes into the
+// daily history and the suspect export.
+std::map<std::pair<int64_t, uint16_t>, FilterDay> flagged_days(
+    const std::string& minutes_path);
+
+// One (uid, day) filter-3 result: the day's flag, the number of staged moves
+// beyond kFilter3Threshold folded into that day, and the largest of their
+// distances in meters.
 struct MoveDay {
     uint8_t flags = 0;
     uint32_t far_move_count = 0;
+    uint32_t max_move_meters = 0;
 
     bool operator==(const MoveDay& o) const {
-        return flags == o.flags && far_move_count == o.far_move_count;
+        return flags == o.flags && far_move_count == o.far_move_count &&
+               max_move_meters == o.max_move_meters;
     }
 };
 
 // Folds one update run's staged >kFilter3Threshold node moves under
 // `stage_root` (moves/ sub-tree) into this run's (uid, day) -> MoveDay set:
-// each staged (uid, minute) row becomes a flag and an added far-move count on
-// day = minute / 1440. Removes the stage root (and therefore the counts/
-// sub-tree already consumed by fold_minute_counts) afterwards. Flags are ORed
-// by the caller, so folding a rerun's regenerated stages is a no-op.
+// each staged (uid, minute, meters) row becomes a flag, an added far-move count
+// and a max_move_meters candidate on day = minute / 1440. Removes the stage
+// root (and therefore the counts/ sub-tree already consumed by
+// fold_minute_counts) afterwards. Flags are ORed by the caller, so folding a
+// rerun's regenerated stages is a no-op.
 std::map<std::pair<int64_t, uint16_t>, MoveDay> flagged_move_days(
     const std::string& stage_root);
 

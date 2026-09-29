@@ -662,8 +662,10 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
                          int64_t users_history_group_rows, int64_t ranking_group_rows,
                          const std::string& minutes_path,
                          const std::map<std::pair<int64_t, uint16_t>, suspect::MoveDay>& move_flags,
-                         const std::map<std::pair<int64_t, uint16_t>, uint8_t>& filter4_days,
-                         const std::map<std::pair<int64_t, uint16_t>, uint8_t>& filter5_days) {
+                         const std::map<std::pair<int64_t, uint16_t>, suspect::CellSpreadDay>&
+                             filter4_days,
+                         const std::map<std::pair<int64_t, uint16_t>, suspect::TagCoverageDay>&
+                             filter5_days) {
     // Registers Arrow's compute kernels (sort_indices, take).
     auto init_status = arrow::compute::Initialize();
     if (!init_status.ok()) {
@@ -739,13 +741,14 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     const std::string ranking_path = (history_parent / "user_ranking.parquet").string();
     const std::string suspect_path = (history_parent / "suspect.parquet").string();
 
-    // The suspect file freezes each flagged day's filter-1 ranking and
-    // far-move count. suspect_base maps every previously flagged
+    // The suspect file freezes each flagged day's filter-1 ranking, far-move
+    // count and largest far move. suspect_base maps every previously flagged
     // (uid, change_date) to those carried values; the base read and the export
     // loop below that writes over it must stay in lockstep (far_move_count,
-    // ranking_at_day are the only carried columns).
+    // max_move_meters, ranking_at_day are the only carried columns).
     struct SuspectBaseRow {
         uint32_t far_move_count = 0;
+        uint32_t max_move_meters = 0;
         uint8_t ranking_at_day = 0;
     };
     std::map<std::pair<int64_t, uint16_t>, SuspectBaseRow> suspect_base;
@@ -761,11 +764,14 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
             typed_column<arrow::UInt16Array>(base_v, "change_date", suspect_path);
         const auto* bv_moves =
             typed_column<arrow::UInt32Array>(base_v, "far_move_count", suspect_path);
+        const auto* bv_max_move =
+            typed_column<arrow::UInt32Array>(base_v, "max_move_meters", suspect_path);
         const auto* bv_rank =
             typed_column<arrow::UInt8Array>(base_v, "ranking_at_day", suspect_path);
         for (int64_t i = 0; i < base_v->num_rows(); ++i) {
             SuspectBaseRow& row = suspect_base[{bv_uids->Value(i), bv_days->Value(i)}];
             row.far_move_count = bv_moves->Value(i);
+            row.max_move_meters = bv_max_move->Value(i);
             row.ranking_at_day = bv_rank->Value(i);
         }
     }
@@ -882,22 +888,23 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     // Rebuild the whole-history flags from the persisted sources: bit 0 from
     // the minute store, bit 1 from the run's folded move-flagged days, bit 3
     // from the cell spread store, bit 4 from the tag coverage store. Every
-    // filter2_days value is kFlagFilter2, every move_flags entry carries
+    // filter2_days entry carries kFlagFilter2, every move_flags entry carries
     // kFlagFilter3, every filter4_days entry carries kFlagFilter4, and every
     // filter5_days entry carries kFlagFilter5. ORing them into the carried-
-    // forward base bits yields the combined per-day field.
+    // forward base bits yields the combined per-day field. The same maps carry
+    // the quantitative columns written into the suspect export below.
     const auto filter2_days = suspect::flagged_days(minutes_path);
-    for (const auto& [key, flag] : filter2_days) {
-        merged_flags[key] |= flag;
+    for (const auto& [key, value] : filter2_days) {
+        merged_flags[key] |= value.flags;
     }
     for (const auto& [key, value] : move_flags) {
         merged_flags[key] |= value.flags;
     }
-    for (const auto& [key, flag] : filter4_days) {
-        merged_flags[key] |= flag;
+    for (const auto& [key, value] : filter4_days) {
+        merged_flags[key] |= value.flags;
     }
-    for (const auto& [key, flag] : filter5_days) {
-        merged_flags[key] |= flag;
+    for (const auto& [key, value] : filter5_days) {
+        merged_flags[key] |= value.flags;
     }
 
     arrow::Int64Builder ind_uid_builder;
@@ -907,15 +914,26 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     // Suspect export: the same merged flags, one (uid, change_date) row per
     // day carrying any bit, plus the day's total change count (created +
     // modified + deleted, the same value as the count column written above),
-    // the count of that day's staged moves beyond kFilter3Threshold and the
-    // ranking frozen at the day's first flag, with the username resolved
-    // inline.
+    // the peak quantitative value of each store-derived filter, the count of
+    // that day's staged moves beyond kFilter3Threshold with their largest
+    // distance, and the ranking frozen at the day's first flag, with the
+    // username resolved inline.
     arrow::Int64Builder v_uid_builder;
     arrow::StringBuilder v_user_builder;
     arrow::UInt16Builder v_day_builder;
     arrow::UInt8Builder v_flag_builder;
     arrow::UInt32Builder v_changes_builder;
+    arrow::UInt32Builder v_hour_edits_builder;
+    arrow::FloatBuilder v_spread_builder;
+    // changed_keys is spelled out as one flat child string array plus a running
+    // offsets vector (one entry per flagged row plus the leading 0), joined into
+    // a list array after the loop. The per-row key count is known here, so the
+    // layout needs no builder state shared with the other columns.
+    arrow::StringBuilder v_tag_keys_builder;
+    std::vector<int32_t> v_tag_offsets{0};
+    int32_t v_tag_keys_total = 0;
     arrow::UInt32Builder v_moves_builder;
+    arrow::UInt32Builder v_max_move_builder;
     arrow::UInt8Builder v_rank_builder;
     for (const auto& [key, count] : merged_counts) {
         append_checked(ind_uid_builder, key.first);
@@ -939,23 +957,47 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
                                : "<" + std::to_string(key.first) + ">");
             // changes is the day's own total re-derived from the merged counts
             // each run (an appended-to history yields the same sum, so the
-            // value never drifts and never touches other days). far_move_count
-            // is the day's count of moves beyond kFilter3Threshold: carried
-            // from the base file when the day was already flagged (the move
-            // stage is transient), taken from this run's folded staged moves
-            // when the day is newly flagged. ranking_at_day is stamped once:
-            // carried from the base file when the day was already flagged,
-            // taken from this run's current ranking when the day is newly
-            // flagged, and never recalculated.
+            // value never drifts and never touches other days).
+            // max_edits_per_hour, peak_spread_km2 and changed_keys are the peak
+            // values of the store-derived filters, recomputed over the whole
+            // persisted store each run: a day first flagged by another filter
+            // picks its value up as soon as a later run's store fold trips the
+            // filter.
+            // far_move_count and max_move_meters come from the run's folded
+            // staged moves: carried from the base file when the day was
+            // already flagged (the move stage is transient), taken from this
+            // run otherwise. ranking_at_day is stamped once: carried from the
+            // base file when the day was already flagged, taken from this
+            // run's current ranking when the day is newly flagged, and never
+            // recalculated.
             append_checked(v_changes_builder, count);
+            const auto f2 = filter2_days.find(key);
+            append_checked(v_hour_edits_builder,
+                           f2 != filter2_days.end() ? f2->second.max_edits_per_hour : 0);
+            const auto f4 = filter4_days.find(key);
+            append_checked(v_spread_builder,
+                           static_cast<float>(f4 != filter4_days.end()
+                                                  ? f4->second.spread_km2
+                                                  : 0.0));
+            const auto f5 = filter5_days.find(key);
+            if (f5 != filter5_days.end()) {
+                for (const std::string& tag : f5->second.tags) {
+                    append_checked(v_tag_keys_builder, tag);
+                    ++v_tag_keys_total;
+                }
+            }
+            v_tag_offsets.push_back(v_tag_keys_total);
             const auto carried = suspect_base.find(key);
             const auto mv = move_flags.find(key);
             if (carried != suspect_base.end()) {
                 append_checked(v_moves_builder, carried->second.far_move_count);
+                append_checked(v_max_move_builder, carried->second.max_move_meters);
                 append_checked(v_rank_builder, carried->second.ranking_at_day);
             } else {
                 append_checked(v_moves_builder,
                                mv != move_flags.end() ? mv->second.far_move_count : 0);
+                append_checked(v_max_move_builder,
+                               mv != move_flags.end() ? mv->second.max_move_meters : 0);
                 append_checked(v_rank_builder,
                                ui != uid_index.end() ? rank.ranking[ui->second] : 0);
             }
@@ -982,21 +1024,39 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     std::filesystem::rename(history_tmp, history_path);
 
     // The suspect export: every (uid, change_date) carrying any flag bit,
-    // with the username, the day's total change count, the count of that day's
-    // far moves and the ranking frozen at the day's first flag, sorted by
-    // (change_date, uid) with change_date descending (newest first) so a client
-    // reading the 100 latest flagged days fetches only the leading row groups.
-    // The flag set is exactly the users-history flags (the merged state above),
-    // so the two outputs always agree. The file is update-only: import writes
-    // no flags and never produces it; an update with no flagged day writes an
-    // empty file.
-    std::shared_ptr<arrow::Array> v_uid, v_user, v_day, v_flag, v_changes, v_moves, v_rank;
+    // with the username, the day's total change count, the peak value of each
+    // store-derived filter, the count of that day's far moves with their
+    // largest distance and the ranking frozen at the day's first flag, sorted
+    // by (change_date, uid) with change_date descending (newest first) so a
+    // client reading the 100 latest flagged days fetches only the leading row
+    // groups. The flag set is exactly the users-history flags (the merged
+    // state above), so the two outputs always agree. The file is update-only:
+    // import writes no flags and never produces it; an update with no flagged
+    // day writes an empty file.
+    std::shared_ptr<arrow::Array> v_uid, v_user, v_day, v_flag, v_changes, v_hour_edits,
+        v_spread, v_tags, v_moves, v_max_move, v_rank;
     finish_checked(v_uid_builder, &v_uid);
     finish_checked(v_user_builder, &v_user);
     finish_checked(v_day_builder, &v_day);
     finish_checked(v_flag_builder, &v_flag);
     finish_checked(v_changes_builder, &v_changes);
+    finish_checked(v_hour_edits_builder, &v_hour_edits);
+    finish_checked(v_spread_builder, &v_spread);
+    {
+        std::shared_ptr<arrow::Array> tag_keys, tag_offsets_array;
+        finish_checked(v_tag_keys_builder, &tag_keys);
+        arrow::Int32Builder offsets_builder;
+        for (int32_t offset : v_tag_offsets) append_checked(offsets_builder, offset);
+        finish_checked(offsets_builder, &tag_offsets_array);
+        auto tags_result = arrow::ListArray::FromArrays(*tag_offsets_array, *tag_keys);
+        if (!tags_result.ok()) {
+            throw std::runtime_error("Failed to build changed_keys list column: " +
+                                     tags_result.status().ToString());
+        }
+        v_tags = *tags_result;
+    }
     finish_checked(v_moves_builder, &v_moves);
+    finish_checked(v_max_move_builder, &v_max_move);
     finish_checked(v_rank_builder, &v_rank);
     auto suspect_table = arrow::Table::Make(
         arrow::schema({arrow::field("uid", arrow::int64(), false),
@@ -1004,9 +1064,14 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
                        arrow::field("change_date", arrow::uint16(), false),
                        arrow::field("suspect_flag", arrow::uint8(), false),
                        arrow::field("changes", arrow::uint32(), false),
+                       arrow::field("max_edits_per_hour", arrow::uint32(), false),
+                       arrow::field("peak_spread_km2", arrow::float32(), false),
+                       arrow::field("changed_keys", arrow::list(arrow::utf8()), false),
                        arrow::field("far_move_count", arrow::uint32(), false),
+                       arrow::field("max_move_meters", arrow::uint32(), false),
                        arrow::field("ranking_at_day", arrow::uint8(), false)}),
-        {v_uid, v_user, v_day, v_flag, v_changes, v_moves, v_rank});
+        {v_uid, v_user, v_day, v_flag, v_changes, v_hour_edits, v_spread, v_tags, v_moves,
+         v_max_move, v_rank});
     // Newest-first order makes change_date (the pruning column) the compact
     // footer statistics key, with the most recent days' min/max in the first
     // row groups.

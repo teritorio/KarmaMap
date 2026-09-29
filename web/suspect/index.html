@@ -56,7 +56,7 @@
 
     <div class="header-row">
       <p class="page-desc">
-        <span class="page-desc-text">The 100 most recent user-days a review filter flagged, newest first.</span>
+        <span class="page-desc-text">The 100 most recent user-days a review filter flagged, newest first, with the value each filter tripped on.</span>
         <a href="../how-it-works.html">Know more about it &rarr;</a>
       </p>
     </div>
@@ -75,10 +75,11 @@
           <th>User</th>
           <th class="value">uid</th>
           <th class="value">Changes</th>
-          <th title="&gt;500 modified/deleted in one hour">Edit burst</th>
-          <th title="20+ edits in one hour across 3+ cells spanning 20 km&sup2;">Spatial spread</th>
-          <th title="one tag key on &gt;90% of &ge;100 modified/deleted objects in one hour">Tag activity</th>
+          <th class="value" title="busiest hour: &gt;500 modified/deleted fired the filter">Edits/h</th>
+          <th class="value" title="widest hour: 20+ edits across 3+ cells spanning 20 km&sup2; fired the filter">Spread</th>
+          <th title="tag keys on &gt;90% of an hour's &ge;100 modified/deleted objects">Mass tags</th>
           <th class="value">Far moves</th>
+          <th class="value" title="largest of those drags">Max move</th>
         </tr>
       </thead>
       <tbody></tbody>

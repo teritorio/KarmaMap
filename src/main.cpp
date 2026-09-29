@@ -373,10 +373,10 @@ std::optional<replication_state::State> run_update_mode(
     const std::map<std::pair<int64_t, uint16_t>, suspect::MoveDay> move_flags =
         suspect::flagged_move_days(suspect_stage_root);
     // Filter 4: compute spatial spread flags from the cell and minute stores.
-    const std::map<std::pair<int64_t, uint16_t>, uint8_t> filter4_days =
+    const std::map<std::pair<int64_t, uint16_t>, suspect::CellSpreadDay> filter4_days =
         suspect::flagged_cell_days(cells_path, minutes_path, opts.h3_resolution);
     // Filter 5: compute tag coverage flags from the tag and minute stores.
-    const std::map<std::pair<int64_t, uint16_t>, uint8_t> filter5_days =
+    const std::map<std::pair<int64_t, uint16_t>, suspect::TagCoverageDay> filter5_days =
         suspect::flagged_tag_days(tags_path, minutes_path);
 
     users_history::run_update_finalize(history_stage_root,

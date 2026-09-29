@@ -38,7 +38,9 @@ ranking scoring follows [Neis, Goetz & Zipf, *ISPRS Int. J. Geo-Inf.*
   writes 0 and updates set it only on the new rows they write for a
   below-threshold contributor — once set, never removed), and `suspect.parquet`
   — an update-only re-export of the flagged days carrying each day's total
-  change count, its far-move count and the ranking frozen at the day's first flag.
+  change count, the peak edit count, spread and tag keys its filter fired on,
+  its far-move count with the largest of them and the ranking frozen at the
+  day's first flag.
 
 ![Changes H3](changes-h3.webp)
 
@@ -244,9 +246,10 @@ Then open `http://localhost:8080/`.
   user.
 - **`/suspect/`** — the suspects viewer: the 100 latest flagged
   `(uid, change_date)` days from `suspect.parquet` (update-only), with each
-  day's total change count, an edit-burst marker (>500 modified/deleted
-  objects in one hour), a tag-activity marker (one tag key on >90% of a 1-hour
-  window's objects, min 100), far-move count and ranking.
+  day's total change count, the number behind each filter that fired (peak
+  edits/hour, peak spread in km², and the tag keys that covered >90% of an
+  hour's objects), its far-move count with the largest move, and the ranking
+  frozen at the day's first flag.
 - **`/how-it-works.html`** — the reader-facing guide: what each of the three
   viewers shows and how to read its numbers. It renders `web/HOW_IT_WORKS.md`
   client-side, so the Markdown file stays the single source of truth.

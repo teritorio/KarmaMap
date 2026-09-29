@@ -15,8 +15,10 @@ The two access parts:
   filter-3 fold stages are transient. The per-day flags (bits 0=filter 2,
   1=filter 3, 2=filter 1, 3=filter 4) land in `users_history.parquet`, and
   `suspect.parquet` (update-only) re-exports the flagged days with their daily
-  change count, far-move count and frozen ranking. Filter 4 is a local
-  extension, not from the original OSMPatrol paper.
+  change count, frozen far-move count, largest far move and frozen ranking,
+  plus the peak edit count, spread and tag keys their store-derived filter
+  fired on. Filter 4 is a local extension, not from the original OSMPatrol
+  paper.
 
 ## Output layout
 
@@ -246,7 +248,9 @@ on its own binary store.
   size)`. `uid` is big-endian with the sign bit flipped,
   `minute`/`count` big-endian, all strictly ascending and unique per
   `(uid, minute)`. Each finalize run merges its staged buckets into this store
-  and stamps it, so it is the flag's complete source of truth.
+  and stamps it, so it is the flag's complete source of truth. The per-day
+  peak of the flagging windows is exported as `max_edits_per_hour` of
+  `suspect.parquet`.
 
 - `suspect_cells.bin` — the **binary** per-`(uid, minute, h3_cell)` modified+
   deleted counts behind the filter-4 flag (bit 3 of `suspect_flag`); same
@@ -259,7 +263,9 @@ on its own binary store.
   triggers when a user has `>= 20` edits in a trailing 60-minute window (true
   edit count from `suspect_minutes.bin`, so a long way counts once), `>= 3`
   distinct H3 cells in that window, and the total surface area
-  (`distinct_cells * average_hexagon_area_km2(resolution)`) `>= 20 km²`.
+  (`distinct_cells * average_hexagon_area_km2(resolution)`) `>= 20 km²`. The
+  per-day peak area of the flagging windows is exported as `peak_spread_km2`
+  of `suspect.parquet`.
 
 - `suspect_tags.bin` — the **binary** per-`(uid, minute, tag_key)` counts
   behind the filter-5 flag (bit 4 of `suspect_flag`); same block format as
@@ -273,13 +279,15 @@ on its own binary store.
   **nodes, ways, and relations**, case-sensitive, OSM key limit 255 chars. The
   flag triggers when a user has `>= 100` modified/deleted objects in a trailing
   1-hour window and one tag key covers `> 90%` of them; the binary store is the
-  complete source of truth for per-tag activity analysis. **Limitation:** a
-  create-only mass import is not flagged.
+  complete source of truth for per-tag activity analysis, and the flagged
+  day's collected keys are exported as `changed_keys` of `suspect.parquet`.
+  **Limitation:** a create-only mass import is not flagged.
 
 - Filter 3 stages the run's detected node moves (`> 500` m, as `(uid, minute)`
   rows, gated by the sink) under the update stage root.
   `flagged_move_days` folds them into `(uid, day) -> bit-1` flags plus the
-  day's count of far moves for `users_history.parquet` and removes the root;
+  day's count of far moves and their largest distance in meters for
+  `users_history.parquet` and removes the root;
   the base file's flags are carried forward and ORed, so the combination is
   monotonic across reruns. The distance is measured from the old H3 cell
   center to the new point: off by up to one res-9 cell radius (~175 m), fine
@@ -300,7 +308,11 @@ on its own binary store.
   | `change_date` | `uint16` | UTC day (same encoding as `changes/`) |
   | `suspect_flag` | `uint8` | The history row's combined flag, non-zero by construction (bits as in `users_history.parquet`) |
   | `changes` | `uint32` | The day's total change count (node/way/relation created+modified+deleted, the same value as the `count` column of `users_history.parquet`) |
+  | `max_edits_per_hour` | `uint32` | The largest one-hour modified+deleted count of the flagged day, the peak quantitative value of filter 2. Recomputed over the whole persisted `suspect_minutes.bin` on every update, so a day first flagged by another filter picks its value up as soon as a later run's store fold trips filter 2. 0 when filter 2 never fired on the day |
+  | `peak_spread_km2` | `float` | The largest per-window surface area of the flagged day in km² (`distinct_cells * average_hexagon_area_km2(resolution)`), the peak quantitative value of filter 4, recomputed each run as for `max_edits_per_hour`. 0 when filter 4 never fired on the day |
+  | `changed_keys` | `list<utf8>` | The sorted, de-duplicated tag keys the flagged day collected over `> 90%` of its windowed modified+deleted objects, the peak key set of filter 5, recomputed each run as for `max_edits_per_hour`. Empty when filter 5 never fired on the day. The three peak columns describe the day itself, so they change as later runs' stores fold, unlike the three frozen columns |
   | `far_move_count` | `uint32` | The count of that day's staged moves beyond the filter-3 threshold at the run that first flagged the day. Frozen: stamped when the day is newly flagged and carried unchanged from the base file on every later update, never recalculated. Because a day first flagged by another filter keeps its frozen value, this can be 0 even when bit 1 is set (moves staged on later runs are not re-merged into it) |
+  | `max_move_meters` | `uint32` | The largest distance in meters among that day's far moves at the run that first flagged the day. Frozen on the same terms as `far_move_count`: stamped on the day it is newly flagged, carried from the base file afterwards, 0 when no move was counted. The distance is quantized to whole meters |
   | `ranking_at_day` | `uint8` | The contributor's ranking (as in `user_ranking.parquet`) at the day's first flag. Frozen: stamped when the day is newly flagged and carried unchanged from the base file on every later update, never recalculated |
 
   The row set is exactly the non-zero flags of `users_history.parquet`
@@ -309,3 +321,8 @@ on its own binary store.
   appended-to history yields the same sum, so it never drifts and never
   touches other days). An update that flags nothing writes an empty file; a
   pure import writes no `suspect.parquet` at all.
+
+  Adding or removing a column here is a schema change, and update mode refuses
+  to run against a base written by an older build (the column set is validated
+  before anything is replaced). Re-import the snapshot into a fresh output
+  directory to migrate.

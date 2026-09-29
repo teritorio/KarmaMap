@@ -193,18 +193,21 @@ and the page says so.
 | **Ranking at day** | The user's ranking **frozen at the moment that day was first flagged**, not today's. Click it to open the user's page. |
 | **User** / **uid** | The account and its numeric id. |
 | **Changes** | Everything that user changed that day, nodes, ways and relations together. A burst day shows a large number here. |
-| **Edit burst** | *Yes* when filter 2 fired. |
-| **Spatial spread** | *Yes* when filter 4 fired. |
-| **Tag activity** | *Yes* when filter 5 fired (one tag key on >90% of 1h window's objects). |
+| **Edits/h** | The busiest hour of that day: the largest number of objects modified or deleted within any single hour. Shown only when it is above 500, the point at which filter 2 fires. |
+| **Spread** | The widest hour of that day: the largest area its edits covered, in km². Shown only when it reaches 20 km² over at least 3 distinct H3 cells, the point at which filter 4 fires. |
+| **Mass tags** | The tag keys that covered more than 90% of an hour's modified or deleted objects on that day, where that hour held at least 100 objects — the keys filter 5 fires on. A day can list more than one key. |
 | **Far moves** | How many times that day the user dragged a node more than 500 m. |
+| **Max move** | The longest of those drags, in meters or kilometers. |
 
-`Ranking at day` and `Far moves` are recorded once, the first time a day is
+The four number columns are blank unless the filter they belong to fired, so
+an empty cell means that filter did not apply to the day. `Edits/h` and
+`Spread` describe the day itself and are rebuilt from the stored data on every
+update, so a day first flagged by a different filter picks them up later.
+`Ranking at day` and `Max move` are recorded once, the first time a day is
 flagged, and then kept as they were — they are not recomputed as the user's
-ranking grows or as later edits arrive. A value of `0` far moves therefore
-does not always mean none happened; it can also mean the day was first
-flagged by another filter. `Edit burst`, `Spatial spread` and `Tag activity`
-carry no stored value: each is just a read of the day's own flag bits, so they
-always match the filter that fired.
+ranking grows or as later edits arrive, so an empty `Max move` does not always
+mean none happened: it can also mean the day was first flagged by another
+filter.
 
 ### The filters
 
@@ -218,11 +221,11 @@ because of it.
 
 | Filter | Rule | What you see |
 |---|---|---|
-| 1. Low ranking | A new contributor, or one with a ranking below 5%, has their edits shown for review | No column. A marker on new days only |
-| 2. Edit burst | More than 500 objects modified or deleted within one hour | `Edit burst = Yes` |
-| 3. Far move | A node dragged more than 500 m | A raised `Far moves` count |
-| 4. Spatial spread | Edits in 1h span ≥3 H3 cells whose combined area ≥ 20 km² | `Spatial spread = Yes` |
-| 5. Tag activity | One tag key on >90% of modified/deleted objects in a 1h window with ≥100 total | `Tag activity = Yes` |
+| 1. Low ranking | A new contributor, or one with a ranking below 5%, has their edits shown for review | No column of its own; it drives `Ranking at day` |
+| 2. Edit burst | More than 500 objects modified or deleted within one hour | An `Edits/h` count above 500 |
+| 3. Far move | A node dragged more than 500 m | A raised `Far moves` count and a `Max move` distance |
+| 4. Spatial spread | Edits in 1h span ≥3 H3 cells whose combined area ≥ 20 km² | A `Spread` of at least 20 km² |
+| 5. Tag activity | One tag key on >90% of modified/deleted objects in a 1h window with ≥100 total | The keys listed in `Mass tags` |
 
 Two details about how they are applied:
 

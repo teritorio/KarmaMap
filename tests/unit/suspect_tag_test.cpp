@@ -132,8 +132,7 @@ TEST(TagCoverageAccumulator, BasicCoverage) {
     acc.evict(100);
     auto row = acc.evaluate(100);
     EXPECT_EQ(row.object_total, 100);
-    EXPECT_EQ(row.top_key_count, 95);
-    EXPECT_DOUBLE_EQ(row.coverage, 0.95);
+    EXPECT_EQ(row.keys, (std::vector<std::string>{"highway"}));
     EXPECT_EQ(row.flagged, suspect::kFlagFilter5);
 }
 
@@ -143,8 +142,7 @@ TEST(TagCoverageAccumulator, BelowCoverageThreshold) {
     acc.add_tag(100, "highway", 89);
     acc.evict(100);
     auto row = acc.evaluate(100);
-    EXPECT_EQ(row.top_key_count, 89);
-    EXPECT_DOUBLE_EQ(row.coverage, 0.89);
+    EXPECT_TRUE(row.keys.empty());
     EXPECT_EQ(row.flagged, 0);
 }
 
@@ -154,8 +152,9 @@ TEST(TagCoverageAccumulator, BelowObjectGate) {
     acc.add_tag(100, "highway", 99);
     acc.evict(100);
     auto row = acc.evaluate(100);
-    EXPECT_EQ(row.top_key_count, 99);
-    EXPECT_DOUBLE_EQ(row.coverage, 1.0);
+    // The key is on 100% of the window, but the window is below the object
+    // gate, so the day reports no key and no flag.
+    EXPECT_TRUE(row.keys.empty());
     EXPECT_EQ(row.flagged, 0);
 }
 
@@ -165,8 +164,7 @@ TEST(TagCoverageAccumulator, Exactly90PercentNoFlag) {
     acc.add_tag(100, "highway", 90);  // 90% exactly, not > 90%
     acc.evict(100);
     auto row = acc.evaluate(100);
-    EXPECT_EQ(row.top_key_count, 90);
-    EXPECT_DOUBLE_EQ(row.coverage, 0.90);
+    EXPECT_TRUE(row.keys.empty());
     EXPECT_EQ(row.flagged, 0);  // strictly greater than threshold
 }
 
@@ -180,20 +178,22 @@ TEST(TagCoverageAccumulator, EvictionResetsWindow) {
     acc.evict(160);
     auto row = acc.evaluate(160);
     EXPECT_EQ(row.object_total, 0);
-    EXPECT_EQ(row.top_key_count, 0);
+    EXPECT_TRUE(row.keys.empty());
     EXPECT_EQ(row.flagged, 0);
 }
 
-TEST(TagCoverageAccumulator, MultipleTagKeysTopWins) {
+TEST(TagCoverageAccumulator, MultipleTagKeysOverThresholdAllListed) {
     suspect::TagCoverageAccumulator acc;
     acc.add_object(100, 100);
     acc.add_tag(100, "highway", 95);
-    acc.add_tag(100, "name", 10);
+    acc.add_tag(100, "name", 92);
     acc.add_tag(100, "building", 5);
     acc.evict(100);
     auto row = acc.evaluate(100);
-    EXPECT_EQ(row.top_key_count, 95);
-    EXPECT_DOUBLE_EQ(row.coverage, 0.95);
+    // highway and name both clear 90%, so both are listed; the report is not
+    // reduced to the strongest key. Sorted, so it does not depend on the
+    // unordered key_counts_ iteration order.
+    EXPECT_EQ(row.keys, (std::vector<std::string>{"highway", "name"}));
     EXPECT_EQ(row.flagged, suspect::kFlagFilter5);
 }
 
@@ -209,8 +209,7 @@ TEST(TagCoverageAccumulator, TagRowsAtDifferentMinutes) {
     acc.evict(110);
     auto row = acc.evaluate(110);
     EXPECT_EQ(row.object_total, 110);
-    EXPECT_EQ(row.top_key_count, 100);
-    EXPECT_NEAR(row.coverage, 100.0 / 110.0, 0.001);
+    EXPECT_EQ(row.keys, (std::vector<std::string>{"highway"}));
     EXPECT_EQ(row.flagged, suspect::kFlagFilter5);  // 100/110 = 90.9% > 90%, total 110 >= 100
 }
 
@@ -230,6 +229,7 @@ TEST(TagCoveragesHelper, UnionOfMinutes) {
     ASSERT_EQ(rows.size(), 1);
     EXPECT_EQ(rows[0].minute, 100);
     EXPECT_EQ(rows[0].flagged, suspect::kFlagFilter5);
+    EXPECT_EQ(rows[0].keys, (std::vector<std::string>{"highway"}));
 }
 
 TEST(TagCoveragesHelper, ObjectMinuteWithoutTagRow) {
@@ -242,7 +242,7 @@ TEST(TagCoveragesHelper, ObjectMinuteWithoutTagRow) {
     ASSERT_EQ(rows.size(), 1);
     EXPECT_EQ(rows[0].minute, 100);
     EXPECT_EQ(rows[0].object_total, 100);
-    EXPECT_EQ(rows[0].top_key_count, 0);
+    EXPECT_TRUE(rows[0].keys.empty());
     EXPECT_EQ(rows[0].flagged, 0);
 }
 

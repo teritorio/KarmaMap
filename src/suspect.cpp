@@ -211,37 +211,43 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// Filter 3 stage I/O (per-(uid, minute) rows of moves > kFilter3Threshold)
+// Filter 3 stage I/O (per-(uid, minute, meters) rows of moves > kFilter3Threshold)
 // ---------------------------------------------------------------------------
 
 std::shared_ptr<arrow::Schema> moves_stage_schema() {
     return arrow::schema({
         arrow::field("uid", arrow::int64(), false),
         arrow::field("minute", arrow::uint32(), false),
+        arrow::field("meters", arrow::uint32(), false),
     });
 }
 
 void write_moves_stage_file(const std::string& path, size_t n, const std::vector<int64_t>& uids,
-                            const std::vector<uint32_t>& minutes) {
+                            const std::vector<uint32_t>& minutes,
+                            const std::vector<uint32_t>& meters) {
     if (n == 0) return;
     arrow::Int64Builder uid_builder;
     arrow::UInt32Builder minute_builder;
+    arrow::UInt32Builder meters_builder;
 
     if (!uid_builder.Reserve(static_cast<int64_t>(n)).ok() ||
-        !minute_builder.Reserve(static_cast<int64_t>(n)).ok()) {
+        !minute_builder.Reserve(static_cast<int64_t>(n)).ok() ||
+        !meters_builder.Reserve(static_cast<int64_t>(n)).ok()) {
         throw std::runtime_error("Reserve() failed while flushing move stage");
     }
     for (size_t i = 0; i < n; ++i) {
         append_checked(uid_builder, uids[i]);
         append_checked(minute_builder, minutes[i]);
+        append_checked(meters_builder, meters[i]);
     }
 
-    std::shared_ptr<arrow::Array> uid, minute;
+    std::shared_ptr<arrow::Array> uid, minute, meters_array;
     finish_checked(uid_builder, &uid);
     finish_checked(minute_builder, &minute);
+    finish_checked(meters_builder, &meters_array);
 
-    arrow_table_io::write_table(path,
-                                arrow::Table::Make(moves_stage_schema(), {uid, minute}));
+    arrow_table_io::write_table(
+        path, arrow::Table::Make(moves_stage_schema(), {uid, minute, meters_array}));
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +337,7 @@ void NodeMoveSink::record(int64_t uid, int64_t ts_seconds, uint64_t prev_cell,
     if (meters <= kFilter3Threshold) return;
     uids_.push_back(uid);
     minutes_.push_back(h3_utils::timestamp_to_utc_minute(ts_seconds));
+    meters_.push_back(static_cast<uint32_t>(meters));
     rows_in_seq_++;
     if (rows_in_seq_ >= kFlushThreshold) flush_pending();
 }
@@ -346,11 +353,12 @@ void NodeMoveSink::flush_pending() {
     char name[32];
     std::snprintf(name, sizeof(name), "stage_%05zu.parquet", stage_files_);
     write_moves_stage_file(stage_root_ + "/seq_" + std::to_string(seq_) + "/" + name,
-                           rows_in_seq_, uids_, minutes_);
+                           rows_in_seq_, uids_, minutes_, meters_);
     stage_files_++;
     rows_in_seq_ = 0;
     uids_.clear();
     minutes_.clear();
+    meters_.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -632,8 +640,8 @@ void fold_cell_counts(const std::string& cells_root, const std::string& cells_pa
     std::filesystem::remove_all(cells_root);
 }
 
-std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_days(const std::string& minutes_path) {
-    std::map<std::pair<int64_t, uint16_t>, uint8_t> days;
+std::map<std::pair<int64_t, uint16_t>, FilterDay> flagged_days(const std::string& minutes_path) {
+    std::map<std::pair<int64_t, uint16_t>, FilterDay> days;
     if (!std::filesystem::exists(minutes_path)) return days;
     suspect_store::Reader reader(minutes_path);
 
@@ -650,7 +658,9 @@ std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_days(const std::string& 
             if (day > h3_utils::kMaxUint16Day) {
                 throw std::runtime_error("Minute bucket day out of uint16 range");
             }
-            days[{cur_uid, static_cast<uint16_t>(day)}] = kFlagFilter2;
+            FilterDay& entry = days[{cur_uid, static_cast<uint16_t>(day)}];
+            entry.flags = kFlagFilter2;
+            entry.max_edits_per_hour = std::max(entry.max_edits_per_hour, row.hour_span);
         }
         series.clear();
     };
@@ -679,6 +689,7 @@ std::map<std::pair<int64_t, uint16_t>, MoveDay> flagged_move_days(
             arrow_table_io::read_table(path));
         const auto* uids = typed_column<arrow::Int64Array>(table, "uid");
         const auto* minutes = typed_column<arrow::UInt32Array>(table, "minute");
+        const auto* meters = typed_column<arrow::UInt32Array>(table, "meters");
         for (int64_t i = 0; i < table->num_rows(); ++i) {
             const int64_t day = static_cast<int64_t>(minutes->Value(i)) / 1440;
             if (day > h3_utils::kMaxUint16Day) {
@@ -687,6 +698,7 @@ std::map<std::pair<int64_t, uint16_t>, MoveDay> flagged_move_days(
             MoveDay& entry = days[{uids->Value(i), static_cast<uint16_t>(day)}];
             entry.flags = static_cast<uint8_t>(entry.flags | kFlagFilter3);
             entry.far_move_count++;
+            entry.max_move_meters = std::max(entry.max_move_meters, meters->Value(i));
         }
     }
     if (!move_stage.empty()) {
@@ -748,9 +760,9 @@ CellSpreadRow CellSpreadAccumulator::evaluate(uint32_t minute) const {
     return {minute, static_cast<uint32_t>(object_total_), distinct, spread, flagged};
 }
 
-std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_cell_days(
+std::map<std::pair<int64_t, uint16_t>, CellSpreadDay> flagged_cell_days(
     const std::string& cells_path, const std::string& minutes_path, int h3_resolution) {
-    std::map<std::pair<int64_t, uint16_t>, uint8_t> days;
+    std::map<std::pair<int64_t, uint16_t>, CellSpreadDay> days;
     if (!std::filesystem::exists(cells_path) || !std::filesystem::exists(minutes_path)) {
         return days;
     }
@@ -800,7 +812,9 @@ std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_cell_days(
                 if (day > h3_utils::kMaxUint16Day) {
                     throw std::runtime_error("Cell spread minute day out of uint16 range");
                 }
-                days[{uid, static_cast<uint16_t>(day)}] = kFlagFilter4;
+                CellSpreadDay& entry = days[{uid, static_cast<uint16_t>(day)}];
+                entry.flags = kFlagFilter4;
+                if (s.spread_km2 > entry.spread_km2) entry.spread_km2 = s.spread_km2;
             }
         }
     }
@@ -845,16 +859,34 @@ void TagCoverageAccumulator::add_object(uint32_t minute, uint32_t count) {
 }
 
 TagCoverageRow TagCoverageAccumulator::evaluate(uint32_t minute) const {
-    uint32_t top_key_count = 0;
-    for (const auto& [key, count] : key_counts_) {
-        if (count > top_key_count) top_key_count = count;
+    // An unflagged row's keys are never read, so a window that cannot clear the
+    // minimum object count skips the scan entirely; that is the common case on
+    // a quiet day and this runs per minute over the whole persisted store.
+    std::vector<std::string> keys;
+    if (object_total_ >= kFilter5MinObjects) {
+        // Every key over the coverage threshold is listed, not just the
+        // strongest: a mass edit spreads across many similar keys and a day can
+        // trip on any one of them. The candidates are collected as pointers
+        // into key_counts_ so the ordering below moves no strings, then copied
+        // out once; sorting also keeps the reported set independent of the
+        // unordered_map's iteration order.
+        std::vector<const std::string*> over;
+        for (const auto& [key, count] : key_counts_) {
+            if (static_cast<double>(count) / static_cast<double>(object_total_) >
+                kFilter5TagCoverage) {
+                over.push_back(&key);
+            }
+        }
+        std::sort(over.begin(), over.end(),
+                  [](const std::string* a, const std::string* b) { return *a < *b; });
+        keys.reserve(over.size());
+        for (const std::string* key : over) keys.push_back(*key);
     }
-    double coverage = object_total_ > 0 ? static_cast<double>(top_key_count) / object_total_ : 0.0;
     uint8_t flagged = 0;
-    if (object_total_ >= kFilter5MinObjects && coverage > kFilter5TagCoverage) {
+    if (object_total_ >= kFilter5MinObjects && !keys.empty()) {
         flagged = kFlagFilter5;
     }
-    return {minute, static_cast<uint32_t>(object_total_), top_key_count, coverage, flagged};
+    return {minute, static_cast<uint32_t>(object_total_), flagged, std::move(keys)};
 }
 
 std::vector<TagCoverageRow> tag_coverages(
@@ -925,9 +957,9 @@ std::vector<CellSpreadRow> cell_spreads(
     return out;
 }
 
-std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_tag_days(
+std::map<std::pair<int64_t, uint16_t>, TagCoverageDay> flagged_tag_days(
     const std::string& tags_path, const std::string& minutes_path) {
-    std::map<std::pair<int64_t, uint16_t>, uint8_t> days;
+    std::map<std::pair<int64_t, uint16_t>, TagCoverageDay> days;
     if (!std::filesystem::exists(tags_path) || !std::filesystem::exists(minutes_path)) {
         return days;
     }
@@ -974,7 +1006,12 @@ std::map<std::pair<int64_t, uint16_t>, uint8_t> flagged_tag_days(
                 if (day > h3_utils::kMaxUint16Day) {
                     throw std::runtime_error("Tag coverage minute day out of uint16 range");
                 }
-                days[{uid, static_cast<uint16_t>(day)}] = kFlagFilter5;
+                // A mass edit spreads its keys over many qualifying windows of
+                // the same day, so the day collects their union rather than
+                // one window's keys.
+                TagCoverageDay& entry = days[{uid, static_cast<uint16_t>(day)}];
+                entry.flags = kFlagFilter5;
+                entry.tags.insert(s.keys.begin(), s.keys.end());
             }
         }
     }

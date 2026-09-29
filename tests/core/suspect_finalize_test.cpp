@@ -8,6 +8,7 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -66,22 +67,27 @@ void write_counts_stage(const std::string& path, const std::vector<CountsRow>& r
 struct MoveStageRow {
     int64_t uid;
     uint32_t minute;
+    uint32_t meters;
 };
 
 void write_moves_stage(const std::string& path, const std::vector<MoveStageRow>& rows) {
     arrow::Int64Builder uid;
     arrow::UInt32Builder minute;
+    arrow::UInt32Builder meters;
     for (const auto& r : rows) {
         ASSERT_TRUE(uid.Append(r.uid).ok());
         ASSERT_TRUE(minute.Append(r.minute).ok());
+        ASSERT_TRUE(meters.Append(r.meters).ok());
     }
-    std::shared_ptr<arrow::Array> a_uid, a_min;
+    std::shared_ptr<arrow::Array> a_uid, a_min, a_meters;
     ASSERT_TRUE(uid.Finish(&a_uid).ok());
     ASSERT_TRUE(minute.Finish(&a_min).ok());
+    ASSERT_TRUE(meters.Finish(&a_meters).ok());
     auto table = arrow::Table::Make(
         arrow::schema({arrow::field("uid", arrow::int64(), false),
-                       arrow::field("minute", arrow::uint32(), false)}),
-        {a_uid, a_min});
+                       arrow::field("minute", arrow::uint32(), false),
+                       arrow::field("meters", arrow::uint32(), false)}),
+        {a_uid, a_min, a_meters});
     write_table(path, table);
 }
 
@@ -107,17 +113,18 @@ std::vector<StoreRow> read_minutes(const std::string& path) {
 
 std::vector<MoveStageRow> read_move_stage(const std::string& path) {
     auto table = read_parquet(path);
-    EXPECT_EQ(table->num_columns(), 2);
-    if (table->num_columns() != 2) return {};
+    EXPECT_EQ(table->num_columns(), 3);
+    if (table->num_columns() != 3) return {};
     auto combined = table->CombineChunks();
     EXPECT_TRUE(combined.ok());
     if (!combined.ok()) return {};
     const auto& t = *combined;
     const auto* uid = static_cast<const arrow::Int64Array*>(t->column(0)->chunk(0).get());
     const auto* minute = static_cast<const arrow::UInt32Array*>(t->column(1)->chunk(0).get());
+    const auto* meters = static_cast<const arrow::UInt32Array*>(t->column(2)->chunk(0).get());
     std::vector<MoveStageRow> out;
     for (int64_t i = 0; i < t->num_rows(); ++i) {
-        out.push_back({uid->Value(i), minute->Value(i)});
+        out.push_back({uid->Value(i), minute->Value(i), meters->Value(i)});
     }
     return out;
 }
@@ -291,12 +298,34 @@ TEST(SuspectFlaggedDays, ThresholdAcrossDays) {
         w.add(8, 2882, 120);
         w.finish();
     }
-    const std::map<std::pair<int64_t, uint16_t>, uint8_t> flags =
+    const std::map<std::pair<int64_t, uint16_t>, suspect::FilterDay> flags =
         suspect::flagged_days(minutes);
-    const std::map<std::pair<int64_t, uint16_t>, uint8_t> exp_flags = {
-        {{7, 0}, suspect::kFlagFilter2}, {{8, 2}, suspect::kFlagFilter2},
+    // max_edits_per_hour is the peak span over the day's flagged minutes, so
+    // uid 7's unflagged day 1 (500) never becomes a day entry at all.
+    const std::map<std::pair<int64_t, uint16_t>, suspect::FilterDay> exp_flags = {
+        {{7, 0}, {suspect::kFlagFilter2, 501}}, {{8, 2}, {suspect::kFlagFilter2, 520}},
     };
     EXPECT_EQ(flags, exp_flags);
+}
+
+TEST(SuspectFlaggedDays, MaxSpanIsTheDayPeak) {
+    TempDir dir;
+    const std::string minutes = dir.join("suspect_minutes.bin");
+    {
+        // uid 3's trailing-hour spans on day 0: 700 at minute 5, a peak of 800
+        // at minute 10, then the window empties. A later burst of 640+1
+        // reaches 641, so a fold that kept the last flagged minute instead of
+        // the largest would report 641.
+        suspect_store::Writer w(minutes);
+        w.add(3, 5, 700);
+        w.add(3, 10, 100);
+        w.add(3, 200, 1);
+        w.add(3, 210, 640);
+        w.finish();
+    }
+    const auto days = suspect::flagged_days(minutes);
+    ASSERT_EQ(days.size(), 1u);
+    EXPECT_EQ(days.at({3, 0}).max_edits_per_hour, 800u);
 }
 
 TEST(SuspectFlaggedDays, GuardsDayUint16Range) {
@@ -337,7 +366,54 @@ TEST(SuspectTagDays, CoverageThresholdTriggersFlag) {
     }
     const auto flags = suspect::flagged_tag_days(tags, minutes);
     // minute 100 / 1440 = day 0. 95/100 = 95% > 90%, total 100 >= 100 -> flagged
-    EXPECT_EQ(flags.at({10, 0}), suspect::kFlagFilter5);
+    EXPECT_EQ(flags.at({10, 0}).flags, suspect::kFlagFilter5);
+    // Only the key that cleared the threshold is collected, sorted.
+    EXPECT_EQ(flags.at({10, 0}).tags, (std::set<std::string>{"highway"}));
+}
+
+TEST(SuspectTagDays, CollectsEveryKeyOverTheThreshold) {
+    TempDir dir;
+    const std::string tags = dir.join("suspect_tags.bin");
+    const std::string minutes = dir.join("suspect_minutes.bin");
+    {
+        // Two keys both clear 90% of the 100-object window: 100 objects, 95 with
+        // "highway", 94 with "building", 12 with "name" (below the threshold).
+        suspect_tag_store::Writer tw(tags);
+        tw.add(10, 100, "building", 94);
+        tw.add(10, 100, "highway", 95);
+        tw.add(10, 100, "name", 12);
+        tw.finish();
+        suspect_store::Writer mw(minutes);
+        mw.add(10, 100, 100);
+        mw.finish();
+    }
+    const auto days = suspect::flagged_tag_days(tags, minutes);
+    ASSERT_EQ(days.count({10, 0}), 1u);
+    EXPECT_EQ(days.at({10, 0}).tags,
+              (std::set<std::string>{"building", "highway"}));
+}
+
+TEST(SuspectTagDays, UnionsKeysAcrossTheDay) {
+    TempDir dir;
+    const std::string tags = dir.join("suspect_tags.bin");
+    const std::string minutes = dir.join("suspect_minutes.bin");
+    {
+        // Two disjoint qualifying windows on the same day, each with a
+        // different dominant key; the day collects the union.
+        suspect_tag_store::Writer tw(tags);
+        tw.add(10, 100, "highway", 100);
+        tw.add(10, 900, "building", 100);
+        tw.finish();
+        suspect_store::Writer mw(minutes);
+        mw.add(10, 100, 100);
+        mw.add(10, 900, 100);
+        mw.finish();
+    }
+    const auto days = suspect::flagged_tag_days(tags, minutes);
+    // minute 100 and 900 both fall in day 0; the windows are 800 minutes apart
+    // so neither contaminates the other.
+    ASSERT_EQ(days.count({10, 0}), 1u);
+    EXPECT_EQ(days.at({10, 0}).tags, (std::set<std::string>{"building", "highway"}));
 }
 
 TEST(SuspectTagDays, BelowCoverageNoFlag) {
@@ -391,7 +467,8 @@ TEST(SuspectTagDays, MultipleMinutesAccumulate) {
     }
     const auto flags = suspect::flagged_tag_days(tags, minutes);
     // Window at minute 110: total 50+60=110, highway 45+55=100 -> 100/110 = 90.9% > 90%
-    EXPECT_EQ(flags.at({10, 0}), suspect::kFlagFilter5);
+    EXPECT_EQ(flags.at({10, 0}).flags, suspect::kFlagFilter5);
+    EXPECT_EQ(flags.at({10, 0}).tags, (std::set<std::string>{"highway"}));
 }
 
 TEST(SuspectTagDays, MissingEitherStoreIsEmpty) {
@@ -416,7 +493,7 @@ TEST(SuspectTagDays, DifferentUidsSeparate) {
     }
     const auto flags = suspect::flagged_tag_days(tags, minutes);
     EXPECT_EQ(flags.size(), 1);
-    EXPECT_EQ(flags.at({10, 0}), suspect::kFlagFilter5);
+    EXPECT_EQ(flags.at({10, 0}).flags, suspect::kFlagFilter5);
     EXPECT_EQ(flags.count({11, 0}), 0);
 }
 
@@ -428,26 +505,26 @@ TEST(SuspectMoveDays, FoldsStagedMovesIntoDayFlags) {
     TempDir dir;
     const std::string stage_root = dir.join("stage");
 
-    // One run's staged per-(uid, minute) moves (> threshold, as the sink
+    // One run's staged per-(uid, minute, meters) moves (> threshold, as the sink
     // writes them), spread over two seq groups.
     {
         std::filesystem::create_directories(stage_root + "/moves/seq_1");
         write_moves_stage(stage_root + "/moves/seq_1/stage.parquet",
-                          {{10, 1440}, {10, 2880}});
+                          {{10, 1440, 800}, {10, 2880, 2500}});
         std::filesystem::create_directories(stage_root + "/moves/seq_2");
         write_moves_stage(stage_root + "/moves/seq_2/stage.parquet",
-                          {{10, 2881}, {12, 1440 + 5}});
+                          {{10, 2881, 1200}, {12, 1440 + 5, 640}});
     }
     const auto flags = suspect::flagged_move_days(stage_root);
     EXPECT_FALSE(std::filesystem::exists(stage_root));
 
     // day = minute / 1440: uid 10's 1440 -> day 1, 2880/2881 -> day 2; uid
     // 12's 1445 falls into day 1. far_move_count is the number of staged
-    // moves folded into that day.
+    // moves folded into that day, max_move_meters the largest of them.
     const std::map<std::pair<int64_t, uint16_t>, suspect::MoveDay> exp = {
-        {{10, 1}, {suspect::kFlagFilter3, 1}},
-        {{10, 2}, {suspect::kFlagFilter3, 2}},
-        {{12, 1}, {suspect::kFlagFilter3, 1}},
+        {{10, 1}, {suspect::kFlagFilter3, 1, 800}},
+        {{10, 2}, {suspect::kFlagFilter3, 2, 2500}},
+        {{12, 1}, {suspect::kFlagFilter3, 1, 640}},
     };
     EXPECT_EQ(flags, exp);
 }
@@ -459,15 +536,15 @@ TEST(SuspectMoveDays, RerunRefoldsSameFlags) {
     const auto run = [&] {
         std::filesystem::create_directories(stage_root + "/moves/seq_1");
         write_moves_stage(stage_root + "/moves/seq_1/stage.parquet",
-                          {{10, 1440 * 1000 + 30}});
+                          {{10, 1440 * 1000 + 30, 3300}});
         return suspect::flagged_move_days(stage_root);
     };
     EXPECT_EQ(run(), (std::map<std::pair<int64_t, uint16_t>, suspect::MoveDay>{
-        {{10, 1000}, {suspect::kFlagFilter3, 1}}}));
+        {{10, 1000}, {suspect::kFlagFilter3, 1, 3300}}}));
     // A rerun regenerates the same staged rows; flags are monotonic ORs, so
     // the result is identical.
     EXPECT_EQ(run(), (std::map<std::pair<int64_t, uint16_t>, suspect::MoveDay>{
-        {{10, 1000}, {suspect::kFlagFilter3, 1}}}));
+        {{10, 1000}, {suspect::kFlagFilter3, 1, 3300}}}));
 }
 
 TEST(SuspectMoveDays, NoStageIsEmptyAndRemovesRoot) {
@@ -612,7 +689,7 @@ TEST(SuspectNodeMoves, UpdateNodePassStagesOnlyFarMoves) {
         sink.finish_seq();
     }
 
-    // Exactly one staged row: node 2's ~157 km move as (uid, minute).
+    // Exactly one staged row: node 2's ~157 km move as (uid, minute, meters).
     const std::vector<std::string> files = [&] {
         std::vector<std::string> out;
         for (const auto& entry : std::filesystem::recursive_directory_iterator(
@@ -628,6 +705,10 @@ TEST(SuspectNodeMoves, UpdateNodePassStagesOnlyFarMoves) {
     ASSERT_EQ(mv.size(), 1);
     EXPECT_EQ(mv[0].uid, 10);
     EXPECT_EQ(mv[0].minute, 28401180);  // 2024-01-01T01:00:00Z
+    // The prior res-9 cell's center sits within ~175 m of (0,0), so the
+    // staged distance is (0,0) -> (1,1) to within a cell radius.
+    EXPECT_GT(mv[0].meters, 150000u);
+    EXPECT_LT(mv[0].meters, 165000u);
 }
 
 }  // namespace

@@ -2,6 +2,7 @@
 
 #include <arrow/api.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <initializer_list>
@@ -196,7 +197,11 @@ struct SuspectRows {
     std::vector<uint16_t> day;
     std::vector<uint8_t> flag;
     std::vector<uint32_t> changes;
+    std::vector<uint32_t> max_edits_per_hour;
+    std::vector<double> spread_km2;
+    std::vector<std::vector<std::string>> tags;
     std::vector<uint32_t> far_move_count;
+    std::vector<uint32_t> max_move_meters;
     std::vector<uint8_t> ranking_at_day;
 };
 
@@ -205,24 +210,44 @@ SuspectRows read_suspect(const std::string& path) {
     EXPECT_TRUE(combined_result.ok()) << combined_result.status();
     if (!combined_result.ok()) return {};
     const auto& t = *combined_result;
-    // uid, username, change_date, suspect_flag, changes, far_move_count,
+    // uid, username, change_date, suspect_flag, changes, max_edits_per_hour,
+    // peak_spread_km2, changed_keys, far_move_count, max_move_meters,
     // ranking_at_day.
-    EXPECT_EQ(t->num_columns(), 7);
+    EXPECT_EQ(t->num_columns(), 11);
     SuspectRows out;
     const auto* uid = static_cast<const arrow::Int64Array*>(t->column(0)->chunk(0).get());
     const auto* user = static_cast<const arrow::StringArray*>(t->column(1)->chunk(0).get());
     const auto* day = static_cast<const arrow::UInt16Array*>(t->column(2)->chunk(0).get());
     const auto* flag = static_cast<const arrow::UInt8Array*>(t->column(3)->chunk(0).get());
     const auto* changes = static_cast<const arrow::UInt32Array*>(t->column(4)->chunk(0).get());
-    const auto* moves = static_cast<const arrow::UInt32Array*>(t->column(5)->chunk(0).get());
-    const auto* rank = static_cast<const arrow::UInt8Array*>(t->column(6)->chunk(0).get());
+    const auto* hour_edits = static_cast<const arrow::UInt32Array*>(t->column(5)->chunk(0).get());
+    const auto* spread = static_cast<const arrow::FloatArray*>(t->column(6)->chunk(0).get());
+    const auto* tags = static_cast<const arrow::ListArray*>(t->column(7)->chunk(0).get());
+    const auto* moves = static_cast<const arrow::UInt32Array*>(t->column(8)->chunk(0).get());
+    const auto* max_move = static_cast<const arrow::UInt32Array*>(t->column(9)->chunk(0).get());
+    const auto* rank = static_cast<const arrow::UInt8Array*>(t->column(10)->chunk(0).get());
     for (int64_t i = 0; i < t->num_rows(); ++i) {
         out.uid.push_back(uid->Value(i));
         out.username.push_back(user->GetString(i));
         out.day.push_back(day->Value(i));
         out.flag.push_back(flag->Value(i));
         out.changes.push_back(changes->Value(i));
+        out.max_edits_per_hour.push_back(hour_edits->Value(i));
+        out.spread_km2.push_back(spread->Value(i));
+        std::vector<std::string> row_tags;
+        // The child array holds every row's keys back to back; each row is
+        // addressed by its offset pair. value_offset has one entry per row plus
+        // a terminating total, so the last row's end is offset(num_rows).
+        const int64_t tag_begin = tags->value_offset(i);
+        const int64_t tag_end = tags->value_offset(i + 1);
+        const auto& tag_values =
+            *static_cast<const arrow::StringArray*>(tags->values().get());
+        for (int64_t j = tag_begin; j < tag_end; ++j) {
+            row_tags.push_back(tag_values.GetString(j));
+        }
+        out.tags.push_back(std::move(row_tags));
         out.far_move_count.push_back(moves->Value(i));
+        out.max_move_meters.push_back(max_move->Value(i));
         out.ranking_at_day.push_back(rank->Value(i));
     }
     return out;
@@ -609,8 +634,8 @@ TEST(UsersHistoryFinalize, UpdateFlagsCombineCarriedAndMoveDays) {
     // 1000 (which already carries the filter-2 bit) and uid 11 day 2000.
     update_with("2", "zoe", 3001,
                 std::map<std::pair<int64_t, uint16_t>, suspect::MoveDay>{
-                    {{10, 1000}, {suspect::kFlagFilter3, 2}},
-                    {{11, 2000}, {suspect::kFlagFilter3, 2}},
+                    {{10, 1000}, {suspect::kFlagFilter3, 2, 4200}},
+                    {{11, 2000}, {suspect::kFlagFilter3, 2, 900}},
                 },
                 2847601);
 
@@ -651,26 +676,49 @@ TEST(UsersHistoryFinalize, UpdateFlagsCombineCarriedAndMoveDays) {
 
     // Derived columns across the two runs' accumulations:
     //   uid 10 day 1000: changes is the carried day's own total (8, re-derived
-    //   from the merged counts), far_move_count keeps the frozen base value
-    //   (0, carried from run 1; run 2's freshly staged moves are ignored on a
-    //   carried day) and the ranking stamped in run 1.
+    //   from the merged counts), far_move_count and max_move_meters keep the
+    //   frozen base values (0 and 0, carried from run 1; run 2's freshly
+    //   staged moves are ignored on a carried day) and the ranking stamped in
+    //   run 1.
     //   uid 11 day 2000: newly move-flagged this run, so changes is its own
-    //   total (4) plus the run's 2 far moves and the (0) ranking is stamped
-    //   now.
+    //   total (4) plus the run's 2 far moves and the largest of them (900 m)
+    //   and the (0) ranking is stamped now.
     //   uid 90's low-ranking days: their own change totals (1 each), no
     //   moves.
     EXPECT_EQ(v.changes[3], 8);
     EXPECT_EQ(v.far_move_count[3], 0);
+    EXPECT_EQ(v.max_move_meters[3], 0);
     EXPECT_GT(v.ranking_at_day[3], 0);
     EXPECT_EQ(v.changes[2], 4);
     EXPECT_EQ(v.far_move_count[2], 2);
+    EXPECT_EQ(v.max_move_meters[2], 900);
     EXPECT_EQ(v.ranking_at_day[2], 0);
     EXPECT_EQ(v.changes[1], 1);
     EXPECT_EQ(v.far_move_count[1], 0);
+    EXPECT_EQ(v.max_move_meters[1], 0);
     EXPECT_EQ(v.ranking_at_day[1], 0);
     EXPECT_EQ(v.changes[0], 1);
     EXPECT_EQ(v.far_move_count[0], 0);
+    EXPECT_EQ(v.max_move_meters[0], 0);
     EXPECT_EQ(v.ranking_at_day[0], 0);
+
+    // Run 3 stages a much longer drag on uid 11 day 2000. The day was already
+    // flagged in run 2, so its frozen far-move count and largest move carry
+    // forward from the base file and run 3's staged rows are ignored.
+    update_with("3", "zoe", 3002,
+                std::map<std::pair<int64_t, uint16_t>, suspect::MoveDay>{
+                    {{11, 2000}, {suspect::kFlagFilter3, 5, 55000}},
+                },
+                2847602);
+    const auto v3 = read_suspect(dir.join("suspect.parquet"));
+    const auto row =
+        std::find_if(v3.uid.begin(), v3.uid.end(),
+                     [](int64_t u) { return u == 11; });
+    ASSERT_NE(row, v3.uid.end());
+    const size_t i = static_cast<size_t>(row - v3.uid.begin());
+    EXPECT_EQ(v3.day[i], 2000);
+    EXPECT_EQ(v3.far_move_count[i], 2);
+    EXPECT_EQ(v3.max_move_meters[i], 900);
 }
 
 // Filter 1 is forward-only and monotonic: import writes it as 0, an update
@@ -866,9 +914,9 @@ TEST(UsersHistoryFinalize, UpdateFlagsCombineFilter4WithExistingBits) {
 
     // Filter 4 flags uid 10 day 1000 (already carrying filter 2) and uid 11
     // day 2000, which no other screen flagged.
-    const std::map<std::pair<int64_t, uint16_t>, uint8_t> filter4_days{
-        {{10, 1000}, suspect::kFlagFilter4},
-        {{11, 2000}, suspect::kFlagFilter4},
+    const std::map<std::pair<int64_t, uint16_t>, suspect::CellSpreadDay> filter4_days{
+        {{10, 1000}, {suspect::kFlagFilter4, 128.4}},
+        {{11, 2000}, {suspect::kFlagFilter4, 96.0}},
     };
     users_history::run_update_finalize(stage_root, history, kDefaultUsersHistoryGroupRows,
                                        kDefaultRankingGroupRows, minutes, {}, filter4_days);
@@ -897,6 +945,15 @@ TEST(UsersHistoryFinalize, UpdateFlagsCombineFilter4WithExistingBits) {
     EXPECT_EQ(v.day[1], 1000);
     EXPECT_EQ(v.uid[1], 10);
     EXPECT_EQ(v.flag[1], suspect::kFlagFilter2 | suspect::kFlagFilter4);
+    // The peak spread travels with the row; the metrics of the filters that did
+    // not fire on a day read as empty, and uid 10's day carries the filter-2
+    // hour span recomputed from the minute store.
+    EXPECT_FLOAT_EQ(v.spread_km2[0], 96.0f);
+    EXPECT_FLOAT_EQ(v.spread_km2[1], 128.4f);
+    EXPECT_EQ(v.max_edits_per_hour[0], 0u);
+    EXPECT_EQ(v.max_edits_per_hour[1], 501u);
+    EXPECT_TRUE(v.tags[0].empty());
+    EXPECT_TRUE(v.tags[1].empty());
 }
 
 // Filter 5 (tag coverage) merges identically: ORs into the per-day flag, is
@@ -931,9 +988,9 @@ TEST(UsersHistoryFinalize, UpdateFlagsCombineFilter5WithExistingBits) {
 
     // Filter 5 flags uid 10 day 1000 (already carrying filter 2) and uid 11
     // day 2000, which no other screen flagged.
-    const std::map<std::pair<int64_t, uint16_t>, uint8_t> filter5_days{
-        {{10, 1000}, suspect::kFlagFilter5},
-        {{11, 2000}, suspect::kFlagFilter5},
+    const std::map<std::pair<int64_t, uint16_t>, suspect::TagCoverageDay> filter5_days{
+        {{10, 1000}, {suspect::kFlagFilter5, {"building", "source"}}},
+        {{11, 2000}, {suspect::kFlagFilter5, {"amenity"}}},
     };
     users_history::run_update_finalize(stage_root, history, kDefaultUsersHistoryGroupRows,
                                        kDefaultRankingGroupRows, minutes, {}, {}, filter5_days);
@@ -962,6 +1019,14 @@ TEST(UsersHistoryFinalize, UpdateFlagsCombineFilter5WithExistingBits) {
     EXPECT_EQ(v.day[1], 1000);
     EXPECT_EQ(v.uid[1], 10);
     EXPECT_EQ(v.flag[1], suspect::kFlagFilter2 | suspect::kFlagFilter5);
+    // The collected keys are written as a list, one entry per key, in the
+    // day's sorted set order; a day with no filter-5 window gets an empty one.
+    EXPECT_EQ(v.tags[0], (std::vector<std::string>{"amenity"}));
+    EXPECT_EQ(v.tags[1], (std::vector<std::string>{"building", "source"}));
+    EXPECT_FLOAT_EQ(v.spread_km2[0], 0.0f);
+    EXPECT_FLOAT_EQ(v.spread_km2[1], 0.0f);
+    EXPECT_EQ(v.max_edits_per_hour[0], 0u);
+    EXPECT_EQ(v.max_edits_per_hour[1], 501u);
 }
 
 }  // namespace

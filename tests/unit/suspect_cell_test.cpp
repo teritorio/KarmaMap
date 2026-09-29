@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "test_helpers.hpp"
+#include "h3_utils.hpp"
 #include "suspect.hpp"
 #include "suspect_cell_store.hpp"
 #include "suspect_store.hpp"
@@ -406,7 +407,7 @@ TEST(SuspectCellFlaggedDays, EndToEndGateUsesTrueObjectCount) {
     }
     auto days = suspect::flagged_cell_days(cells_path, minutes_path, res);
     ASSERT_EQ(days.size(), 1);
-    EXPECT_EQ(days.at({10, 0}), suspect::kFlagFilter4);
+    EXPECT_EQ(days.at({10, 0}).flags, suspect::kFlagFilter4);
     EXPECT_EQ(days.count({20, 0}), 0u);
 }
 
@@ -445,10 +446,10 @@ TEST(SuspectCellFlaggedDays, SkipsUidMissingFromOneStore) {
     }
     auto days = suspect::flagged_cell_days(cells_path, minutes_path, res);
     ASSERT_EQ(days.size(), 2);
-    EXPECT_EQ(days.at({10, 0}), suspect::kFlagFilter4);
+    EXPECT_EQ(days.at({10, 0}).flags, suspect::kFlagFilter4);
     EXPECT_EQ(days.count({20, 0}), 0u);
     EXPECT_EQ(days.count({30, 0}), 0u);
-    EXPECT_EQ(days.at({40, 0}), suspect::kFlagFilter4);
+    EXPECT_EQ(days.at({40, 0}).flags, suspect::kFlagFilter4);
 }
 
 TEST(SuspectCellFlaggedDays, EndToEndWithFlagAtRes6) {
@@ -476,7 +477,42 @@ TEST(SuspectCellFlaggedDays, EndToEndWithFlagAtRes6) {
     ASSERT_EQ(days.size(), 1);
     auto it = days.find({10, 0});
     EXPECT_TRUE(it != days.end());
-    EXPECT_EQ(it->second, suspect::kFlagFilter4);
+    EXPECT_EQ(it->second.flags, suspect::kFlagFilter4);
+}
+
+TEST(SuspectCellFlaggedDays, MaxSpreadIsTheDayPeak) {
+    // Two qualifying windows on day 0, the second reaching more cells. The day
+    // reports the larger spread, not the one from the last window.
+    TempDir dir;
+    const std::string cells_path = dir.join("cells.bin");
+    const std::string minutes_path = dir.join("minutes.bin");
+    const int res = 6;
+    const double cell_km2 = h3_utils::average_hexagon_area_km2(res);
+
+    {
+        suspect_cell_store::Writer w(cells_path, res);
+        w.add(10, 100, 0x11111111, 10);
+        w.add(10, 100, 0x22222222, 10);
+        w.add(10, 100, 0x33333333, 10);
+        w.add(10, 900, 0x44444444, 10);
+        w.add(10, 900, 0x55555555, 10);
+        w.add(10, 900, 0x66666666, 10);
+        w.add(10, 900, 0x77777777, 10);
+        w.add(10, 900, 0x88888888, 10);
+        w.finish();
+    }
+    {
+        suspect_store::Writer w(minutes_path);
+        w.add(10, 100, 30);
+        w.add(10, 900, 50);
+        w.set_applied_seq(1);
+        w.finish();
+    }
+    auto days = suspect::flagged_cell_days(cells_path, minutes_path, res);
+    ASSERT_EQ(days.count({10, 0}), 1u);
+    // The windows are 800 minutes apart, so they do not overlap: the peak is
+    // the 5-cell window's area.
+    EXPECT_DOUBLE_EQ(days.at({10, 0}).spread_km2, 5 * cell_km2);
 }
 
 TEST(SuspectCellFlaggedDays, DayBoundary) {
@@ -506,8 +542,8 @@ TEST(SuspectCellFlaggedDays, DayBoundary) {
     auto days = suspect::flagged_cell_days(cells_path, minutes_path, res);
     // Should flag both day 0 and day 1
     ASSERT_EQ(days.size(), 2);
-    EXPECT_EQ(days.at({10, 0}), suspect::kFlagFilter4);
-    EXPECT_EQ(days.at({10, 1}), suspect::kFlagFilter4);
+    EXPECT_EQ(days.at({10, 0}).flags, suspect::kFlagFilter4);
+    EXPECT_EQ(days.at({10, 1}).flags, suspect::kFlagFilter4);
 }
 
 TEST(SuspectCellFlaggedDays, UnflaggedDay) {
@@ -559,7 +595,7 @@ TEST(SuspectCellFlaggedDays, CellLessMinuteInsideWindowCountsTowardGate) {
     }
     auto days = suspect::flagged_cell_days(cells_path, minutes_path, res);
     ASSERT_EQ(days.size(), 1);
-    EXPECT_EQ(days.at({10, 0}), suspect::kFlagFilter4);
+    EXPECT_EQ(days.at({10, 0}).flags, suspect::kFlagFilter4);
 }
 
 }  // namespace

@@ -41,19 +41,29 @@
 //                    changes = the day's total change count (node/way/
 //                    relation created+modified+deleted, the same value as
 //                    the users_history count column, 0 otherwise),
-//                    far_move_count = the count of that day's staged moves
-//                    beyond the filter-3 threshold at the run that first
-//                    flagged the day (see the frozen note below),
-//                    ranking_at_day = the contributor's ranking as of
-//                    the day's first flag), sorted by (change_date, uid)
-//                    with change_date descending (newest first).
+//                    max_edits_per_hour = the peak trailing-hour
+//                    modified+deleted count over the day's filter-2
+//                    windows, peak_spread_km2 = the peak window's H3 cell
+//                    area over the day's filter-4 windows, changed_keys =
+//                    the tag keys over the filter-5 coverage threshold in
+//                    any of the day's filter-5 windows, far_move_count =
+//                    the count of that day's staged moves beyond the
+//                    filter-3 threshold at the run that first flagged the
+//                    day (see the frozen note below), max_move_meters =
+//                    the largest of those moves, ranking_at_day = the
+//                    contributor's ranking as of the day's first flag),
+//                    sorted by (change_date, uid) with change_date
+//                    descending (newest first).
 //                    Written by the update finalize from the same merged
 //                    flag state as the history file, so the two always
 //                    agree; a pure import writes no flags and produces no
 //                    suspect.parquet. changes is re-derived from the
 //                    merged per-day counts each run (an appended-to history
 //                    yields the same sum, so it never drifts and never
-//                    touches other days); far_move_count and
+//                    touches other days); the store-derived metric columns
+//                    are recomputed over the whole persisted stores each
+//                    run, so they keep up with a day that was first flagged
+//                    by another filter; far_move_count, max_move_meters and
 //                    ranking_at_day are frozen when a day is first
 //                    flagged and carried unchanged on every later update,
 //                    never recalculated. Because a day first flagged by
@@ -99,7 +109,10 @@
 #include <utility>
 
 namespace suspect {
+struct CellSpreadDay;
+struct FilterDay;
 struct MoveDay;
+struct TagCoverageDay;
 }  // namespace suspect
 
 namespace users_history {
@@ -294,9 +307,11 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
 // kFlagFilter3 set produced by suspect::flagged_move_days, which the caller
 // must have folded first, and bit 3 (kFlagFilter4) from `filter4_days`, the
 // run's (uid, change_date) -> kFlagFilter4 set produced by
-// suspect::flagged_cell_days. All bits are monotonic and forward-only: the
+// suspect::flagged_cell_days, and bit 4 (kFlagFilter5) from `filter5_days`,
+// its per-(uid, change_date) -> kFlagFilter5 set produced by
+// suspect::flagged_tag_days. All bits are monotonic and forward-only: the
 // existing file's flags are carried forward unchanged (import writes 0), this
-// run's bit-0/1/3 sets are ORed in, and bit 2 (kFlagFilter1, low ranking) is
+// run's bit-0/1/3/4 sets are ORed in, and bit 2 (kFlagFilter1, low ranking) is
 // set only on the run's newly-written rows (keys absent from the base
 // history) whose user's current ranking is below the threshold. A
 // ranking drop never re-flags the base rows and a once-set bit is never
@@ -304,9 +319,11 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
 // schemas written by run_finalize (full-run datasets) or a previous update
 // finalize. Alongside the history rewrite it also writes suspect.parquet
 // (one row per flagged (uid, change_date) with the username, the day's total
-// change count, the day's far-move count and the ranking frozen at the
-// day's first flag, sorted by (change_date, uid) with change_date descending
-// (newest first)); a pure import never produces it.
+// change count, the peak filter-2 hour span, the peak filter-4 spread, the
+// day's filter-5 tag keys, the day's far-move count, the largest of those
+// moves and the ranking frozen at the day's first flag, sorted by
+// (change_date, uid) with change_date descending (newest first)); a pure
+// import never produces it.
 // `filter4_days` is the spatial-spread extension (Filter 4).
 // `filter5_days` is the tag-coverage extension (Filter 5).
 void run_update_finalize(const std::string& stage_root, const std::string& history_path,
@@ -314,9 +331,9 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
                          const std::string& minutes_path,
                          const std::map<std::pair<int64_t, uint16_t>, suspect::MoveDay>&
                              move_flags,
-                         const std::map<std::pair<int64_t, uint16_t>, uint8_t>&
+                         const std::map<std::pair<int64_t, uint16_t>, suspect::CellSpreadDay>&
                              filter4_days = {},
-                         const std::map<std::pair<int64_t, uint16_t>, uint8_t>&
+                         const std::map<std::pair<int64_t, uint16_t>, suspect::TagCoverageDay>&
                              filter5_days = {});
 
 }  // namespace users_history
