@@ -7,10 +7,10 @@ export function showExtractInfo(manifest) {
   const el = document.getElementById('extract-info')
   if (!el) return
 
-  const { region, name, updatedOn, detail } = extractInfo(manifest)
+  const { region, name, updatedAt, detail } = extractInfo(manifest)
   const parts = []
   if (name) parts.push(region ? `${region} / ${name}` : name)
-  if (updatedOn) parts.push(`updated ${updatedOn}`)
+  if (updatedAt) parts.push(`updated ${updatedAt}`)
   el.textContent = parts.join(' · ')
   el.title = detail
 }

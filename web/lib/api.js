@@ -38,13 +38,13 @@ function updateUrlSegments(url) {
   }
 }
 
-function isoDate(timestamp) {
-  const match = /^(\d{4}-\d{2}-\d{2})/.exec(timestamp ?? '')
-  return match ? match[1] : null
-}
-
 function readableTimestamp(timestamp) {
   return String(timestamp).replace(/\\(.)/g, '$1')
+}
+
+function isoDateTime(timestamp) {
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/.exec(readableTimestamp(timestamp ?? ''))
+  return match ? `${match[1]} ${match[2]} UTC` : null
 }
 
 export function extractInfo(manifest) {
@@ -61,7 +61,7 @@ export function extractInfo(manifest) {
   return {
     region: segments.length > 1 ? segments[segments.length - 2] : null,
     name: name || null,
-    updatedOn: isoDate(source.timestamp),
+    updatedAt: isoDateTime(source.timestamp),
     detail: detail.join(' — '),
   }
 }
