@@ -241,11 +241,19 @@ void run_users_history_pass(const Options& opts) {
 // pass over it succeeded. Once after all diffs the flat incremental cache is
 // rebuilt (base + overlay minus deletions) and the staging partitions are
 // merged into data.parquet, so N diffs never rewrite the dataset N times.
+// A diff download failure stops the run but does not discard progress: the
+// already downloaded diffs are applied and the same commit runs for the
+// resulting prefix, so the next run resumes from there. Only a failure before
+// the first diff is applied aborts without committing.
 // Returns the provenance to write to manifest (the applied sequence, with
-// the fetched state.txt timestamp), and sets spatial_center if computed.
+// the fetched state.txt timestamp, or the last applied diff's timestamp when a
+// download failure stops the run early), sets spatial_center if computed, and
+// sets stopped_early_out when the run committed a partial prefix.
 std::optional<replication_state::State> run_update_mode(
     const Options& opts, const replication_state::State& current,
-    std::optional<std::pair<double, double>>& spatial_center) {
+    std::optional<std::pair<double, double>>& spatial_center,
+    bool& stopped_early_out) {
+    stopped_early_out = false;
     std::cerr << "[update] fetching diff stream state below " << current.url << "\n";
     const std::string cookie = resolve_update_cookie(opts);
 
@@ -339,6 +347,13 @@ std::optional<replication_state::State> run_update_mode(
     update_pass::DiffMerger merger;
     std::vector<std::string> batch_diffs;
     uint64_t batch_first_seq = 0;
+    // Set when a diff download fails: the run stops and commits the diffs
+    // applied so far (see below) instead of discarding them. `applied_ts` is
+    // the newest object timestamp of the last applied batch, recorded as the
+    // partial run's provenance timestamp.
+    bool stopped_early = false;
+    uint64_t stopped_seq = 0;
+    int64_t applied_ts = 0;
     const auto apply_batch = [&](const std::string& change_path, uint64_t seq) {
         // The node pass folds the whole batch's positions in before any way
         // is resolved, so way and filter-4 cells see the end-of-batch geometry.
@@ -358,6 +373,7 @@ std::optional<replication_state::State> run_update_mode(
         std::cerr << "[update] merged batch seq " << batch_first_seq << ".." << seq
                   << " (" << batch_diffs.size() << " diffs)";
         if (merger.has_ts()) {
+            applied_ts = merger.max_ts();
             std::cerr << " ts " << osmium::Timestamp(merger.min_ts()).to_iso_all()
                       << ".." << osmium::Timestamp(merger.max_ts()).to_iso_all();
         }
@@ -375,8 +391,22 @@ std::optional<replication_state::State> run_update_mode(
     };
 
     for (uint64_t seq = first; seq <= target; ++seq) {
-        const std::string diff_path = replication_state::fetch_diff(
-            current.url, seq, cookie, diffs_dir + "/" + std::to_string(seq) + ".osc.gz");
+        std::string diff_path;
+        try {
+            diff_path = replication_state::fetch_diff(
+                current.url, seq, cookie, diffs_dir + "/" + std::to_string(seq) + ".osc.gz");
+        } catch (const std::exception& e) {
+            // Guards the fetch_diff call only: a corrupt diff (a read failure
+            // in merger.add) or a pass failure still aborts hard below rather
+            // than being checkpointed around. A local write error in the diffs
+            // dir lands here too and is treated like a transient download
+            // failure, which is still a consistent prefix.
+            std::cerr << "[update] download of sequence " << seq << " failed: "
+                      << e.what() << "\n";
+            stopped_early = true;
+            stopped_seq = seq;
+            break;
+        }
         // A batch of a single trailing diff runs the passes on the diff
         // directly instead of re-serializing it into the merged file.
         if (batch_diffs.empty() && seq == target) {
@@ -400,6 +430,26 @@ std::optional<replication_state::State> run_update_mode(
         if (time_batch_full || seq == target) {
             flush_batch(seq);
         }
+    }
+
+    // A failed download stops the run, but the diffs applied so far are a
+    // consistent prefix of the stream: apply the current batch's already
+    // downloaded diffs, then fall through to the commit below. Only a failure
+    // before the first diff was applied has nothing to checkpoint and aborts.
+    if (stopped_early) {
+        if (!batch_diffs.empty()) {
+            flush_batch(stopped_seq - 1);
+        } else {
+            merger.finish();
+            std::filesystem::remove(merged_path, ignore_ec);
+        }
+        if (applied == base_seq) {
+            throw std::runtime_error(
+                "diff download for sequence " + std::to_string(stopped_seq) +
+                " failed before any diff was applied; the dataset is unchanged");
+        }
+        std::cerr << "[update] stopping early at sequence " << stopped_seq
+                  << "; committing through " << applied << "\n";
     }
 
     std::cerr << "[update] rebuilding incremental cache " << opts.node_cache_last_path
@@ -438,9 +488,14 @@ std::optional<replication_state::State> run_update_mode(
 
     // Provenance records the applied state: the sequence is the last applied
     // diff (indexed by "update N"), the timestamp is the fetched state.txt's
-    // (the newest applied day's).
+    // (the newest applied day's). A partial run stopped below the fetched
+    // target, so its timestamp is taken from the last applied diff instead.
     replication_state::State new_source = current;
     new_source.sequence_number = applied;
+    if (stopped_early && applied > base_seq && applied_ts > 0) {
+        new_source.timestamp = osmium::Timestamp(applied_ts).to_iso_all();
+    }
+    stopped_early_out = stopped_early;
     spatial_center = center;
     return new_source;
 }
@@ -461,6 +516,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    bool update_incomplete = false;
     try {
         std::filesystem::create_directories(opts.output_dir);
 
@@ -550,7 +606,7 @@ int main(int argc, char** argv) {
                 run_users_history_pass(opts);
                 break;
             case Options::Stage::update:
-                source = run_update_mode(opts, *source, spatial_center);
+                source = run_update_mode(opts, *source, spatial_center, update_incomplete);
                 break;
         }
 
@@ -562,5 +618,5 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    return 0;
+    return update_incomplete ? 1 : 0;
 }

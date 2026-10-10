@@ -163,7 +163,11 @@ files and the merged file are removed, so the diffs dir only ever holds
 in-flight diffs;
 diffs committed by earlier runs are purged at update start. Bare `update` (or
 `update 0`) fetches every diff up to the current `state.txt`; `update N` stops
-after N.
+after N. A diff download that fails stops the run but does not discard the
+work: the diffs downloaded so far are applied and the same end-of-run commit
+runs (incremental cache rebuild, staging merge, suspect/history finalize,
+manifest write) for that prefix, and karmamap exits non-zero; the next run
+resumes from the committed sequence.
 
 Each batch invokes update-mode passes 1 and 2:
 

@@ -232,7 +232,11 @@ positions (exact for a single-diff batch); a way whose ref node is created
 and deleted within the same batch is dropped rather than counted. A batch's
 diff files are removed
 once its passes succeeded, so the `diffs/` dir does not accumulate; diffs
-already committed by earlier runs are purged on start.
+already committed by earlier runs are purged on start. If a diff download
+fails, the run stops but keeps its progress: the diffs downloaded so far are
+applied, staged, and committed (cache rebuild, merge into `data.parquet`,
+suspect/history finalize, manifest write) as a consistent prefix, and karmamap
+exits non-zero; the next run resumes from the committed sequence.
 
 ### Serving the web frontend
 
