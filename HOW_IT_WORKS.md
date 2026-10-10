@@ -152,7 +152,9 @@ already present is reused, a partial download is removed on failure — and
 applied. Consecutive diffs are merged into a single change file
 (`diffs_dir/merged.osc`) by `update_pass::DiffMerger` before any pass runs,
 and a batch is applied as one unit; a batch closes once its diffs' object
-timestamps span ~1 h (the diff crossing the bound is kept in full).
+timestamps span ~1 h (the diff crossing the bound is kept in full); a batch
+reduced to a single trailing diff skips the merged file and runs the passes on
+that diff directly.
 Once every pass over a batch succeeded, the batch's diff
 files and the merged file are removed, so the diffs dir only ever holds
 in-flight diffs;

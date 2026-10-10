@@ -328,8 +328,9 @@ std::optional<replication_state::State> run_update_mode(
     // Filter 5 stages go under suspect_update_stage/tags/seq_<n>.
     suspect::NodeMoveSink move_sink(suspect_stage_root + "/moves");
 
-    // Diffs are merged into diffs_dir/merged.osc between flushes; the merged
-    // file and its source diffs are removed once every pass over them ran.
+    // Diffs are merged into diffs_dir/merged.osc between flushes (a batch of a
+    // single trailing diff skips the merge); the merged file and the batch's
+    // diff files are removed once every pass over them ran.
     const std::string merged_path = diffs_dir + "/merged.osc";
     std::error_code ignore_ec;
     std::filesystem::remove(merged_path, ignore_ec);  // stale from a crashed run
@@ -338,6 +339,25 @@ std::optional<replication_state::State> run_update_mode(
     update_pass::DiffMerger merger;
     std::vector<std::string> batch_diffs;
     uint64_t batch_first_seq = 0;
+    const auto apply_batch = [&](const std::string& change_path, uint64_t seq) {
+        // The node pass folds the whole batch's positions in before any way
+        // is resolved, so way and filter-4 cells see the end-of-batch geometry.
+        move_sink.start_seq(seq);
+        update_pass::run_node_update(change_path, changes_root, seq, opts.h3_resolution,
+                                     &node_state, &move_sink);
+        update_pass::run_way_update(change_path, changes_root, seq, node_state,
+                                    opts.way_batch_bytes);
+        users_history::run_scan_diff(
+            change_path, history_stage_root + "/seq_" + std::to_string(seq));
+        suspect::run_scan_diff(
+            change_path, suspect_stage_root + "/counts/seq_" + std::to_string(seq));
+        suspect::run_scan_diff_cells(
+            change_path, suspect_stage_root + "/cells/seq_" + std::to_string(seq),
+            opts.h3_resolution, node_state);
+        suspect::run_scan_diff_tags(
+            change_path, suspect_stage_root + "/tags/seq_" + std::to_string(seq));
+        move_sink.finish_seq();
+    };
     const auto flush_batch = [&](uint64_t seq) {
         merger.finish();
         std::cerr << "[update] merged batch seq " << batch_first_seq << ".." << seq
@@ -347,23 +367,7 @@ std::optional<replication_state::State> run_update_mode(
                       << ".." << osmium::Timestamp(merger.max_ts()).to_iso_all();
         }
         std::cerr << "\n";
-        // The node pass folds the whole batch's positions in before any way
-        // is resolved, so way and filter-4 cells see the end-of-batch geometry.
-        move_sink.start_seq(seq);
-        update_pass::run_node_update(merged_path, changes_root, seq, opts.h3_resolution,
-                                     &node_state, &move_sink);
-        update_pass::run_way_update(merged_path, changes_root, seq, node_state,
-                                    opts.way_batch_bytes);
-        users_history::run_scan_diff(
-            merged_path, history_stage_root + "/seq_" + std::to_string(seq));
-        suspect::run_scan_diff(
-            merged_path, suspect_stage_root + "/counts/seq_" + std::to_string(seq));
-        suspect::run_scan_diff_cells(
-            merged_path, suspect_stage_root + "/cells/seq_" + std::to_string(seq),
-            opts.h3_resolution, node_state);
-        suspect::run_scan_diff_tags(
-            merged_path, suspect_stage_root + "/tags/seq_" + std::to_string(seq));
-        move_sink.finish_seq();
+        apply_batch(merged_path, seq);
         // `merged_path` and the batch's diff files are provably applied after
         // every pass over the batch succeeded; a throw anywhere above leaves
         // them for fetch_diff to reuse on a re-run.
@@ -376,12 +380,22 @@ std::optional<replication_state::State> run_update_mode(
     };
 
     for (uint64_t seq = first; seq <= target; ++seq) {
+        const std::string diff_path = replication_state::fetch_diff(
+            current.url, seq, cookie, diffs_dir + "/" + std::to_string(seq) + ".osc.gz");
+        // A batch of a single trailing diff runs the passes on the diff
+        // directly instead of re-serializing it into the merged file.
+        if (batch_diffs.empty() && seq == target) {
+            std::cerr << "[update] merged batch seq " << seq << ".." << seq
+                      << " (1 diff)\n";
+            apply_batch(diff_path, seq);
+            remove_applied_diff(diff_path);
+            applied = seq;
+            continue;
+        }
         if (!merger.is_open()) {
             merger.open(merged_path);
             batch_first_seq = seq;
         }
-        const std::string diff_path = replication_state::fetch_diff(
-            current.url, seq, cookie, diffs_dir + "/" + std::to_string(seq) + ".osc.gz");
         merger.add(diff_path);
         batch_diffs.push_back(diff_path);
         const bool time_batch_full =

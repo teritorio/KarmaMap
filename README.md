@@ -223,7 +223,8 @@ object timestamps span about one hour (the diff crossing the bound is kept in
 full), and each batch runs
 the node, way, history and suspect passes once, staging under its last
 sequence, so a multi-diff run merges everything into
-`data.parquet` exactly once. Way geometry resolves at end-of-batch
+`data.parquet` exactly once. A batch of a single trailing diff runs the passes
+on that diff instead of the merged file. Way geometry resolves at end-of-batch
 positions (exact for a single-diff batch); a way whose ref node is created
 and deleted within the same batch is dropped rather than counted. A batch's
 diff files are removed
