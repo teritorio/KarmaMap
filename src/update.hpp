@@ -4,25 +4,27 @@
 // existing dataset built by "karmamap import" and given its incremental cache
 // by "karmamap prepare-update". The first three passes run in update mode:
 //
-//   update node pass: counts the diff's node changes into nodes.<seq>.parquet
+//   update node pass: counts a batch's node changes into nodes.<seq>.parquet
 //     staging and folds created/modified positions into an in-memory overlay
 //     over the flat incremental cache (--node-cache-last, <node-cache>.last),
 //     tracking deletions separately.
-//   update way pass: counts the diff's way changes into ways.<seq>.parquet,
+//   update way pass: counts a batch's way changes into ways.<seq>.parquet,
 //     resolving node refs against the overlay (post-update view for visible
 //     ways, pre-update view for deleted ways = their last known geometry).
 //   flat cache rebuild: once per "karmamap update" run the .last cache is
 //     rewritten as base + overlay minus deletions (the incremental writer's
 //     tmp+rename swap keeps it consistent across crashes).
 //
-// Each diff stages its own counts under a suffixed name (nodes.<seq>.parquet /
-// ways.<seq>.parquet); sort_pass::merge_update_partitions folds them into
-// data.parquet exactly once per run, so fetching N diffs never rewrites the
-// dataset N times.
+// Consecutive diffs are merged into one change file per batch (the batching
+// bound is kUpdateBatchMaxSeconds below); a batch stages its counts under the
+// batch's last sequence (nodes.<seq>.parquet / ways.<seq>.parquet).
+// sort_pass::merge_update_partitions folds the staged files into data.parquet
+// once per run, so fetching N diffs never rewrites the dataset N times.
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -31,7 +33,55 @@
 #include "node_cache.hpp"
 #include "suspect.hpp"
 
+namespace osmium {
+namespace io {
+class Writer;
+}
+}  // namespace osmium
+
 namespace update_pass {
+
+// Batch bound: diffs are merged into one change file once their combined
+// object-timestamp span reaches kUpdateBatchMaxSeconds. The span comes from
+// the diffs themselves, so the bound holds for any replication cadence.
+inline constexpr int64_t kUpdateBatchMaxSeconds = 3600;  // 1 h
+
+// Streams a batch of replication diffs (.osc.gz) into one osmChange file in
+// sequence order: opens the writer on open(), streams each diff's buffers on
+// add(), closes on finish(), and tracks the min/max object timestamps so the
+// caller can bound the batch. Output is a plain .osc under the diffs dir.
+class DiffMerger {
+public:
+    DiffMerger();
+    ~DiffMerger();
+
+    DiffMerger(const DiffMerger&) = delete;
+    DiffMerger& operator=(const DiffMerger&) = delete;
+
+    // Opens (or overwrites) the merged file at out_path and resets the batch
+    // state. Truncates any file already there, so a leftover from a crashed
+    // run can never poison a later one.
+    void open(const std::string& out_path);
+
+    // Streams one diff into the merged file. Called once per diff of the
+    // batch, in sequence order. Throws on a missing open(), or on diff read
+    // or write errors.
+    void add(const std::string& diff_path);
+
+    // Closes the merged file. Idempotent; called before the passes run.
+    void finish();
+
+    int64_t min_ts() const { return min_ts_; }
+    int64_t max_ts() const { return max_ts_; }
+    bool has_ts() const { return has_ts_; }
+    bool is_open() const { return writer_ != nullptr; }
+
+private:
+    std::unique_ptr<osmium::io::Writer> writer_;
+    int64_t min_ts_ = 0;
+    int64_t max_ts_ = 0;
+    bool has_ts_ = false;
+};
 
 // The per-run node position state: the flat incremental cache as a read-only
 // base plus the diff batch's created/modified overlay and delete set, all in
@@ -66,8 +116,8 @@ public:
     // Resolves `nodes` that are neither in the overlay nor already memoized
     // with a single forward sweep over the base cache, memoizing the cells so
     // later pre()/post() calls serve from memory. The batched update way pass
-    // calls this once per diff: sorting a batch's refs and walking the cache
-    // forward avoids the per-ref block decompressions of random lookup().
+    // calls this once per ref batch: sorting the batch's refs and walking the
+    // cache forward avoids the per-ref block decompressions of random lookup().
     // Returns the number of base records read during the sweep (INSTR).
     size_t prefetch_base(const std::vector<int64_t>& nodes) const {
         std::vector<int64_t> pending;
@@ -186,7 +236,7 @@ private:
 
 // Run the update node pass over one change file: counts node deltas into
 // <changes_root>/year=YYYY/nodes.<seq>.parquet and folds the positions into
-// `state` (shared across all diffs of the run). When `moves` is non-null,
+// `state` (shared across all batches of the run). When `moves` is non-null,
 // modified nodes with a known prior position are recorded into it before the
 // position is updated (suspect filter 3; only moves beyond the threshold are
 // staged, as per-(uid, minute) rows).

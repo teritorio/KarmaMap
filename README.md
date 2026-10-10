@@ -217,12 +217,18 @@ docker compose --profile=build run --rm karmamap karmamap update
 ```
 
 Bare `update` applies every diff up to the current `state.txt`; `update N`
-stops after N diffs. Each fetched diff (`<seq>.osc.gz`,
-downloaded to the diffs dir next to the node caches) runs the node and way
-passes with per-diff staging files, so a multi-diff run merges everything into
-`data.parquet` exactly once. A diff file is removed once its passes succeeded,
-so the `diffs/` dir does not accumulate; diffs already committed by earlier
-runs are purged on start.
+stops after N diffs. Fetched diffs (`<seq>.osc.gz`, downloaded to the diffs
+dir next to the node caches) are merged into batches that close once their
+object timestamps span about one hour (the diff crossing the bound is kept in
+full), and each batch runs
+the node, way, history and suspect passes once, staging under its last
+sequence, so a multi-diff run merges everything into
+`data.parquet` exactly once. Way geometry resolves at end-of-batch
+positions (exact for a single-diff batch); a way whose ref node is created
+and deleted within the same batch is dropped rather than counted. A batch's
+diff files are removed
+once its passes succeeded, so the `diffs/` dir does not accumulate; diffs
+already committed by earlier runs are purged on start.
 
 ### Serving the web frontend
 

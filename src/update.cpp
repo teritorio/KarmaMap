@@ -2,6 +2,7 @@
 
 #include <osmium/handler.hpp>
 #include <osmium/io/any_input.hpp>
+#include <osmium/io/xml_output.hpp>
 #include <osmium/osm/node.hpp>
 #include <osmium/osm/way.hpp>
 #include <osmium/visitor.hpp>
@@ -9,7 +10,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <iostream>
+#include <limits>
+#include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include "h3_utils.hpp"
@@ -18,6 +23,30 @@
 namespace update_pass {
 
 namespace {
+
+// Collects the timestamps of every object of a diff buffer, feeding the
+// batch's time-spread bound (kUpdateBatchMaxSeconds).
+class TimestampTracker : public osmium::handler::Handler {
+public:
+    void node(const osmium::Node& n) { update(n); }
+    void way(const osmium::Way& w) { update(w); }
+    void relation(const osmium::Relation& r) { update(r); }
+
+    bool any() const { return any_; }
+    int64_t min_ts = std::numeric_limits<int64_t>::max();
+    int64_t max_ts = std::numeric_limits<int64_t>::min();
+
+private:
+    template <typename T>
+    void update(const T& object) {
+        const int64_t ts = object.timestamp().seconds_since_epoch();
+        if (ts < min_ts) min_ts = ts;
+        if (ts > max_ts) max_ts = ts;
+        any_ = true;
+    }
+
+    bool any_ = false;
+};
 
 class NodeUpdateHandler : public osmium::handler::Handler {
 public:
@@ -180,6 +209,54 @@ private:
 
 }  // namespace
 
+DiffMerger::DiffMerger() = default;
+
+DiffMerger::~DiffMerger() {
+    try {
+        finish();
+    } catch (...) {
+    }
+}
+
+void DiffMerger::open(const std::string& out_path) {
+    finish();
+    const std::filesystem::path dir = std::filesystem::path(out_path).parent_path();
+    if (!dir.empty()) std::filesystem::create_directories(dir);
+    osmium::io::File out_file(out_path);
+    osmium::io::Header header;
+    header.set("generator", "karmamap");
+    writer_ = std::make_unique<osmium::io::Writer>(out_file, header,
+                                                   osmium::io::overwrite::allow);
+    min_ts_ = 0;
+    max_ts_ = 0;
+    has_ts_ = false;
+}
+
+void DiffMerger::add(const std::string& diff_path) {
+    if (!writer_) {
+        throw std::logic_error("DiffMerger::add called before open()");
+    }
+    osmium::io::File input_file(diff_path);
+    osmium::io::Reader reader(input_file);
+    TimestampTracker tracker;
+    while (osmium::memory::Buffer buffer = reader.read()) {
+        osmium::apply(buffer, tracker);
+        (*writer_)(std::move(buffer));
+    }
+    reader.close();
+    if (tracker.any()) {
+        if (!has_ts_ || tracker.min_ts < min_ts_) min_ts_ = tracker.min_ts;
+        if (!has_ts_ || tracker.max_ts > max_ts_) max_ts_ = tracker.max_ts;
+        has_ts_ = true;
+    }
+}
+
+void DiffMerger::finish() {
+    if (!writer_) return;
+    writer_->close();
+    writer_.reset();
+}
+
 void run_node_update(const std::string& diff_path, const std::string& changes_root,
                      uint64_t seq, int h3_resolution, NodeState* state,
                      suspect::NodeMoveSink* moves) {
@@ -203,7 +280,9 @@ void run_node_update(const std::string& diff_path, const std::string& changes_ro
                                   .count();  // INSTR
     std::cerr << "[update node pass] touched=" << handler.touched()
               << " positions=" << handler.positions() << " deletions=" << handler.deleted()
-              << " incremental=" << state->base_records() + state->overlay_size() - state->deleted_size()
+              << " incremental=" << static_cast<int64_t>(state->base_records())
+                                      + static_cast<int64_t>(state->overlay_size())
+                                      - static_cast<int64_t>(state->deleted_size())
               << " (" << elapsed_ms << "ms) overlay=" << state->overlay_size()
               << " deleted=" << state->deleted_size() << "\n";
 }

@@ -50,6 +50,7 @@ add_executable(core_tests
   core/ranking_test.cpp
   core/suspect_finalize_test.cpp
   core/way_update_test.cpp
+  core/diff_merge_test.cpp
 )
 
 target_compile_features(core_tests PRIVATE cxx_std_17)

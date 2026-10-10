@@ -475,7 +475,7 @@ inline std::vector<MinuteSpanRow> hour_spans(
 }
 
 // Collects modified-node moves during the update node pass (filter 3). Rows
-// are written into per-diff stage dirs under <stage_root>/seq_<seq> and folded
+// are written into per-batch stage dirs under <stage_root>/seq_<seq> and folded
 // by flagged_move_days into the day-level bit-1 flag, far-move count and
 // largest staged distance.
 class NodeMoveSink {
@@ -486,8 +486,8 @@ public:
     NodeMoveSink(const NodeMoveSink&) = delete;
     NodeMoveSink& operator=(const NodeMoveSink&) = delete;
 
-    // Begins collecting for one diff; stages go under <stage_root>/seq_<seq>.
-    // Must be called before record() and once per diff of the run.
+    // Begins collecting for one batch; stages go under <stage_root>/seq_<seq>.
+    // Must be called before record() and once per batch of the run.
     void start_seq(uint64_t seq);
 
     // Records a visible version>1 node with a valid new location and a known
@@ -521,7 +521,7 @@ private:
 void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
 
 // Folds one update run's staged per-(uid, minute) count buckets under
-// `counts_root` (one parquet file per diff flush) into the persisted binary
+// `counts_root` (a stage dir per batch) into the persisted binary
 // minute store at `minutes_path`, summing equal (uid, minute) keys ("merge
 // with the incoming update"). `applied_seq` is the last replication sequence
 // folded this run: it is stamped into the store header and lets a rerun of an
@@ -589,7 +589,7 @@ void run_scan_diff_cells(const std::string& diff_path, const std::string& stage_
                          int h3_resolution, const ::update_pass::NodeState& node_state);
 
 // Folds one update run's staged per-(uid, minute, h3_cell) count buckets under
-// `cells_root` (one parquet file per diff flush) into the persisted binary
+// `cells_root` (a stage dir per batch) into the persisted binary
 // cell store at `cells_path`, summing equal (uid, minute, h3_cell) keys.
 // `applied_seq` is the last replication sequence folded this run: it is stamped
 // into the store header and lets a rerun of an already-folded sequence skip
@@ -607,7 +607,7 @@ void fold_cell_counts(const std::string& cells_root, const std::string& cells_pa
 void run_scan_diff_tags(const std::string& diff_path, const std::string& stage_dir);
 
 // Folds one update run's staged per-(uid, minute, tag_key) count buckets under
-// `tags_root` (one parquet file per diff flush) into the persisted binary
+// `tags_root` (a stage dir per batch) into the persisted binary
 // tag store at `tags_path`, summing equal (uid, minute, tag_key) keys.
 // `applied_seq` is the last replication sequence folded this run: it is stamped
 // into the store header and lets a rerun of an already-folded sequence skip

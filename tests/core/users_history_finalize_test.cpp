@@ -344,7 +344,7 @@ TEST(UsersHistoryFinalize, NoStageIsNoOp) {
     EXPECT_FALSE(std::filesystem::exists(history));
 }
 
-// Update mode: per-diff stage groups under stage_root/seq_<n>/ fold into the
+// Update mode: per-batch stage groups under stage_root/seq_<n>/ fold into the
 // base users_history.parquet and user_ranking.parquet exactly once.
 TEST(UsersHistoryFinalize, UpdateMergesDeltasIntoExistingFiles) {
     TempDir dir;

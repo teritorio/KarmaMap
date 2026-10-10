@@ -149,27 +149,46 @@ sequence is the recorded source sequence; each
 CCC from the 3/3/3 split of the sequence) is downloaded to the diffs dir next
 to the node caches — a file
 already present is reused, a partial download is removed on failure — and
-applied. Once every pass over a diff succeeded its file is removed, so
-the diffs dir only ever holds in-flight diffs; diffs committed by
-earlier runs are purged at update start. Bare `update` (or `update 0`) fetches
-every diff up to the current
-`state.txt`; `update N` stops after N.
+applied. Consecutive diffs are merged into a single change file
+(`diffs_dir/merged.osc`) by `update_pass::DiffMerger` before any pass runs,
+and a batch is applied as one unit; a batch closes once its diffs' object
+timestamps span ~1 h (the diff crossing the bound is kept in full).
+Once every pass over a batch succeeded, the batch's diff
+files and the merged file are removed, so the diffs dir only ever holds
+in-flight diffs;
+diffs committed by earlier runs are purged at update start. Bare `update` (or
+`update 0`) fetches every diff up to the current `state.txt`; `update N` stops
+after N.
 
-Each diff invokes update-mode passes 1 and 2:
+Each batch invokes update-mode passes 1 and 2:
 
-- **Update node pass**: counts the diff's node changes into
-  `changes/year=YYYY/nodes.<seq>.parquet` and folds created/modified
+- **Update node pass**: counts the batch's node changes into
+  `changes/year=YYYY/nodes.<seq>.parquet` — `seq` is the batch's last
+  sequence — and folds created/modified
   positions into an in-memory overlay over the flat incremental cache
   (`--node-cache-last`, default `<node-cache>.last`), tracking deletions
   separately.
-- **Update way pass**: counts the diff's way changes into
+- **Update way pass**: counts the batch's way changes into
   `changes/year=YYYY/ways.<seq>.parquet`, resolving node refs against the
   overlay — post-update view for visible ways (overlay else base, deleted
   resolves to nothing), pre-update view for deleted ways (overlay else base
-  = their last known geometry). Like the import way pass, refs are resolved
+  = their last known geometry). Because the node pass folds the whole batch's
+  positions in before any way of the batch is resolved, all ways of a batch
+  see the end-of-batch geometry; a batch whose diffs span ~1 h bounds
+  the way-side divergence to about that hour (a single-diff batch resolves
+  exactly as before). Two consequences follow. A way whose ref node is
+  created or modified earlier in the batch counts at that node's
+  end-of-batch position, even though the way version precedes the node
+  change. And a way whose ref node is created and then deleted within the
+  batch is dropped entirely: its visible version resolves via post(), which
+  returns nothing for deleted nodes, and its deleted version via pre(), which
+  returns the node's base cell (0 for a node first seen in the batch); the
+  OSM referential invariant (deleting a node deletes its ways in the same
+  change) is what exposes the dropped version, which per-diff processing
+  counted. Like the import way pass, refs are resolved
   in batches (bounded by `--way-batch-mb`'s default) with one forward-only
   sweep over the base cache per batch instead of a random lookup per ref,
-  so a diff's way pass decompresses only the cache blocks its refs touch.
+  so a batch's way pass decompresses only the cache blocks its refs touch.
 
 Once per run the `.last` incremental cache is rebuilt as base + overlay minus
 deletions (the incremental writer's tmp+rename swap keeps it consistent), and
@@ -187,7 +206,7 @@ later than the applied one (a crashed run that fetched further than a capped
 rerun applies) is dropped rather than folded. Years holding no staging are
 never rewritten.
 
-Each update diff additionally runs the users-history scan
+Each update batch additionally runs the users-history scan
 into `users_history_update_stage/seq_<n>/`; one finalize pass folds the
 per-`(uid, change_date)` activity deltas and per-uid counter totals into
 `users_history.parquet` (in place, sorted) and rebuilds
@@ -220,7 +239,7 @@ The `suspect_tags.bin` tag store is likewise self-identifying (magic `TAGS`,
 variable-length records, no file name), and follows the same pattern.
 
 The suspect engine (OSMPatrol filters 2 and 3, see
-`docs/osmpatrol-neis-2012.md`) runs in the same loop. Every diff is scanned
+`docs/osmpatrol-neis-2012.md`) runs in the same loop. Every batch is scanned
 into per-`(uid, minute)` modified+deleted buckets under
 `suspect_update_stage/counts/seq_<n>/`, and modified nodes with a known
 prior position are recorded by the update node pass into
@@ -344,8 +363,9 @@ Filter 4 (local extension, **not from the original OSMPatrol paper**) records
 the spatial spread of H3 cells in a trailing 1h window. The diff scan
 (`suspect::run_scan_diff_cells`) counts modified+deleted objects per
 `(uid, minute, h3_cell)`: nodes in their cell; ways once per distinct cell of
-their nodes (resolved through `NodeState` so the geometry is correct even for
-deleted ways); relations skipped. The per-diff buckets are staged under
+their nodes (resolved through `NodeState`, so the geometry is correct even for
+deleted ways and reflects positions as of the end of the batch); relations
+skipped. The per-batch buckets are staged under
 `suspect_update_stage/cells/seq_<n>/`, folded by `fold_cell_counts` into the
 persisted binary block store `suspect_cells.bin` (same block format as
 `suspect_minutes.bin` but 24-byte records keyed by `(uid, minute, h3_cell)`,
@@ -371,7 +391,7 @@ day when a user's modified/deleted objects in a trailing 1-hour window are
 dominated by a single tag key. The diff scan (`suspect::run_scan_diff_tags`)
 counts **modified+deleted** objects per `(uid, minute, tag_key)` on nodes,
 ways, and relations (creates are excluded, matching the scope of
-`suspect_minutes.bin` which provides the denominator). The per-diff buckets are
+`suspect_minutes.bin` which provides the denominator). The per-batch buckets are
 staged under `suspect_update_stage/tags/seq_<n>/`, folded by
 `fold_tag_counts` into the persisted binary block store `suspect_tags.bin`
 (same block format but variable-length records keyed by `(uid, minute, tag_key)`,

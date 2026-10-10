@@ -71,7 +71,7 @@ const T* typed_column(const std::shared_ptr<arrow::Table>& table, const std::str
     return static_cast<const T*>(table->column(idx)->chunk(0).get());
 }
 
-// Every .parquet file under `root` (recursively, forming per-diff stage
+// Every .parquet file under `root` (recursively, forming per-batch stage
 // groups), sorted for deterministic order.
 std::vector<std::string> collect_parquet_recursive(const std::string& root) {
     std::vector<std::string> paths;

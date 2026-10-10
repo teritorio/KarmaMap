@@ -79,7 +79,8 @@ Aggregated read_ways(const std::string& root, uint64_t seq) {
 }
 
 // Runs the node pass then the way pass over `osc` against a fresh NodeState
-// seeded from `cache`, exactly as the update stage does per diff.
+// seeded from `cache`, exactly as the update stage does for a single-diff
+// batch.
 void run_diffs(const std::string& osc, const std::string& cache,
                const std::string& changes_root, size_t way_batch_bytes) {
     update_pass::NodeState state(cache, 9);

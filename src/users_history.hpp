@@ -296,7 +296,7 @@ void run_finalize(const std::string& stage_dir, const std::string& history_path,
 // always carry version 1.
 void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
 
-// Merges the per-diff update stage dirs under `stage_root` (each
+// Merges the per-batch update stage dirs under `stage_root` (each
 // stage_root/seq_<n>/stage_*.parquet) into the existing datasets: the per
 // (uid, change_date) deltas are summed into users_history.parquet, and
 // user_ranking.parquet is recomputed from the existing per-uid totals plus
