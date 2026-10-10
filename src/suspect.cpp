@@ -386,6 +386,37 @@ void run_scan_diff(const std::string& diff_path, const std::string& stage_dir) {
               << " stage_files=" << handler.stage_files() << "\n";
 }
 
+namespace {
+
+// One step of update_pass::run_diff_scans' shared read: runs the counts scan
+// handler over each buffer and prints the pass's INSTR line on finish().
+class CountsScanStep : public update_pass::DiffScanStep {
+public:
+    explicit CountsScanStep(const std::string& stage_dir)
+        : handler_(stage_dir) {}
+
+    void apply(const osmium::memory::Buffer& buffer) override {
+        osmium::apply(buffer, handler_);
+    }
+
+    void finish() override {
+        handler_.finish();
+        std::cerr << "[suspect] diff scan objects=" << handler_.objects()
+                  << " stage_rows=" << handler_.stage_rows()
+                  << " stage_files=" << handler_.stage_files() << "\n";
+    }
+
+private:
+    SuspectScanHandler handler_;
+};
+
+}  // namespace
+
+std::unique_ptr<update_pass::DiffScanStep> make_counts_scan_step(
+    const std::string& stage_dir) {
+    return std::make_unique<CountsScanStep>(stage_dir);
+}
+
 // ---------------------------------------------------------------------------
 // Filter 4: Cell scan
 // ---------------------------------------------------------------------------
@@ -484,27 +515,39 @@ private:
 
 }  // namespace
 
-void run_scan_diff_cells(const std::string& diff_path, const std::string& stage_dir,
-                         int h3_resolution, const ::update_pass::NodeState& node_state) {
-    std::filesystem::remove_all(stage_dir);  // a rerun never reuses stale stage files
-    std::filesystem::create_directories(stage_dir);
+namespace {
 
-    osmium::io::File input_file(diff_path);
-    osmium::io::Reader reader(input_file,
-                              osmium::osm_entity_bits::node | osmium::osm_entity_bits::way |
-                                  osmium::osm_entity_bits::relation);
+// One step of update_pass::run_diff_scans' shared read: runs the cells scan
+// handler (filter 4) over each buffer and prints the pass's INSTR line on
+// finish(). Reads positions through the node state folded by the node pass.
+class CellsScanStep : public update_pass::DiffScanStep {
+public:
+    CellsScanStep(const std::string& stage_dir, int h3_resolution,
+                  const ::update_pass::NodeState& node_state)
+        : handler_(stage_dir, h3_resolution, node_state) {}
 
-    SuspectCellScanHandler handler(stage_dir, h3_resolution, node_state);
-    while (osmium::memory::Buffer buf = reader.read()) {
-        osmium::apply(buf, handler);
+    void apply(const osmium::memory::Buffer& buffer) override {
+        osmium::apply(buffer, handler_);
     }
-    reader.close();
-    handler.finish();
 
-    std::cerr << "[suspect] cell diff scan objects=" << handler.objects()
-              << " stage_rows=" << handler.stage_rows()
-              << " stage_files=" << handler.stage_files()
-              << " skipped_relations=" << handler.skipped_relations() << "\n";
+    void finish() override {
+        handler_.finish();
+        std::cerr << "[suspect] cell diff scan objects=" << handler_.objects()
+                  << " stage_rows=" << handler_.stage_rows()
+                  << " stage_files=" << handler_.stage_files()
+                  << " skipped_relations=" << handler_.skipped_relations() << "\n";
+    }
+
+private:
+    SuspectCellScanHandler handler_;
+};
+
+}  // namespace
+
+std::unique_ptr<update_pass::DiffScanStep> make_cells_scan_step(
+    const std::string& stage_dir, int h3_resolution,
+    const ::update_pass::NodeState& node_state) {
+    return std::make_unique<CellsScanStep>(stage_dir, h3_resolution, node_state);
 }
 
 void fold_minute_counts(const std::string& counts_root, const std::string& minutes_path,

@@ -30,6 +30,8 @@
 #include <utility>
 #include <vector>
 
+#include <osmium/memory/buffer.hpp>
+
 #include "node_cache.hpp"
 #include "suspect.hpp"
 
@@ -252,5 +254,30 @@ void run_node_update(const std::string& diff_path, const std::string& changes_ro
 // post-update cells, deleted ways their pre-update cells.
 void run_way_update(const std::string& diff_path, const std::string& changes_root,
                     uint64_t seq, const NodeState& state, size_t way_batch_bytes);
+
+// One scan pass of run_diff_scans' shared change-file read: apply() runs the
+// wrapped subsystem handler over one buffer of the shared read, finish()
+// flushes it and prints the pass's INSTR line.
+class DiffScanStep {
+public:
+    virtual ~DiffScanStep() = default;
+    virtual void apply(const osmium::memory::Buffer& buffer) = 0;
+    virtual void finish() = 0;
+};
+
+// Runs the way, users-history, suspect counts (filter 2), suspect cells
+// (filter 4) and suspect tag (filter 5) passes over one change file with a
+// single shared read: the five handlers are driven from one reader, so a
+// batch's change stream is parsed twice in total (the node pass plus this)
+// instead of once per pass. The four stage dirs are wiped first so a rerun
+// never reuses stale stage files; ways land in
+// <changes_root>/year=YYYY/ways.<seq>.parquet. The node pass must fold all
+// positions before ways and cells resolve node refs, so this runs after
+// run_node_update.
+void run_diff_scans(const std::string& change_path, const std::string& changes_root,
+                    uint64_t seq, size_t way_batch_bytes, int h3_resolution,
+                    const NodeState& state, const std::string& history_stage,
+                    const std::string& counts_stage, const std::string& cells_stage,
+                    const std::string& tags_stage);
 
 }  // namespace update_pass

@@ -33,6 +33,7 @@
 #include "h3_utils.hpp"
 #include "ranking.hpp"
 #include "suspect.hpp"
+#include "update.hpp"
 
 namespace users_history {
 
@@ -636,26 +637,35 @@ void run_finalize(const std::string& stage_dir, const std::string& history_path,
               << " history rows, " << rank_uids.size() << " ranking rows\n";
 }
 
-void run_scan_diff(const std::string& diff_path, const std::string& stage_dir) {
-    std::filesystem::remove_all(stage_dir);  // a rerun never reuses stale stage files
-    std::filesystem::create_directories(stage_dir);
+namespace {
 
-    osmium::io::File input_file(diff_path);  // .osc.gz -> format+compression from extension
-    osmium::io::Reader reader(input_file,
-                              osmium::osm_entity_bits::node | osmium::osm_entity_bits::way |
-                                  osmium::osm_entity_bits::relation);
+// One step of update_pass::run_diff_scans' shared read: runs the diff scan
+// handler over each buffer and prints the pass's INSTR line on finish().
+class ScanStep : public update_pass::DiffScanStep {
+public:
+    explicit ScanStep(const std::string& stage_dir)
+        : handler_(stage_dir) {}
 
-    ScanHandler handler(stage_dir);
-    while (osmium::memory::Buffer buf = reader.read()) {
-        osmium::apply(buf, handler);
+    void apply(const osmium::memory::Buffer& buffer) override {
+        osmium::apply(buffer, handler_);
     }
-    reader.close();
-    handler.finish();
 
-    std::cerr << "[users history] diff scan objects=" << handler.objects()
-              << " versions=" << handler.versions()
-              << " stage_rows=" << handler.stage_rows()
-              << " stage_files=" << handler.stage_files() << "\n";
+    void finish() override {
+        handler_.finish();
+        std::cerr << "[users history] diff scan objects=" << handler_.objects()
+                  << " versions=" << handler_.versions()
+                  << " stage_rows=" << handler_.stage_rows()
+                  << " stage_files=" << handler_.stage_files() << "\n";
+    }
+
+private:
+    ScanHandler handler_;
+};
+
+}  // namespace
+
+std::unique_ptr<update_pass::DiffScanStep> make_scan_step(const std::string& stage_dir) {
+    return std::make_unique<ScanStep>(stage_dir);
 }
 
 void run_update_finalize(const std::string& stage_root, const std::string& history_path,

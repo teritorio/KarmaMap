@@ -154,7 +154,10 @@ applied. Consecutive diffs are merged into a single change file
 and a batch is applied as one unit; a batch closes once its diffs' object
 timestamps span ~1 h (the diff crossing the bound is kept in full); a batch
 reduced to a single trailing diff skips the merged file and runs the passes on
-that diff directly.
+that diff directly. The way, users-history and suspect passes are driven from a
+single shared read of the change file (`update_pass::run_diff_scans`), so a
+batch's stream is parsed twice in total (the node pass, then this) rather than
+once per pass.
 Once every pass over a batch succeeded, the batch's diff
 files and the merged file are removed, so the diffs dir only ever holds
 in-flight diffs;
@@ -362,8 +365,8 @@ newly writes, from the run's recomputed ranking, instead of a diff-based
 screen; base rows are never re-flagged, so the bit is monotonic.
 
 Filter 4 (local extension, **not from the original OSMPatrol paper**) records
-the spatial spread of H3 cells in a trailing 1h window. The diff scan
-(`suspect::run_scan_diff_cells`) counts modified+deleted objects per
+the spatial spread of H3 cells in a trailing 1h window. The filter-4 cell
+scan counts modified+deleted objects per
 `(uid, minute, h3_cell)`: nodes in their cell; ways once per distinct cell of
 their nodes (resolved through `NodeState`, so the geometry is correct even for
 deleted ways and reflects positions as of the end of the batch); relations
@@ -390,7 +393,7 @@ of the `kFilter4MinCells` and area gates binds at any given resolution.
 
 Filter 5 (local extension, **not from the original OSMPatrol paper**) flags a
 day when a user's modified/deleted objects in a trailing 1-hour window are
-dominated by a single tag key. The diff scan (`suspect::run_scan_diff_tags`)
+dominated by a single tag key. The tag diff scan
 counts **modified+deleted** objects per `(uid, minute, tag_key)` on nodes,
 ways, and relations (creates are excluded, matching the scope of
 `suspect_minutes.bin` which provides the denominator). The per-batch buckets are

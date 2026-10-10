@@ -1,7 +1,6 @@
 #include "suspect.hpp"
 
 #include <osmium/handler.hpp>
-#include <osmium/io/any_input.hpp>
 #include <osmium/osm/node.hpp>
 #include <osmium/osm/object.hpp>
 #include <osmium/osm/relation.hpp>
@@ -28,6 +27,7 @@
 #include "arrow_table_io.hpp"
 #include "h3_utils.hpp"
 #include "suspect_tag_store.hpp"
+#include "update.hpp"
 
 namespace suspect {
 
@@ -261,29 +261,36 @@ private:
 
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// Entry points
-// ---------------------------------------------------------------------------
+namespace {
 
-void run_scan_diff_tags(const std::string& diff_path, const std::string& stage_dir) {
-    std::filesystem::remove_all(stage_dir);  // a rerun never reuses stale stage files
-    std::filesystem::create_directories(stage_dir);
+// One step of update_pass::run_diff_scans' shared read: runs the tags scan
+// handler (filter 5) over each buffer and prints the pass's INSTR line on
+// finish().
+class TagsScanStep : public update_pass::DiffScanStep {
+public:
+    explicit TagsScanStep(const std::string& stage_dir)
+        : handler_(stage_dir) {}
 
-    osmium::io::File input_file(diff_path);  // .osc.gz -> format+compression from extension
-    osmium::io::Reader reader(input_file,
-                              osmium::osm_entity_bits::node | osmium::osm_entity_bits::way |
-                                  osmium::osm_entity_bits::relation);
-
-    SuspectTagScanHandler handler(stage_dir);
-    while (osmium::memory::Buffer buf = reader.read()) {
-        osmium::apply(buf, handler);
+    void apply(const osmium::memory::Buffer& buffer) override {
+        osmium::apply(buffer, handler_);
     }
-    reader.close();
-    handler.finish();
 
-    std::cerr << "[suspect] tag diff scan objects=" << handler.objects()
-              << " stage_rows=" << handler.stage_rows()
-              << " stage_files=" << handler.stage_files() << "\n";
+    void finish() override {
+        handler_.finish();
+        std::cerr << "[suspect] tag diff scan objects=" << handler_.objects()
+                  << " stage_rows=" << handler_.stage_rows()
+                  << " stage_files=" << handler_.stage_files() << "\n";
+    }
+
+private:
+    SuspectTagScanHandler handler_;
+};
+
+}  // namespace
+
+std::unique_ptr<update_pass::DiffScanStep> make_tags_scan_step(
+    const std::string& stage_dir) {
+    return std::make_unique<TagsScanStep>(stage_dir);
 }
 
 void fold_tag_counts(const std::string& tags_root, const std::string& tags_path,

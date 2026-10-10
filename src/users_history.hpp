@@ -103,10 +103,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
+
+namespace update_pass {
+class DiffScanStep;
+}
 
 namespace suspect {
 struct CellSpreadDay;
@@ -289,12 +294,10 @@ void run_scan(const std::string& input_path, const std::string& stage_dir);
 void run_finalize(const std::string& stage_dir, const std::string& history_path,
                   int64_t users_history_group_rows, int64_t ranking_group_rows);
 
-// Update mode: scans one replication diff (an .osc.gz change file) into a
-// fresh stage_dir. The scan handler classifies diff objects the same way the
-// history scan does (visible version 1 = created, later versions = modified,
-// invisible = deleted); the version_ == 1 test matches a diff, whose creates
-// always carry version 1.
-void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
+// Step factory for update_pass::run_diff_scans' single shared read: returns
+// a DiffScanStep wrapping the diff scan handler. The step owns its fresh
+// stage_dir and prints the pass's INSTR line on finish().
+std::unique_ptr<update_pass::DiffScanStep> make_scan_step(const std::string& stage_dir);
 
 // Merges the per-batch update stage dirs under `stage_root` (each
 // stage_root/seq_<n>/stage_*.parquet) into the existing datasets: the per

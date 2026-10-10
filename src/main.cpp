@@ -345,17 +345,12 @@ std::optional<replication_state::State> run_update_mode(
         move_sink.start_seq(seq);
         update_pass::run_node_update(change_path, changes_root, seq, opts.h3_resolution,
                                      &node_state, &move_sink);
-        update_pass::run_way_update(change_path, changes_root, seq, node_state,
-                                    opts.way_batch_bytes);
-        users_history::run_scan_diff(
-            change_path, history_stage_root + "/seq_" + std::to_string(seq));
-        suspect::run_scan_diff(
-            change_path, suspect_stage_root + "/counts/seq_" + std::to_string(seq));
-        suspect::run_scan_diff_cells(
-            change_path, suspect_stage_root + "/cells/seq_" + std::to_string(seq),
-            opts.h3_resolution, node_state);
-        suspect::run_scan_diff_tags(
-            change_path, suspect_stage_root + "/tags/seq_" + std::to_string(seq));
+        update_pass::run_diff_scans(
+            change_path, changes_root, seq, opts.way_batch_bytes, opts.h3_resolution,
+            node_state, history_stage_root + "/seq_" + std::to_string(seq),
+            suspect_stage_root + "/counts/seq_" + std::to_string(seq),
+            suspect_stage_root + "/cells/seq_" + std::to_string(seq),
+            suspect_stage_root + "/tags/seq_" + std::to_string(seq));
         move_sink.finish_seq();
     };
     const auto flush_batch = [&](uint64_t seq) {

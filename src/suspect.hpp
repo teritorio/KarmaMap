@@ -78,6 +78,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <string_view>
@@ -86,10 +87,11 @@
 #include <utility>
 #include <vector>
 
-// Forward declaration: run_scan_diff_cells takes a reference to NodeState
-// to resolve way node cells. update.hpp includes this header, so we cannot
-// include it here (would cycle). NodeState is defined in ::update_pass.
-namespace update_pass { class NodeState; }
+// Forward declarations: update.hpp includes this header, so it cannot be
+// included here (would cycle). NodeState (taken by reference to resolve way
+// node cells) and DiffScanStep (returned by the step factories) are defined
+// in ::update_pass.
+namespace update_pass { class NodeState; class DiffScanStep; }
 
 namespace suspect {
 
@@ -520,6 +522,17 @@ private:
 // versions = modified, invisible = deleted).
 void run_scan_diff(const std::string& diff_path, const std::string& stage_dir);
 
+// Step factories for update_pass::run_diff_scans' single shared read. Each
+// returns a DiffScanStep wrapping the corresponding scan handler; the step
+// owns its fresh stage dir and prints the pass's INSTR line on finish().
+std::unique_ptr<update_pass::DiffScanStep> make_counts_scan_step(
+    const std::string& stage_dir);
+std::unique_ptr<update_pass::DiffScanStep> make_cells_scan_step(
+    const std::string& stage_dir, int h3_resolution,
+    const ::update_pass::NodeState& node_state);
+std::unique_ptr<update_pass::DiffScanStep> make_tags_scan_step(
+    const std::string& stage_dir);
+
 // Folds one update run's staged per-(uid, minute) count buckets under
 // `counts_root` (a stage dir per batch) into the persisted binary
 // minute store at `minutes_path`, summing equal (uid, minute) keys ("merge
@@ -580,14 +593,6 @@ std::map<std::pair<int64_t, uint16_t>, MoveDay> flagged_move_days(
 
 // --- Filter 4: H3 cell activity tracking ---
 
-// Scans one replication diff (.osc.gz change file) into a fresh stage_dir,
-// counting modified+deleted objects per (uid, minute, h3_cell).
-// Nodes are counted in their H3 cell. Ways are counted once per distinct
-// cell of their nodes, resolved through NodeState (post() for visible ways,
-// pre() for deleted ways). Relations are skipped.
-void run_scan_diff_cells(const std::string& diff_path, const std::string& stage_dir,
-                         int h3_resolution, const ::update_pass::NodeState& node_state);
-
 // Folds one update run's staged per-(uid, minute, h3_cell) count buckets under
 // `cells_root` (a stage dir per batch) into the persisted binary
 // cell store at `cells_path`, summing equal (uid, minute, h3_cell) keys.
@@ -599,12 +604,6 @@ void fold_cell_counts(const std::string& cells_root, const std::string& cells_pa
                       uint64_t applied_seq, int h3_resolution);
 
 // --- Filter 5: tag activity tracking ---
-
-// Scans one replication diff (.osc.gz change file) into a fresh stage_dir,
-// counting all tag keys on all object changes per (uid, minute, tag_key).
-// Nodes, ways, and relations are all processed. All change types
-// (create, modify, delete) are counted.
-void run_scan_diff_tags(const std::string& diff_path, const std::string& stage_dir);
 
 // Folds one update run's staged per-(uid, minute, tag_key) count buckets under
 // `tags_root` (a stage dir per batch) into the persisted binary
