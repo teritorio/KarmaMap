@@ -156,7 +156,7 @@ defaults (`data/output`, `<output-dir>/../node_positions.cache` =
 | Option | Description |
 |---|---|
 | `--node-cache <file>` | Node position cache file (import/prepare-update): wiped and rebuilt by pass 1, read by pass 2 and by prepare-update. Default `<output-dir>/../node_positions.cache`. Not used by update |
-| `--node-cache-last <file>` | Incremental cache holding only the last known h3 cell per node — written by prepare-update, read and rebuilt by update. Default `<node-cache>.last` |
+| `--node-cache-last <file>` | Incremental cache holding only the last known h3 cell per node — written by prepare-update, read by update, which appends changes to a `<file>.delta` sidecar and compacts it into the base when it grows past a tenth of the base. Default `<node-cache>.last` |
 | `--output-dir <dir>` | Output directory for the Parquet datasets (created if missing), default `$DATA_DIR/output` — `data/output` bare metal, `/data/output` in the container (`DATA_DIR=/data`) |
 | `--update-url <url>` | Osmosis replication update URL (e.g. `https://osm-internal.download.geofabrik.de/africa/canary-islands-updates/`); required by prepare-update, optional override in update (must match the recorded source). At import it records the update stream URL in `manifest.json`.
 | `--cookie <jar>` | Netscape cookie jar for the Geofabrik internal server, default `<node-cache-parent>/.geofabrik.cookie`. Only consulted when `--update-url` points at `osm-internal.download.geofabrik.de`: karmamap obtains/refreshes the jar from the OSM account in `OSM_GEOFABRIK_USER`/`OSM_GEOFABRIK_PASSWORD` (`.env`) and sends it on the `state.txt` fetch |
@@ -209,8 +209,9 @@ first update the recorded sequence is the snapshot's own day (from its sidecar
 state.txt); afterwards it is the last applied diff. The update
 URL is taken from the source block recorded in `manifest.json`, so `--update-url`
 may be omitted; when passed explicitly it must match the recorded source URL.
-The incremental cache (`--node-cache-last`, `<node-cache>.last`) is the update
-state that gets read and rebuilt; the full history node cache is not touched:
+The incremental cache (`--node-cache-last`, `<node-cache>.last`) plus its
+`<node-cache>.last.delta` sidecar are the update
+state that gets read and advanced; the full history node cache is not touched:
 
 ```bash
 docker compose --profile=build run --rm karmamap karmamap update
@@ -234,7 +235,7 @@ diff files are removed
 once its passes succeeded, so the `diffs/` dir does not accumulate; diffs
 already committed by earlier runs are purged on start. If a diff download
 fails, the run stops but keeps its progress: the diffs downloaded so far are
-applied, staged, and committed (cache rebuild, merge into `data.parquet`,
+applied, staged, and committed (cache persist, merge into `data.parquet`,
 suspect/history finalize, manifest write) as a consistent prefix, and karmamap
 exits non-zero; the next run resumes from the committed sequence.
 

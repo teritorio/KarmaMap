@@ -135,6 +135,17 @@ A reader (`node_cache::incremental::Reader`) mmaps the file and looks up a
 node's last known cell via the block-directory binary search plus a linear
 scan (returning 0 for nodes absent from the cache).
 
+An update run does not rewrite this base. It persists the run's accumulated
+created/modified positions and deletions to a small sidecar, `<path>.delta`
+(`node_cache::delta`, a 28-byte header of counts plus sorted `node_id + h3
+cell` records for the modified set and `node_id` records for the deleted set,
+written tmp+rename). The next run folds the sidecar back into the overlay and
+delete set at `NodeState` construction, so a normal run writes O(changes)
+instead of the whole base. Only when the accumulated change count reaches the
+compaction threshold (a tenth of the base's record count) is the base rebuilt
+as base + overlay minus deletions and the sidecar dropped. `prepare-update`
+clears any sidecar when it recollapses the base.
+
 ## Update mode
 
 `karmamap update` applies osmosis replication diffs to an existing dataset
@@ -165,7 +176,7 @@ diffs committed by earlier runs are purged at update start. Bare `update` (or
 `update 0`) fetches every diff up to the current `state.txt`; `update N` stops
 after N. A diff download that fails stops the run but does not discard the
 work: the diffs downloaded so far are applied and the same end-of-run commit
-runs (incremental cache rebuild, staging merge, suspect/history finalize,
+runs (incremental cache persist, staging merge, suspect/history finalize,
 manifest write) for that prefix, and karmamap exits non-zero; the next run
 resumes from the committed sequence.
 
@@ -199,8 +210,10 @@ Each batch invokes update-mode passes 1 and 2:
   sweep over the base cache per batch instead of a random lookup per ref,
   so a batch's way pass decompresses only the cache blocks its refs touch.
 
-Once per run the `.last` incremental cache is rebuilt as base + overlay minus
-deletions (the incremental writer's tmp+rename swap keeps it consistent), and
+Once per run the `.last` incremental cache's accumulated changes are persisted
+as a `<path>.delta` sidecar (O(changes); the writer's tmp+rename swap keeps it
+consistent), and only compacted into the base as base + overlay minus
+deletions once the delta reaches the compaction threshold, and
 the staged per-sequence counts are folded into each year's `data.parquet` by
 `merge_update_partitions` — base `data.parquet` plus its `nodes.<seq>` /
 `ways.<seq>` staging per year, one rename per year. Fetching N diffs never

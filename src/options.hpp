@@ -19,7 +19,7 @@ struct Options {
     // Node position cache (import/prepare-update; default <output-dir>/../node_positions.cache).
     std::string node_cache_path;
     // Last-known-position cache, <node-cache>.last by default; prepare-update
-    // writes it, update reads and rebuilds it.
+    // writes it, update reads and advances it (with a <last>.delta sidecar).
     std::string node_cache_last_path;
     // Diff download cache dir and persisted suspect minute/cell/tag stores; both live
     // next to the node caches (parent dir of the default node cache path).

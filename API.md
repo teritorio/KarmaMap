@@ -36,7 +36,8 @@ output-dir/
 
 # Next to the node caches (output-dir's parent by default):
 node_positions.cache      # full-history node cache (import/prepare-update)
-node_positions.cache.last  # incremental cache (prepare-update/update)
+node_positions.cache.last  # incremental cache base (prepare-update/update)
+node_positions.cache.last.delta  # update-only; accumulated changes since the base
 suspect_minutes.bin       # update-only; binary block store (filter 2)
 suspect_cells.bin         # update-only; binary block store (filter 4)
 suspect_tags.bin          # update-only; binary block store (filter 5)

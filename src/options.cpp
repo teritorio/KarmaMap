@@ -35,7 +35,7 @@ void print_usage(const char* argv0) {
         << "                          end-of-batch positions).\n"
         << "                          Each applied diff is removed from the diffs dir\n"
         << "                          (next to the node caches) once every pass over\n"
-        << "                          its batch succeeded. Reads and rebuilds the\n"
+        << "                          its batch succeeded. Reads and advances the\n"
         << "                          --node-cache-last cache; the full history node\n"
         << "                          cache is not used.\n"
         << "  help / --help / -h      Show this help.\n\n"
@@ -43,7 +43,7 @@ void print_usage(const char* argv0) {
         << "  --node-cache <file>       Node position cache (import and\n"
         << "                            prepare-update). [<output-dir>/../node_positions.cache]\n"
         << "  --node-cache-last <file>  Last-known-position cache, written by\n"
-        << "                            prepare-update, read/rebuild by update.\n"
+        << "                            prepare-update, advanced by update.\n"
         << "                            [<node-cache>.last]\n"
         << "  --output-dir <dir>        Output directory for the Parquet datasets.\n"
         << "                            [$DATA_DIR/output, default data/output]\n"
@@ -213,7 +213,7 @@ bool parse_args(int argc, char** argv, Options* opts) {
             if (opts->pass_given) {
                 throw std::runtime_error(
                     "--pass is not used with update: update always runs the node, "
-                    "way and merge passes and rebuilds the incremental cache");
+                    "way and merge passes and persists the incremental cache");
             }
             if (opts->way_batch_mb_given) {
                 throw std::runtime_error("--way-batch-mb is only used by import");

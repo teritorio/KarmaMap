@@ -11,9 +11,12 @@
 //   update way pass: counts a batch's way changes into ways.<seq>.parquet,
 //     resolving node refs against the overlay (post-update view for visible
 //     ways, pre-update view for deleted ways = their last known geometry).
-//   flat cache rebuild: once per "karmamap update" run the .last cache is
-//     rewritten as base + overlay minus deletions (the incremental writer's
-//     tmp+rename swap keeps it consistent across crashes).
+//   flat cache persist: once per "karmamap update" run the accumulated overlay
+//     and deletions are written to a small .last.delta sidecar (O(changes)),
+//     leaving the .last base untouched. Only when the accumulated delta reaches
+//     the compaction threshold is the base rewritten as base + overlay minus
+//     deletions and the sidecar dropped (the incremental writer's tmp+rename
+//     swap keeps it consistent across crashes).
 //
 // Consecutive diffs are merged into one change file per batch (the batching
 // bound is kUpdateBatchMaxSeconds below); a batch stages its counts under the
@@ -24,6 +27,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -33,6 +37,7 @@
 #include <osmium/memory/buffer.hpp>
 
 #include "node_cache.hpp"
+#include "node_delta.hpp"
 #include "suspect.hpp"
 
 namespace osmium {
@@ -86,17 +91,29 @@ private:
 };
 
 // The per-run node position state: the flat incremental cache as a read-only
-// base plus the diff batch's created/modified overlay and delete set, all in
+// base plus the accumulated created/modified overlay and delete set, all in
 // memory. Created/modified nodes overlay the base cell; deleted nodes are
-// removed from the overlay and remembered so the cache rebuild drops them and
-// deleted ways can resolve their pre-update geometry.
+// removed from the overlay and remembered so the cache persist drops them and
+// deleted ways can resolve their pre-update geometry. The overlay and delete
+// set carry over between runs through a <base>.delta sidecar, so a run only
+// rewrites the base when they grow past the compaction threshold.
 class NodeState {
 public:
     NodeState(const std::string& node_cache_last_path, int h3_resolution)
-        : base_(node_cache_last_path, h3_resolution), h3_resolution_(h3_resolution) {}
+        : base_(node_cache_last_path, h3_resolution), h3_resolution_(h3_resolution) {
+        node_cache::delta::State accumulated =
+            node_cache::delta::load_or_empty(delta_path(node_cache_last_path),
+                                             h3_resolution);
+        overlay_ = std::move(accumulated.modified);
+        deleted_ = std::move(accumulated.deleted);
+    }
 
     NodeState(const NodeState&) = delete;
     NodeState& operator=(const NodeState&) = delete;
+
+    static std::string delta_path(const std::string& node_cache_last_path) {
+        return node_cache_last_path + ".delta";
+    }
 
     // Cell of a node as of before this batch's deletions (overlay else base):
     // deleted ways resolve here, on their last known geometry.
@@ -212,6 +229,29 @@ public:
             ++b;
         }
         writer.finish();
+    }
+
+    // What persist() did with the run's accumulated changes.
+    enum class PersistResult { no_change, delta_written, compacted };
+
+    // Persists the run's accumulated overlay and deletions. Writes the delta
+    // sidecar (O(changes)) unless the accumulated change count reaches
+    // `changed_limit`, in which case the base is rewritten as base + overlay
+    // minus deletions and the sidecar dropped. A run that changed nothing
+    // leaves both the base and any existing sidecar untouched.
+    PersistResult persist(const std::string& last_path, int h3_resolution,
+                          size_t changed_limit) const {
+        const size_t changed = overlay_.size() + deleted_.size();
+        if (changed == 0) return PersistResult::no_change;
+        const std::string sidecar = delta_path(last_path);
+        if (changed >= changed_limit) {
+            rebuild(last_path, h3_resolution);
+            std::error_code ec;
+            std::filesystem::remove(sidecar, ec);
+            return PersistResult::compacted;
+        }
+        node_cache::delta::write(sidecar, h3_resolution, overlay_, deleted_);
+        return PersistResult::delta_written;
     }
 
     // INSTR: flat cache records after the base sweep, for the run summary.

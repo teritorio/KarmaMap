@@ -225,6 +225,9 @@ void run_step4_pass(const Options& opts) {
     if (opts.node_cache_path != opts.node_cache_last_path) {
         std::filesystem::remove(opts.node_cache_path);
     }
+    // The freshly collapsed base carries every node, so any delta sidecar an
+    // earlier update run left is now stale and must not re-apply.
+    std::filesystem::remove(update_pass::NodeState::delta_path(opts.node_cache_last_path));
 
     auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                        std::chrono::steady_clock::now() - start)
@@ -474,11 +477,24 @@ std::optional<replication_state::State> run_update_mode(
                   << "; committing through " << applied << "\n";
     }
 
-    std::cerr << "[update] rebuilding incremental cache " << opts.node_cache_last_path
+    std::cerr << "[update] persisting incremental cache " << opts.node_cache_last_path
               << "\n";
-    timed_step("[update] rebuild incremental cache", [&] {
-        node_state.rebuild(opts.node_cache_last_path, opts.h3_resolution);
-    });
+    const size_t compact_limit =
+        std::max<size_t>(1, static_cast<size_t>(node_state.base_records()) / 10);
+    const update_pass::NodeState::PersistResult cache_result =
+        timed_step("[update] persist incremental cache", [&] {
+            return node_state.persist(opts.node_cache_last_path, opts.h3_resolution,
+                                      compact_limit);
+        });
+    std::cerr << "[update] incremental cache "
+              << (cache_result == update_pass::NodeState::PersistResult::compacted
+                      ? "compacted (base rewritten)"
+                      : cache_result ==
+                                update_pass::NodeState::PersistResult::delta_written
+                            ? "delta written"
+                            : "unchanged")
+              << " overlay=" << node_state.overlay_size()
+              << " deleted=" << node_state.deleted_size() << "\n";
 
     std::cerr << "[update] merging staging partitions into " << changes_root << "\n";
     auto center = timed_step("[update] merge staging partitions", [&] {

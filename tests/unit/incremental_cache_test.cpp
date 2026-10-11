@@ -349,4 +349,134 @@ TEST(NodeState, RebuildMergesOverlayAndDropsDeleted) {
     EXPECT_EQ(r.lookup(60), cell(0x6666));
 }
 
+// ---------------------------------------------------------------------------
+// Node-position delta sidecar (persist below/at the compaction threshold)
+// ---------------------------------------------------------------------------
+
+TEST(NodeState, PersistWritesDeltaSidecar) {
+    TempDir dir;
+    const std::string path = dir.join("incr.bin");
+    {
+        node_cache::incremental::Writer w(path, 9);
+        w.add(10, cell(0xAAAA));
+        w.add(20, cell(0xBBBB));
+        w.add(30, cell(0xCCCC));
+        w.finish();
+    }
+    const std::string sidecar = update_pass::NodeState::delta_path(path);
+    {
+        update_pass::NodeState state(path, 9);
+        state.set_position(10, cell(0x1111));  // modify
+        state.set_position(40, cell(0x4444));  // create
+        state.remove_node(30);                 // delete
+        EXPECT_EQ(state.persist(path, 9, 1000),
+                  update_pass::NodeState::PersistResult::delta_written);
+        EXPECT_TRUE(std::filesystem::exists(sidecar));
+    }
+    // The base is untouched; a fresh state loads the sidecar on top of it.
+    node_cache::incremental::Reader r(path, 9);
+    EXPECT_EQ(r.lookup(10), cell(0xAAAA));
+    EXPECT_EQ(r.lookup(30), cell(0xCCCC));
+    EXPECT_EQ(r.lookup(40), 0);
+
+    update_pass::NodeState state(path, 9);
+    EXPECT_EQ(state.overlay_size(), 2);
+    EXPECT_EQ(state.deleted_size(), 1);
+    EXPECT_EQ(state.pre(10), cell(0x1111));
+    EXPECT_EQ(state.post(10), cell(0x1111));
+    EXPECT_EQ(state.pre(20), cell(0xBBBB));
+    EXPECT_EQ(state.post(40), cell(0x4444));
+    EXPECT_EQ(state.pre(30), cell(0xCCCC));  // last known base cell kept
+    EXPECT_EQ(state.post(30), 0);            // still deleted
+}
+
+TEST(NodeState, PersistCompactsAtThreshold) {
+    TempDir dir;
+    const std::string path = dir.join("incr.bin");
+    {
+        node_cache::incremental::Writer w(path, 9);
+        w.add(10, cell(0xAAAA));
+        w.add(20, cell(0xBBBB));
+        w.add(30, cell(0xCCCC));
+        w.finish();
+    }
+    const std::string sidecar = update_pass::NodeState::delta_path(path);
+    {
+        update_pass::NodeState state(path, 9);
+        state.set_position(10, cell(0x1111));
+        state.set_position(40, cell(0x4444));
+        state.remove_node(30);
+        EXPECT_EQ(state.persist(path, 9, 1),
+                  update_pass::NodeState::PersistResult::compacted);
+        EXPECT_FALSE(std::filesystem::exists(sidecar));
+    }
+    node_cache::incremental::Reader r(path, 9);
+    EXPECT_EQ(r.size(), 3);  // 10, 20, 40
+    EXPECT_EQ(r.lookup(10), cell(0x1111));
+    EXPECT_EQ(r.lookup(20), cell(0xBBBB));
+    EXPECT_EQ(r.lookup(30), 0);
+    EXPECT_EQ(r.lookup(40), cell(0x4444));
+
+    update_pass::NodeState state(path, 9);
+    EXPECT_EQ(state.overlay_size(), 0);
+    EXPECT_EQ(state.deleted_size(), 0);
+}
+
+TEST(NodeState, PersistNoChangeIsNoOp) {
+    TempDir dir;
+    const std::string path = dir.join("incr.bin");
+    {
+        node_cache::incremental::Writer w(path, 9);
+        w.add(10, cell(0xAAAA));
+        w.finish();
+    }
+    update_pass::NodeState state(path, 9);
+    EXPECT_EQ(state.persist(path, 9, 1),
+              update_pass::NodeState::PersistResult::no_change);
+    EXPECT_FALSE(std::filesystem::exists(update_pass::NodeState::delta_path(path)));
+}
+
+TEST(NodeState, DeltaAccumulatesAcrossRuns) {
+    TempDir dir;
+    const std::string path = dir.join("incr.bin");
+    {
+        node_cache::incremental::Writer w(path, 9);
+        w.add(10, cell(0xAAAA));
+        w.add(20, cell(0xBBBB));
+        w.finish();
+    }
+    {
+        update_pass::NodeState run1(path, 9);
+        run1.set_position(10, cell(0x1111));
+        EXPECT_EQ(run1.persist(path, 9, 1000),
+                  update_pass::NodeState::PersistResult::delta_written);
+    }
+    {
+        update_pass::NodeState run2(path, 9);
+        EXPECT_EQ(run2.pre(10), cell(0x1111));  // carried over from run 1
+        run2.set_position(20, cell(0x2222));
+        EXPECT_EQ(run2.persist(path, 9, 1000),
+                  update_pass::NodeState::PersistResult::delta_written);
+    }
+    update_pass::NodeState state(path, 9);
+    EXPECT_EQ(state.overlay_size(), 2);
+    EXPECT_EQ(state.pre(10), cell(0x1111));
+    EXPECT_EQ(state.pre(20), cell(0x2222));
+}
+
+TEST(NodeDelta, MissingFileIsEmpty) {
+    TempDir dir;
+    const node_cache::delta::State state =
+        node_cache::delta::load_or_empty(dir.join("absent.delta"), 9);
+    EXPECT_TRUE(state.modified.empty());
+    EXPECT_TRUE(state.deleted.empty());
+}
+
+TEST(NodeDelta, ResolutionMismatchThrows) {
+    TempDir dir;
+    const std::string path = dir.join("cache.last.delta");
+    node_cache::delta::write(path, 9, {{1, cell(0x1234)}}, {});
+    EXPECT_THROW(node_cache::delta::load_or_empty(path, 8), std::runtime_error);
+}
+
 }  // namespace
