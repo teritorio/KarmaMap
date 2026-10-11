@@ -31,6 +31,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 
 #include "manifest.hpp"
@@ -47,6 +48,27 @@
 #include "way_processor.hpp"
 
 namespace {
+
+int64_t elapsed_ms(std::chrono::steady_clock::time_point start) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now() - start)
+        .count();
+}
+
+// Times one finalize step and logs its wall-clock duration, matching the
+// pass-level "done in" lines. Returns the step's result, or void.
+template <typename F>
+auto timed_step(const char* label, F fn) {
+    auto start = std::chrono::steady_clock::now();
+    if constexpr (std::is_void_v<std::invoke_result_t<F>>) {
+        fn();
+        std::cerr << label << " done in " << elapsed_ms(start) << "ms\n";
+    } else {
+        auto result = fn();
+        std::cerr << label << " done in " << elapsed_ms(start) << "ms\n";
+        return result;
+    }
+}
 
 // Wipes a dataset root from a previous run, so a re-run never leaves stale
 // year=YYYY partition files behind. No-op if absent.
@@ -454,10 +476,14 @@ std::optional<replication_state::State> run_update_mode(
 
     std::cerr << "[update] rebuilding incremental cache " << opts.node_cache_last_path
               << "\n";
-    node_state.rebuild(opts.node_cache_last_path, opts.h3_resolution);
+    timed_step("[update] rebuild incremental cache", [&] {
+        node_state.rebuild(opts.node_cache_last_path, opts.h3_resolution);
+    });
 
     std::cerr << "[update] merging staging partitions into " << changes_root << "\n";
-    auto center = sort_pass::merge_update_partitions(changes_root, opts.change_group_rows, applied);
+    auto center = timed_step("[update] merge staging partitions", [&] {
+        return sort_pass::merge_update_partitions(changes_root, opts.change_group_rows, applied);
+    });
 
     // Filter 2: fold this run's staged minute buckets into the persisted
     // binary minute store first, so the daily suspect flag written below
@@ -466,25 +492,40 @@ std::optional<replication_state::State> run_update_mode(
     // are consumed here. Filter 4: fold cell buckets into suspect_cells.bin.
     // Filter 5: fold tag buckets into suspect_tags.bin.
     const std::string minutes_path = opts.suspect_minutes_path;
-    suspect::fold_minute_counts(suspect_stage_root + "/counts", minutes_path, applied);
+    timed_step("[suspect] fold minute counts", [&] {
+        suspect::fold_minute_counts(suspect_stage_root + "/counts", minutes_path, applied);
+    });
     const std::string cells_path = opts.suspect_cells_path;
-    suspect::fold_cell_counts(suspect_stage_root + "/cells", cells_path, applied, opts.h3_resolution);
+    timed_step("[suspect] fold cell counts", [&] {
+        suspect::fold_cell_counts(suspect_stage_root + "/cells", cells_path, applied,
+                                  opts.h3_resolution);
+    });
     const std::string tags_path = opts.suspect_tags_path;
-    suspect::fold_tag_counts(suspect_stage_root + "/tags", tags_path, applied);
+    timed_step("[suspect] fold tag counts", [&] {
+        suspect::fold_tag_counts(suspect_stage_root + "/tags", tags_path, applied);
+    });
     const std::map<std::pair<int64_t, uint16_t>, suspect::MoveDay> move_flags =
-        suspect::flagged_move_days(suspect_stage_root);
+        timed_step("[suspect] flag move days", [&] {
+            return suspect::flagged_move_days(suspect_stage_root);
+        });
     // Filter 4: compute spatial spread flags from the cell and minute stores.
     const std::map<std::pair<int64_t, uint16_t>, suspect::CellSpreadDay> filter4_days =
-        suspect::flagged_cell_days(cells_path, minutes_path, opts.h3_resolution);
+        timed_step("[suspect] flag cell days", [&] {
+            return suspect::flagged_cell_days(cells_path, minutes_path, opts.h3_resolution);
+        });
     // Filter 5: compute tag coverage flags from the tag and minute stores.
     const std::map<std::pair<int64_t, uint16_t>, suspect::TagCoverageDay> filter5_days =
-        suspect::flagged_tag_days(tags_path, minutes_path);
+        timed_step("[suspect] flag tag days", [&] {
+            return suspect::flagged_tag_days(tags_path, minutes_path);
+        });
 
-    users_history::run_update_finalize(history_stage_root,
-                                       opts.output_dir + "/users_history.parquet",
-                                       opts.users_history_group_rows,
-                                       opts.ranking_group_rows, minutes_path,
-                                       move_flags, filter4_days, filter5_days);
+    timed_step("[users history] update finalize", [&] {
+        users_history::run_update_finalize(history_stage_root,
+                                           opts.output_dir + "/users_history.parquet",
+                                           opts.users_history_group_rows,
+                                           opts.ranking_group_rows, minutes_path,
+                                           move_flags, filter4_days, filter5_days);
+    });
 
     // Provenance records the applied state: the sequence is the last applied
     // diff (indexed by "update N"), the timestamp is the fetched state.txt's
@@ -611,7 +652,9 @@ int main(int argc, char** argv) {
         }
 
     std::cerr << "[manifest] writing " << opts.output_dir << "/manifest.json\n";
-    manifest::write_manifest(opts.output_dir, opts.h3_resolution, source, spatial_center);
+    timed_step("[manifest] write", [&] {
+        manifest::write_manifest(opts.output_dir, opts.h3_resolution, source, spatial_center);
+    });
 
     } catch (const std::exception& e) {
         std::cerr << "ERROR: " << e.what() << "\n";
