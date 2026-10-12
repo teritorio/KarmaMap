@@ -303,6 +303,51 @@ frontend at `/` and `output-dir/` at `/data`.
 How each viewer queries the data is documented in
 [HOW_IT_WORKS.md](HOW_IT_WORKS.md).
 
+## Country S2 index
+
+`country_s2_index.py` assigns S2 cells to countries, using a Natural Earth
+"Admin 0 - Details" layer (e.g. `ne_10m_admin_0_map_units.zip`). Its
+dependencies are installed in the runtime image.
+
+It starts from the six cube faces and splits a cell whenever it touches more
+than one country. A cell that touches at most one country is emitted as that
+country, even when the cell also covers ocean; a cell still contested at
+`--max-level` goes to the country with the largest area inside it. Solid
+interiors are emitted as coarse parent cells and only the border band between
+countries is resolved down to `--max-level`. All clipping and area measurement
+use EPSG:6933 (equal-area).
+
+Download the input from Natural Earth and run the script on it. The
+downloaded `.zip` is read as-is, no need to unpack it (geopandas reads the
+shapefile straight from the archive). Place it under `DATA_DIR` (`data/` on
+the host, `/data` in the container), like the OSM inputs.
+
+```bash
+wget -O data/ne_10m_admin_0_map_units.zip https://naturalearth.s3.amazonaws.com/10m_cultural/ne_10m_admin_0_map_units.zip
+docker compose --profile=build run --rm karmamap country_s2_index.py /data/ne_10m_admin_0_map_units.zip /data/country.parquet
+```
+
+The same layer is listed on the Natural Earth
+[10m Cultural Vectors](https://www.naturalearthdata.com/downloads/10m-cultural-vectors/)
+page under Admin 0 - Details.
+
+- `<input.zip>` Natural Earth Admin 0 archive, positional.
+- `<output.parquet>` output Parquet path, positional.
+- `--max-level` finest S2 level, 0-30 (default: `13`).
+- `--quiet` suppress progress output.
+
+It writes two files:
+
+- `<output.parquet>`: columns `s2_cell` (uint64 S2 cell id), `country_id`
+  (uint8, `0` = no valid ISO code) and `level` (uint8, S2 level of `s2_cell`,
+  from 0 up to `--max-level`). Rows are ordered by the smallest descendant leaf
+  of each row's cell (`range_min`), so a range scan of descendants is
+  contiguous. Cells shared by several countries are assigned to the one with
+  the largest intersection area.
+- `country_ids.json`: `id -> ISO 3166-1 alpha-2` lookup table, written next to
+  the output and built from all valid codes of the input file (ids `1..255`,
+  `0` = null).
+
 ## Testing on a small region before the full planet
 
 Never run directly on `planet-latest.osh.pbf` (~150 GB) without first

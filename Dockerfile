@@ -41,11 +41,15 @@ RUN mkdir -p /out/lib \
 
 FROM debian:bookworm-slim AS runtime
 
-RUN apt-get update && apt install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt install -y --no-install-recommends \
+        ca-certificates python3 python3-pip \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip3 install --no-cache-dir --break-system-packages \
+        s2sphere geopandas shapely pandas pyarrow
 
 COPY --from=build /out/lib/ /usr/local/lib/
 COPY --from=build /out/karmamap /usr/local/bin/karmamap
+COPY country_s2_index.py /usr/local/bin/country_s2_index.py
 RUN ldconfig
 
 WORKDIR /data
