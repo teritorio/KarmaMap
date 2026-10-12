@@ -5,7 +5,7 @@ import * as maplibregl from 'maplibre-gl'
 import { cellToBoundary } from 'h3-js'
 
 // Free vector style with no API key required.
-const DEMO_STYLE = 'https://vecto.teritorio.xyz/styles/positron/style.json'
+const DEMO_STYLE = 'https://maps.cartoway.com/styles/positron/style.json'
 
 // Default view when no permalink is present: Andorra, zoom 12.
 const DEFAULT_CENTER = { lng: 1.5218, lat: 42.5063 }
