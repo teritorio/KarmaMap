@@ -13,10 +13,12 @@
 //     ways, pre-update view for deleted ways = their last known geometry).
 //   flat cache persist: once per "karmamap update" run the accumulated overlay
 //     and deletions are written to a small .last.delta sidecar (O(changes)),
-//     leaving the .last base untouched. Only when the accumulated delta reaches
-//     the compaction threshold is the base rewritten as base + overlay minus
+//     leaving the .last base untouched. This runs before the manifest advances
+//     the committed sequence, so a crash during the later base rebuild still
+//     resumes consistently. Only when the accumulated delta reaches the
+//     compaction threshold is the base rewritten as base + overlay minus
 //     deletions and the sidecar dropped (the incremental writer's tmp+rename
-//     swap keeps it consistent across crashes).
+//     swap keeps it consistent across crashes), after the manifest is written.
 //
 // Consecutive diffs are merged into one change file per batch (the batching
 // bound is kUpdateBatchMaxSeconds below); a batch stages its counts under the
@@ -96,7 +98,9 @@ private:
 // removed from the overlay and remembered so the cache persist drops them and
 // deleted ways can resolve their pre-update geometry. The overlay and delete
 // set carry over between runs through a <base>.delta sidecar, so a run only
-// rewrites the base when they grow past the compaction threshold.
+// rewrites the base when they grow past the compaction threshold. The persist
+// is two-phase: persist_delta() writes the O(changes) sidecar, then the caller
+// emits the manifest, then compact() rewrites the base.
 class NodeState {
 public:
     NodeState(const std::string& node_cache_last_path, int h3_resolution)
@@ -231,27 +235,30 @@ public:
         writer.finish();
     }
 
-    // What persist() did with the run's accumulated changes.
-    enum class PersistResult { no_change, delta_written, compacted };
+    // What persist_delta() did with the run's accumulated changes.
+    enum class PersistResult { no_change, delta_written, rebuild_due };
 
-    // Persists the run's accumulated overlay and deletions. Writes the delta
-    // sidecar (O(changes)) unless the accumulated change count reaches
-    // `changed_limit`, in which case the base is rewritten as base + overlay
-    // minus deletions and the sidecar dropped. A run that changed nothing
-    // leaves both the base and any existing sidecar untouched.
-    PersistResult persist(const std::string& last_path, int h3_resolution,
-                          size_t changed_limit) const {
+    // Phase 1: durably records the run's accumulated overlay and deletions in
+    // the delta sidecar (O(changes)), leaving the base untouched. Called before
+    // the manifest so that a crash before the base rebuild still resumes from a
+    // consistent cache. Returns no_change when nothing changed, delta_written
+    // when only the sidecar was written, and rebuild_due when the accumulated
+    // change count reaches `changed_limit` (compact() must then follow).
+    PersistResult persist_delta(const std::string& last_path, int h3_resolution,
+                                size_t changed_limit) const {
         const size_t changed = overlay_.size() + deleted_.size();
         if (changed == 0) return PersistResult::no_change;
-        const std::string sidecar = delta_path(last_path);
-        if (changed >= changed_limit) {
-            rebuild(last_path, h3_resolution);
-            std::error_code ec;
-            std::filesystem::remove(sidecar, ec);
-            return PersistResult::compacted;
-        }
-        node_cache::delta::write(sidecar, h3_resolution, overlay_, deleted_);
+        node_cache::delta::write(delta_path(last_path), h3_resolution, overlay_, deleted_);
+        if (changed >= changed_limit) return PersistResult::rebuild_due;
         return PersistResult::delta_written;
+    }
+
+    // Phase 2: rewrites the base as base + overlay minus deletions and drops the
+    // sidecar. Only called after persist_delta() reported rebuild_due.
+    void compact(const std::string& last_path, int h3_resolution) const {
+        rebuild(last_path, h3_resolution);
+        std::error_code ec;
+        std::filesystem::remove(delta_path(last_path), ec);
     }
 
     // INSTR: flat cache records after the base sweep, for the run summary.

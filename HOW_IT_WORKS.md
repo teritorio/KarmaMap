@@ -176,9 +176,9 @@ diffs committed by earlier runs are purged at update start. Bare `update` (or
 `update 0`) fetches every diff up to the current `state.txt`; `update N` stops
 after N. A diff download that fails stops the run but does not discard the
 work: the diffs downloaded so far are applied and the same end-of-run commit
-runs (incremental cache persist, staging merge, suspect/history finalize,
-manifest write) for that prefix, and karmamap exits non-zero; the next run
-resumes from the committed sequence.
+runs (staging merge, suspect/history finalize, incremental cache delta, manifest
+write, then the deferred base rebuild) for that prefix, and karmamap exits
+non-zero; the next run resumes from the committed sequence.
 
 Each batch invokes update-mode passes 1 and 2:
 
@@ -211,10 +211,13 @@ Each batch invokes update-mode passes 1 and 2:
   so a batch's way pass decompresses only the cache blocks its refs touch.
 
 Once per run the `.last` incremental cache's accumulated changes are persisted
-as a `<path>.delta` sidecar (O(changes); the writer's tmp+rename swap keeps it
-consistent), and only compacted into the base as base + overlay minus
-deletions once the delta reaches the compaction threshold, and
-the staged per-sequence counts are folded into each year's `data.parquet` by
+in two phases. First the O(changes) `<path>.delta` sidecar is written (the
+writer's tmp+rename swap keeps it consistent), so the run's changes are durable
+before the manifest advances the committed sequence and a crash during the later
+base rebuild still resumes from a consistent cache. Then the manifest is written,
+and only once the delta reaches the compaction threshold is the base rebuilt as
+base + overlay minus deletions and the sidecar dropped, last of all. The staged
+per-sequence counts are folded into each year's `data.parquet` by
 `merge_update_partitions` — base `data.parquet` plus its `nodes.<seq>` /
 `ways.<seq>` staging per year, one rename per year. Fetching N diffs never
 rewrites the dataset N times.

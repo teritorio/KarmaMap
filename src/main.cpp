@@ -77,6 +77,18 @@ void reset_dataset_root(const std::string& root) {
     std::filesystem::remove_all(root);
 }
 
+// Writes output-dir/manifest.json and logs the step. Update mode calls this
+// inline (before the deferred base rebuild); every other stage calls it from
+// main once its passes are done.
+void write_manifest_output(const Options& opts,
+                           const std::optional<replication_state::State>& source,
+                           const std::optional<std::pair<double, double>>& spatial_center) {
+    std::cerr << "[manifest] writing " << opts.output_dir << "/manifest.json\n";
+    timed_step("[manifest] write", [&] {
+        manifest::write_manifest(opts.output_dir, opts.h3_resolution, source, spatial_center);
+    });
+}
+
 // Deletes a freshly applied diff file. The removal is the last step of a
 // sequence: a failure here aborts the run loudly instead of continuing into
 // the merge while believing the file was consumed.
@@ -331,6 +343,9 @@ std::optional<replication_state::State> run_update_mode(
     if (first > target) {
         std::cerr << "[update] already at sequence " << base_seq
                   << " (state.txt=" << current.sequence_number << "); nothing to apply\n";
+        // Nothing was applied, but the manifest is still refreshed (footer
+        // sizes and date range from the existing files), as before.
+        write_manifest_output(opts, current, spatial_center);
         return current;
     }
 
@@ -478,25 +493,6 @@ std::optional<replication_state::State> run_update_mode(
                   << "; committing through " << applied << "\n";
     }
 
-    std::cerr << "[update] persisting incremental cache " << opts.node_cache_last_path
-              << "\n";
-    const size_t compact_limit =
-        std::max<size_t>(1, static_cast<size_t>(node_state.base_records()) / 10);
-    const update_pass::NodeState::PersistResult cache_result =
-        timed_step("[update] persist incremental cache", [&] {
-            return node_state.persist(opts.node_cache_last_path, opts.h3_resolution,
-                                      compact_limit);
-        });
-    std::cerr << "[update] incremental cache "
-              << (cache_result == update_pass::NodeState::PersistResult::compacted
-                      ? "compacted (base rewritten)"
-                      : cache_result ==
-                                update_pass::NodeState::PersistResult::delta_written
-                            ? "delta written"
-                            : "unchanged")
-              << " overlay=" << node_state.overlay_size()
-              << " deleted=" << node_state.deleted_size() << "\n";
-
     std::cerr << "[update] merging staging partitions into " << changes_root << "\n";
     auto center = timed_step("[update] merge staging partitions", [&] {
         return sort_pass::merge_update_partitions(changes_root, opts.change_group_rows, applied);
@@ -555,6 +551,39 @@ std::optional<replication_state::State> run_update_mode(
     }
     stopped_early_out = stopped_early;
     spatial_center = center;
+
+    // The incremental cache is written in two phases so the expensive base
+    // rebuild runs last, after every user-visible output (data.parquet, the
+    // suspect/history files and the manifest) is durable. Phase 1 writes the
+    // O(changes) delta sidecar, so a crash during the rebuild still resumes
+    // from a consistent cache; phase 2 rewrites the base and drops the sidecar.
+    const size_t compact_limit =
+        std::max<size_t>(1, static_cast<size_t>(node_state.base_records()) / 10);
+    const update_pass::NodeState::PersistResult cache_result =
+        timed_step("[update] persist incremental cache delta", [&] {
+            return node_state.persist_delta(opts.node_cache_last_path, opts.h3_resolution,
+                                            compact_limit);
+        });
+    std::cerr << "[update] incremental cache delta "
+              << (cache_result == update_pass::NodeState::PersistResult::rebuild_due
+                      ? "written (rebuild due)"
+                      : cache_result ==
+                                update_pass::NodeState::PersistResult::delta_written
+                            ? "written"
+                            : "unchanged")
+              << " overlay=" << node_state.overlay_size()
+              << " deleted=" << node_state.deleted_size() << "\n";
+
+    write_manifest_output(opts, new_source, center);
+
+    if (cache_result == update_pass::NodeState::PersistResult::rebuild_due) {
+        std::cerr << "[update] compacting incremental cache " << opts.node_cache_last_path
+                  << "\n";
+        timed_step("[update] compact incremental cache", [&] {
+            node_state.compact(opts.node_cache_last_path, opts.h3_resolution);
+        });
+    }
+
     return new_source;
 }
 
@@ -685,10 +714,11 @@ int main(int argc, char** argv) {
                 break;
         }
 
-    std::cerr << "[manifest] writing " << opts.output_dir << "/manifest.json\n";
-    timed_step("[manifest] write", [&] {
-        manifest::write_manifest(opts.output_dir, opts.h3_resolution, source, spatial_center);
-    });
+    // Update mode writes its own manifest inside run_update_mode, before the
+    // deferred base rebuild; every other stage writes it once here.
+    if (opts.stage != Options::Stage::update) {
+        write_manifest_output(opts, source, spatial_center);
+    }
 
     } catch (const std::exception& e) {
         std::cerr << "ERROR: " << e.what() << "\n";

@@ -369,7 +369,7 @@ TEST(NodeState, PersistWritesDeltaSidecar) {
         state.set_position(10, cell(0x1111));  // modify
         state.set_position(40, cell(0x4444));  // create
         state.remove_node(30);                 // delete
-        EXPECT_EQ(state.persist(path, 9, 1000),
+        EXPECT_EQ(state.persist_delta(path, 9, 1000),
                   update_pass::NodeState::PersistResult::delta_written);
         EXPECT_TRUE(std::filesystem::exists(sidecar));
     }
@@ -406,8 +406,13 @@ TEST(NodeState, PersistCompactsAtThreshold) {
         state.set_position(10, cell(0x1111));
         state.set_position(40, cell(0x4444));
         state.remove_node(30);
-        EXPECT_EQ(state.persist(path, 9, 1),
-                  update_pass::NodeState::PersistResult::compacted);
+        // Phase 1 reports a rebuild is due but still writes the sidecar, so a
+        // crash before phase 2 resumes from a consistent cache.
+        EXPECT_EQ(state.persist_delta(path, 9, 1),
+                  update_pass::NodeState::PersistResult::rebuild_due);
+        EXPECT_TRUE(std::filesystem::exists(sidecar));
+        // Phase 2 rewrites the base and drops the sidecar.
+        state.compact(path, 9);
         EXPECT_FALSE(std::filesystem::exists(sidecar));
     }
     node_cache::incremental::Reader r(path, 9);
@@ -431,7 +436,7 @@ TEST(NodeState, PersistNoChangeIsNoOp) {
         w.finish();
     }
     update_pass::NodeState state(path, 9);
-    EXPECT_EQ(state.persist(path, 9, 1),
+    EXPECT_EQ(state.persist_delta(path, 9, 1),
               update_pass::NodeState::PersistResult::no_change);
     EXPECT_FALSE(std::filesystem::exists(update_pass::NodeState::delta_path(path)));
 }
@@ -448,14 +453,14 @@ TEST(NodeState, DeltaAccumulatesAcrossRuns) {
     {
         update_pass::NodeState run1(path, 9);
         run1.set_position(10, cell(0x1111));
-        EXPECT_EQ(run1.persist(path, 9, 1000),
+        EXPECT_EQ(run1.persist_delta(path, 9, 1000),
                   update_pass::NodeState::PersistResult::delta_written);
     }
     {
         update_pass::NodeState run2(path, 9);
         EXPECT_EQ(run2.pre(10), cell(0x1111));  // carried over from run 1
         run2.set_position(20, cell(0x2222));
-        EXPECT_EQ(run2.persist(path, 9, 1000),
+        EXPECT_EQ(run2.persist_delta(path, 9, 1000),
                   update_pass::NodeState::PersistResult::delta_written);
     }
     update_pass::NodeState state(path, 9);

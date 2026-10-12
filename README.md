@@ -240,8 +240,9 @@ diff files are removed
 once its passes succeeded, so the `diffs/` dir does not accumulate; diffs
 already committed by earlier runs are purged on start. If a diff download
 fails, the run stops but keeps its progress: the diffs downloaded so far are
-applied, staged, and committed (cache persist, merge into `data.parquet`,
-suspect/history finalize, manifest write) as a consistent prefix, and karmamap
+applied, staged, and committed (staging merge into `data.parquet`,
+suspect/history finalize, incremental cache delta, manifest write, then the
+deferred base rebuild) as a consistent prefix, and karmamap
 exits non-zero; the next run resumes from the committed sequence.
 
 Update periodically using a cron job like
