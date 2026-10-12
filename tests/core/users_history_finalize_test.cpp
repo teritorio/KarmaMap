@@ -166,6 +166,40 @@ HistoryRows read_history(const std::string& path) {
     return out;
 }
 
+// Writes a 4-column users_history.parquet directly, so a test can seed a base
+// with a chosen row order (including duplicate keys).
+struct HistoryRow {
+    int64_t uid;
+    uint16_t day;
+    uint32_t count;
+    uint8_t flag;
+};
+
+void write_history(const std::string& path, const std::vector<HistoryRow>& rows) {
+    arrow::Int64Builder uid;
+    arrow::UInt16Builder day;
+    arrow::UInt32Builder count;
+    arrow::UInt8Builder flag;
+    for (const auto& r : rows) {
+        append_ok(uid, r.uid);
+        append_ok(day, r.day);
+        append_ok(count, r.count);
+        append_ok(flag, r.flag);
+    }
+    std::shared_ptr<arrow::Array> a_uid, a_day, a_count, a_flag;
+    finish_ok(uid, &a_uid);
+    finish_ok(day, &a_day);
+    finish_ok(count, &a_count);
+    finish_ok(flag, &a_flag);
+    auto table = arrow::Table::Make(
+        arrow::schema({arrow::field("uid", arrow::int64(), false),
+                       arrow::field("change_date", arrow::uint16(), false),
+                       arrow::field("count", arrow::uint32(), false),
+                       arrow::field("suspect_flag", arrow::uint8(), false)}),
+        {a_uid, a_day, a_count, a_flag});
+    test_helpers::write_table(path, table);
+}
+
 struct RankingRows {
     std::vector<int64_t> uid;
     std::vector<std::string> username;
@@ -440,6 +474,45 @@ TEST(UsersHistoryFinalize, UpdateMergesDeltasIntoExistingFiles) {
 
     // Per-run staging is removed once folded in.
     EXPECT_FALSE(std::filesystem::exists(stage_root));
+}
+
+// The import scan flushes its per-(uid, change_date) accumulator at a row
+// threshold and clears it, so a busy day straddling a flush boundary lands in
+// the base history as several rows with the same key. The update finalize must
+// fold those into one row, summing counts and ORing flags, as the previous
+// per-key map accumulation did.
+TEST(UsersHistoryFinalize, UpdateFoldsDuplicateBaseRows) {
+    TempDir dir;
+    const std::string history = dir.join("users_history.parquet");
+
+    // Duplicate (7, 100) rows, adjacent (as a sorted file would place them),
+    // with disjoint flag bits that must OR together.
+    write_history(history,
+                  {{7, 100, 2, suspect::kFlagFilter2},
+                   {7, 100, 3, suspect::kFlagFilter4}});
+
+    // One update run so the finalize proceeds past the empty-stage early-out.
+    const std::string stage_root = dir.join("update_stage");
+    std::filesystem::create_directories(stage_root + "/seq_2847600");
+    write_stage(stage_root + "/seq_2847600/stage.parquet",
+                {{8, "dave", 200, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}});
+
+    users_history::run_update_finalize(stage_root, history,
+                                       kDefaultUsersHistoryGroupRows,
+                                       kDefaultRankingGroupRows,
+                                       dir.join("missing_minutes.bin"), {});
+
+    const auto ind = read_history(history);
+    ASSERT_EQ(ind.uid.size(), 2);
+    // The two (7, 100) base rows fold to one row with the summed count and the
+    // ORed flag; the delta row follows.
+    EXPECT_EQ(ind.uid[0], 7);
+    EXPECT_EQ(ind.day[0], 100);
+    EXPECT_EQ(ind.count[0], 5);
+    EXPECT_EQ(ind.flag[0], suspect::kFlagFilter2 | suspect::kFlagFilter4);
+    EXPECT_EQ(ind.uid[1], 8);
+    EXPECT_EQ(ind.day[1], 200);
+    EXPECT_EQ(ind.count[1], 1);
 }
 
 TEST(UsersHistoryFinalize, UpdateNoStageIsNoOp) {

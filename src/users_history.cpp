@@ -22,7 +22,6 @@
 #include <iostream>
 #include <map>
 #include <memory>
-#include <set>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -826,36 +825,32 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
 
     // Users history base, read with the two bases above so that a base which
     // does not match this build aborts the run before its first file is
-    // replaced. It is folded with this run's deltas and flag sources below
-    // into one sorted rewrite. All three filter bits are monotonic: the base
-    // row's flags are carried forward unchanged, bits 0/1 are ORed with this
-    // run's minute-store and move-flagged days, and bit 2 (filter 1) is set on
-    // the run's newly-written rows whose user's current ranking is below
-    // the threshold. Base rows are never masked or re-flagged, so a flag once
+    // replaced. The base file is sorted by (uid, change_date); the run's delta
+    // is merged in below with a linear co-merge, so no per-run hash maps and no
+    // re-sort are needed. All three filter bits are monotonic: the base row's
+    // flags are carried forward unchanged, bits 0/1 are ORed with this run's
+    // minute-store and move-flagged days, and bit 2 (filter 1) is set on the
+    // run's newly-written rows whose user's current ranking is below the
+    // threshold. Base rows are never masked or re-flagged, so a flag once
     // written persists and a ranking drop is never applied retroactively.
-    std::map<std::pair<int64_t, uint16_t>, uint32_t> merged_counts;
-    std::map<std::pair<int64_t, uint16_t>, uint8_t> merged_flags;
-    std::set<std::pair<int64_t, uint16_t>> base_keys;
+    std::shared_ptr<arrow::Table> base_combined;
+    const arrow::Int64Array* b_uids = nullptr;
+    const arrow::UInt16Array* b_days = nullptr;
+    const arrow::UInt32Array* b_counts = nullptr;
+    const arrow::UInt8Array* b_flags = nullptr;
+    int64_t base_n = 0;
     if (std::filesystem::exists(history_path)) {
         auto base_result = arrow_table_io::read_table(history_path)->CombineChunks();
         if (!base_result.ok()) {
             throw std::runtime_error("CombineChunks failed on " + history_path + ": " +
                                      base_result.status().ToString());
         }
-        const std::shared_ptr<arrow::Table> base_table = *base_result;
-        const auto* b_uids = typed_column<arrow::Int64Array>(base_table, "uid", history_path);
-        const auto* b_days =
-            typed_column<arrow::UInt16Array>(base_table, "change_date", history_path);
-        const auto* b_counts =
-            typed_column<arrow::UInt32Array>(base_table, "count", history_path);
-        const auto* b_flags =
-            typed_column<arrow::UInt8Array>(base_table, "suspect_flag", history_path);
-        for (int64_t i = 0; i < base_table->num_rows(); ++i) {
-            const auto key = std::make_pair(b_uids->Value(i), b_days->Value(i));
-            merged_counts[key] += b_counts->Value(i);
-            merged_flags[key] |= b_flags->Value(i);
-            base_keys.insert(key);
-        }
+        base_combined = *base_result;
+        b_uids = typed_column<arrow::Int64Array>(base_combined, "uid", history_path);
+        b_days = typed_column<arrow::UInt16Array>(base_combined, "change_date", history_path);
+        b_counts = typed_column<arrow::UInt32Array>(base_combined, "count", history_path);
+        b_flags = typed_column<arrow::UInt8Array>(base_combined, "suspect_flag", history_path);
+        base_n = base_combined->num_rows();
     }
     // Filter 1 (paper sec. 5): users whose current ranking is below
     // kFilter1RankingThreshold. Unlike the diff-based screens this is a
@@ -893,29 +888,15 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
         }
     }
 
-    for (const auto& [key, count] : delta_counts) merged_counts[key] += count;
-
     // Rebuild the whole-history flags from the persisted sources: bit 0 from
     // the minute store, bit 1 from the run's folded move-flagged days, bit 3
     // from the cell spread store, bit 4 from the tag coverage store. Every
     // filter2_days entry carries kFlagFilter2, every move_flags entry carries
     // kFlagFilter3, every filter4_days entry carries kFlagFilter4, and every
-    // filter5_days entry carries kFlagFilter5. ORing them into the carried-
-    // forward base bits yields the combined per-day field. The same maps carry
-    // the quantitative columns written into the suspect export below.
+    // filter5_days entry carries kFlagFilter5. They are co-merged with the
+    // history below (all keyed by (uid, change_date)); the same maps carry the
+    // quantitative columns written into the suspect export below.
     const auto filter2_days = suspect::flagged_days(minutes_path);
-    for (const auto& [key, value] : filter2_days) {
-        merged_flags[key] |= value.flags;
-    }
-    for (const auto& [key, value] : move_flags) {
-        merged_flags[key] |= value.flags;
-    }
-    for (const auto& [key, value] : filter4_days) {
-        merged_flags[key] |= value.flags;
-    }
-    for (const auto& [key, value] : filter5_days) {
-        merged_flags[key] |= value.flags;
-    }
 
     arrow::Int64Builder ind_uid_builder;
     arrow::UInt16Builder ind_day_builder;
@@ -945,26 +926,130 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     arrow::UInt32Builder v_moves_builder;
     arrow::UInt32Builder v_max_move_builder;
     arrow::UInt8Builder v_rank_builder;
-    for (const auto& [key, count] : merged_counts) {
-        append_checked(ind_uid_builder, key.first);
-        append_checked(ind_day_builder, key.second);
-        append_checked(ind_count_builder, count);
+    // The base file, the run's delta and every flag/suspect source are all
+    // sorted by (uid, change_date), so the whole history is rebuilt with one
+    // linear co-merge: advance the base cursor and the delta cursor to the next
+    // key, and advance one iterator per flag/suspect source to match it. This
+    // replaces a merged std::map/std::set of every history key plus a lookup
+    // per row.
+    auto f2_it = filter2_days.begin();
+    auto mv_it = move_flags.begin();
+    auto f4_it = filter4_days.begin();
+    auto f5_it = filter5_days.begin();
+    auto sb_it = suspect_base.begin();
+
+    size_t bi = 0;
+    auto di = delta_counts.begin();
+    const size_t base_size = static_cast<size_t>(base_n);
+    // A base day can appear as several rows: the import scan flushes its
+    // per-(uid, change_date) accumulator at a row threshold and clears it, so a
+    // busy day straddling a flush boundary is written to more than one stage
+    // file and ends up duplicated in the sorted base history. Fold each run of
+    // equal base keys (summing counts, ORing flags) before matching it against
+    // the delta, as the previous per-key map accumulation did.
+    bool have_base = false;
+    int64_t base_uid = 0;
+    uint16_t base_day = 0;
+    uint32_t base_count = 0;
+    uint8_t base_flags_v = 0;
+    while (true) {
+        if (!have_base && bi < base_size) {
+            base_uid = b_uids->Value(bi);
+            base_day = b_days->Value(bi);
+            base_count = 0;
+            base_flags_v = 0;
+            while (bi < base_size && b_uids->Value(bi) == base_uid &&
+                   b_days->Value(bi) == base_day) {
+                base_count += b_counts->Value(bi);
+                base_flags_v |= b_flags->Value(bi);
+                ++bi;
+            }
+            have_base = true;
+        }
+        const bool has_base = have_base;
+        const bool has_delta = di != delta_counts.end();
+        if (!has_base && !has_delta) break;
+
+        int64_t uid;
+        uint16_t day;
+        uint32_t count;
+        uint8_t base_flag = 0;
+        bool from_base = false;
+        if (has_base && has_delta) {
+            if (base_uid < di->first.first ||
+                (base_uid == di->first.first && base_day < di->first.second)) {
+                uid = base_uid;
+                day = base_day;
+                count = base_count;
+                base_flag = base_flags_v;
+                from_base = true;
+                have_base = false;
+            } else if (base_uid == di->first.first && base_day == di->first.second) {
+                uid = base_uid;
+                day = base_day;
+                count = base_count + di->second;
+                base_flag = base_flags_v;
+                from_base = true;
+                have_base = false;
+                ++di;
+            } else {
+                uid = di->first.first;
+                day = di->first.second;
+                count = di->second;
+                ++di;
+            }
+        } else if (has_base) {
+            uid = base_uid;
+            day = base_day;
+            count = base_count;
+            base_flag = base_flags_v;
+            from_base = true;
+            have_base = false;
+        } else {
+            uid = di->first.first;
+            day = di->first.second;
+            count = di->second;
+            ++di;
+        }
+
+        const auto key = std::make_pair(uid, day);
+        while (f2_it != filter2_days.end() && f2_it->first < key) ++f2_it;
+        while (mv_it != move_flags.end() && mv_it->first < key) ++mv_it;
+        while (f4_it != filter4_days.end() && f4_it->first < key) ++f4_it;
+        while (f5_it != filter5_days.end() && f5_it->first < key) ++f5_it;
+        while (sb_it != suspect_base.end() && sb_it->first < key) ++sb_it;
+
+        const bool has_f2 = f2_it != filter2_days.end() && f2_it->first == key;
+        const bool has_mv = mv_it != move_flags.end() && mv_it->first == key;
+        const bool has_f4 = f4_it != filter4_days.end() && f4_it->first == key;
+        const bool has_f5 = f5_it != filter5_days.end() && f5_it->first == key;
+        const bool has_sb = sb_it != suspect_base.end() && sb_it->first == key;
+
         // Forward-only filter 1: only the rows this run newly writes may pick
         // up the low-ranking bit; a day already present in the base file
         // keeps its carried flags untouched.
-        const auto it = base_keys.count(key) ? filter1_uid.end() : filter1_uid.find(key.first);
-        const uint8_t flag =
-            merged_flags[key] | (it != filter1_uid.end() ? it->second : 0);
+        uint8_t flag = base_flag;
+        if (has_f2) flag |= f2_it->second.flags;
+        if (has_mv) flag |= mv_it->second.flags;
+        if (has_f4) flag |= f4_it->second.flags;
+        if (has_f5) flag |= f5_it->second.flags;
+        if (!from_base) {
+            const auto it = filter1_uid.find(uid);
+            if (it != filter1_uid.end()) flag |= it->second;
+        }
+
+        append_checked(ind_uid_builder, uid);
+        append_checked(ind_day_builder, day);
+        append_checked(ind_count_builder, count);
         append_checked(ind_flag_builder, flag);
         if (flag != 0) {
-            append_checked(v_uid_builder, key.first);
-            append_checked(v_day_builder, key.second);
+            append_checked(v_uid_builder, uid);
+            append_checked(v_day_builder, day);
             append_checked(v_flag_builder, flag);
-            const auto ui = uid_index.find(key.first);
+            const auto ui = uid_index.find(uid);
             append_checked(v_user_builder,
-                           ui != uid_index.end()
-                               ? rank_usernames[ui->second]
-                               : "<" + std::to_string(key.first) + ">");
+                           ui != uid_index.end() ? rank_usernames[ui->second]
+                                                 : "<" + std::to_string(uid) + ">");
             // changes is the day's own total re-derived from the merged counts
             // each run (an appended-to history yields the same sum, so the
             // value never drifts and never touches other days).
@@ -981,33 +1066,24 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
             // run's current ranking when the day is newly flagged, and never
             // recalculated.
             append_checked(v_changes_builder, count);
-            const auto f2 = filter2_days.find(key);
             append_checked(v_hour_edits_builder,
-                           f2 != filter2_days.end() ? f2->second.max_edits_per_hour : 0);
-            const auto f4 = filter4_days.find(key);
+                           has_f2 ? f2_it->second.max_edits_per_hour : 0);
             append_checked(v_spread_builder,
-                           static_cast<float>(f4 != filter4_days.end()
-                                                  ? f4->second.spread_km2
-                                                  : 0.0));
-            const auto f5 = filter5_days.find(key);
-            if (f5 != filter5_days.end()) {
-                for (const std::string& tag : f5->second.tags) {
+                           static_cast<float>(has_f4 ? f4_it->second.spread_km2 : 0.0));
+            if (has_f5) {
+                for (const std::string& tag : f5_it->second.tags) {
                     append_checked(v_tag_keys_builder, tag);
                     ++v_tag_keys_total;
                 }
             }
             v_tag_offsets.push_back(v_tag_keys_total);
-            const auto carried = suspect_base.find(key);
-            const auto mv = move_flags.find(key);
-            if (carried != suspect_base.end()) {
-                append_checked(v_moves_builder, carried->second.far_move_count);
-                append_checked(v_max_move_builder, carried->second.max_move_meters);
-                append_checked(v_rank_builder, carried->second.ranking_at_day);
+            if (has_sb) {
+                append_checked(v_moves_builder, sb_it->second.far_move_count);
+                append_checked(v_max_move_builder, sb_it->second.max_move_meters);
+                append_checked(v_rank_builder, sb_it->second.ranking_at_day);
             } else {
-                append_checked(v_moves_builder,
-                               mv != move_flags.end() ? mv->second.far_move_count : 0);
-                append_checked(v_max_move_builder,
-                               mv != move_flags.end() ? mv->second.max_move_meters : 0);
+                append_checked(v_moves_builder, has_mv ? mv_it->second.far_move_count : 0);
+                append_checked(v_max_move_builder, has_mv ? mv_it->second.max_move_meters : 0);
                 append_checked(v_rank_builder,
                                ui != uid_index.end() ? rank.ranking[ui->second] : 0);
             }
@@ -1018,7 +1094,7 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     finish_checked(ind_day_builder, &ind_day);
     finish_checked(ind_count_builder, &ind_count);
     finish_checked(ind_flag_builder, &ind_flag);
-    // The merged map iterates in (uid, change_date) order, so no re-sort.
+    // The co-merge above emits rows in (uid, change_date) order, so no re-sort.
     auto history_table = arrow::Table::Make(
         arrow::schema({arrow::field("uid", arrow::int64(), false),
                        arrow::field("change_date", arrow::uint16(), false),

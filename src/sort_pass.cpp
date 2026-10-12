@@ -71,11 +71,17 @@ std::optional<uint64_t> staging_seq(const std::string& name) {
     return std::stoull(digits);
 }
 
-// Adds every row of one source table to `merged`, summing each row's count
-// into the (h3_cell, change_date) accumulator. Both the pass 1/pass 2
-// staging files and an existing data.parquet fallback carry a single
-// `count` column, so the same read path serves all three sources.
-void merge_source(std::shared_ptr<arrow::Table> table, parquet_out::CountMap& merged) {
+// The column indices of the (h3_cell, change_date, count) schema shared by the
+// pass 1/pass 2 staging files, an existing data.parquet and the merged output.
+struct SourceCols {
+    int cell;
+    int date;
+    int count;
+};
+
+// Validates that shared schema, rejecting a non-uint16 change_date loudly
+// instead of silently re-decoding it as garbage.
+SourceCols validate_source_schema(const std::shared_ptr<arrow::Table>& table) {
     const int cell_idx = table->schema()->GetFieldIndex("h3_cell");
     const int date_idx = table->schema()->GetFieldIndex("change_date");
     const int count_idx = table->schema()->GetFieldIndex("count");
@@ -83,9 +89,6 @@ void merge_source(std::shared_ptr<arrow::Table> table, parquet_out::CountMap& me
         throw std::runtime_error("Unexpected source schema: missing h3_cell/"
                                  "change_date/count column");
     }
-
-    // change_date is a uint16 epoch-day count; reject any other type loudly
-    // instead of silently re-decoding it as garbage.
     const std::shared_ptr<arrow::Field> date_field = table->schema()->field(date_idx);
     if (!date_field->type()->Equals(*arrow::uint16())) {
         throw std::runtime_error("Incompatible Parquet schema: change_date is '"
@@ -93,6 +96,15 @@ void merge_source(std::shared_ptr<arrow::Table> table, parquet_out::CountMap& me
                                  + "', expected a uint16-day-count column; "
                                    "rerun with --pass all to rebuild the dataset");
     }
+    return SourceCols{cell_idx, date_idx, count_idx};
+}
+
+// Adds every row of one source table to `merged`, summing each row's count
+// into the (h3_cell, change_date) accumulator. Both the pass 1/pass 2
+// staging files and an existing data.parquet fallback carry a single
+// `count` column, so the same read path serves all three sources.
+void merge_source(std::shared_ptr<arrow::Table> table, parquet_out::CountMap& merged) {
+    const SourceCols cols = validate_source_schema(table);
 
     // CombineChunks() so each column below is a single typed array.
     auto combined_result = table->CombineChunks();
@@ -102,17 +114,57 @@ void merge_source(std::shared_ptr<arrow::Table> table, parquet_out::CountMap& me
     std::shared_ptr<arrow::Table> combined = *combined_result;
 
     auto cell_array =
-        std::static_pointer_cast<arrow::UInt64Array>(combined->column(cell_idx)->chunk(0));
+        std::static_pointer_cast<arrow::UInt64Array>(combined->column(cols.cell)->chunk(0));
     auto date_array =
-        std::static_pointer_cast<arrow::UInt16Array>(combined->column(date_idx)->chunk(0));
+        std::static_pointer_cast<arrow::UInt16Array>(combined->column(cols.date)->chunk(0));
     auto count_array =
-        std::static_pointer_cast<arrow::UInt32Array>(combined->column(count_idx)->chunk(0));
+        std::static_pointer_cast<arrow::UInt32Array>(combined->column(cols.count)->chunk(0));
 
     const int64_t n = combined->num_rows();
     for (int64_t i = 0; i < n; ++i) {
         parquet_out::CountKey key{cell_array->Value(i),
                                   static_cast<int32_t>(date_array->Value(i))};
         merged[key] += count_array->Value(i);
+    }
+}
+
+// A single (h3_cell, change_date, count) row collected for the update merge.
+struct MergeRow {
+    uint64_t cell;
+    int32_t day;
+    uint32_t count;
+};
+
+// Appends every row of a staging partition to `out`, validating the schema.
+void collect_rows(const std::shared_ptr<arrow::Table>& table, std::vector<MergeRow>& out) {
+    const SourceCols cols = validate_source_schema(table);
+    auto combined_result = table->CombineChunks();
+    if (!combined_result.ok()) {
+        throw std::runtime_error("CombineChunks failed: " + combined_result.status().ToString());
+    }
+    const std::shared_ptr<arrow::Table> combined = *combined_result;
+    auto cell_array =
+        std::static_pointer_cast<arrow::UInt64Array>(combined->column(cols.cell)->chunk(0));
+    auto date_array =
+        std::static_pointer_cast<arrow::UInt16Array>(combined->column(cols.date)->chunk(0));
+    auto count_array =
+        std::static_pointer_cast<arrow::UInt32Array>(combined->column(cols.count)->chunk(0));
+    const int64_t n = combined->num_rows();
+    out.reserve(out.size() + static_cast<size_t>(n));
+    for (int64_t i = 0; i < n; ++i) {
+        out.push_back(MergeRow{cell_array->Value(i),
+                               static_cast<int32_t>(date_array->Value(i)),
+                               count_array->Value(i)});
+    }
+}
+
+void append_merged(arrow::UInt64Builder& cells, arrow::UInt16Builder& dates,
+                   arrow::UInt32Builder& counts, uint64_t cell, int32_t day, uint32_t count) {
+    const auto s1 = cells.Append(cell);
+    const auto s2 = dates.Append(h3_utils::require_u16_day(day));
+    const auto s3 = counts.Append(count);
+    if (!s1.ok() || !s2.ok() || !s3.ok()) {
+        throw std::runtime_error("Failed to append a merged row");
     }
 }
 
@@ -327,28 +379,140 @@ std::optional<std::pair<double, double>> merge_update_partitions(const std::stri
         }
 
         std::cerr << "[update merge] " << year_dir << "\n";
-        parquet_out::CountMap merged;
-        // Base dataset: only ever replaced by a completed rename, and never
-        // rewritten here unless the year actually has staging deltas.
+
+        // The base dataset is sorted by (h3_cell, change_date) and only ever
+        // replaced by a completed rename. The run's staging is folded in with a
+        // linear merge, so no hash table and no global re-sort is needed.
+        std::shared_ptr<arrow::Table> base_combined;
+        const arrow::UInt64Array* base_cells = nullptr;
+        const arrow::UInt16Array* base_dates = nullptr;
+        const arrow::UInt32Array* base_counts = nullptr;
+        int64_t base_n = 0;
         if (std::filesystem::exists(output_path)) {
-            merge_source(arrow_table_io::read_table(output_path), merged);
-        }
-        for (const auto& p : node_staging) {
-            merge_source(arrow_table_io::read_table(p), merged);
-        }
-        for (const auto& p : way_staging) {
-            merge_source(arrow_table_io::read_table(p), merged);
+            auto base_result = arrow_table_io::read_table(output_path)->CombineChunks();
+            if (!base_result.ok()) {
+                throw std::runtime_error("CombineChunks failed on " + output_path + ": " +
+                                         base_result.status().ToString());
+            }
+            base_combined = *base_result;
+            const SourceCols bc = validate_source_schema(base_combined);
+            base_cells = static_cast<const arrow::UInt64Array*>(
+                base_combined->column(bc.cell)->chunk(0).get());
+            base_dates = static_cast<const arrow::UInt16Array*>(
+                base_combined->column(bc.date)->chunk(0).get());
+            base_counts = static_cast<const arrow::UInt32Array*>(
+                base_combined->column(bc.count)->chunk(0).get());
+            base_n = base_combined->num_rows();
         }
 
-        auto center = compute_spatial_center(merged);
-        if (center) {
+        std::vector<MergeRow> delta;
+        for (const auto& p : node_staging) collect_rows(arrow_table_io::read_table(p), delta);
+        for (const auto& p : way_staging) collect_rows(arrow_table_io::read_table(p), delta);
+        std::sort(delta.begin(), delta.end(), [](const MergeRow& a, const MergeRow& b) {
+            return a.cell < b.cell || (a.cell == b.cell && a.day < b.day);
+        });
+        // Fold equal (cell, day) rows so the merge sees one entry per key, as
+        // the previous hash-table accumulation did.
+        size_t write = 0;
+        for (size_t read = 0; read < delta.size(); ++read) {
+            if (write > 0 && delta[write - 1].cell == delta[read].cell &&
+                delta[write - 1].day == delta[read].day) {
+                delta[write - 1].count += delta[read].count;
+            } else {
+                delta[write] = delta[read];
+                ++write;
+            }
+        }
+        delta.resize(write);
+
+        arrow::UInt64Builder cell_builder;
+        arrow::UInt16Builder date_builder;
+        arrow::UInt32Builder count_builder;
+        uint64_t total = 0;
+        double center_lat = 0.0;
+        double center_lon = 0.0;
+        uint64_t cur_cell = 0;
+        bool have_cell = false;
+        double cur_lat = 0.0;
+        double cur_lon = 0.0;
+
+        size_t bi = 0;
+        size_t di = 0;
+        const size_t base_size = static_cast<size_t>(base_n);
+        while (bi < base_size || di < delta.size()) {
+            uint64_t cell;
+            int32_t day;
+            uint32_t count;
+            if (bi < base_size && di < delta.size()) {
+                const uint64_t bc = base_cells->Value(bi);
+                const int32_t bd = static_cast<int32_t>(base_dates->Value(bi));
+                if (bc < delta[di].cell || (bc == delta[di].cell && bd < delta[di].day)) {
+                    cell = bc;
+                    day = bd;
+                    count = base_counts->Value(bi);
+                    ++bi;
+                } else if (bc == delta[di].cell && bd == delta[di].day) {
+                    cell = bc;
+                    day = bd;
+                    count = base_counts->Value(bi) + delta[di].count;
+                    ++bi;
+                    ++di;
+                } else {
+                    cell = delta[di].cell;
+                    day = delta[di].day;
+                    count = delta[di].count;
+                    ++di;
+                }
+            } else if (bi < base_size) {
+                cell = base_cells->Value(bi);
+                day = static_cast<int32_t>(base_dates->Value(bi));
+                count = base_counts->Value(bi);
+                ++bi;
+            } else {
+                cell = delta[di].cell;
+                day = delta[di].day;
+                count = delta[di].count;
+                ++di;
+            }
+
+            append_merged(cell_builder, date_builder, count_builder, cell, day, count);
+
+            // Rows arrive grouped by cell (the sort is (cell, day)), so the H3
+            // centre is resolved once per cell and weighted by the cell's
+            // summed count, matching compute_spatial_center over the whole year.
+            if (!have_cell || cell != cur_cell) {
+                const auto ll = h3_utils::cell_to_latlng(cell);
+                cur_lat = ll.first;
+                cur_lon = ll.second;
+                cur_cell = cell;
+                have_cell = true;
+            }
+            center_lat += static_cast<double>(count) * cur_lat;
+            center_lon += static_cast<double>(count) * cur_lon;
+            total += count;
+        }
+
+        if (total > 0) {
             any = true;
-            sum_lon += center->lon * center->weight;
-            sum_lat += center->lat * center->weight;
-            total_weight += center->weight;
+            sum_lon += center_lon;
+            sum_lat += center_lat;
+            total_weight += total;
         }
 
-        std::shared_ptr<arrow::Table> merged_table = build_merged_table(merged);
+        std::shared_ptr<arrow::Array> cells, dates, counts;
+        auto f1 = cell_builder.Finish(&cells);
+        auto f2 = date_builder.Finish(&dates);
+        auto f3 = count_builder.Finish(&counts);
+        if (!f1.ok() || !f2.ok() || !f3.ok()) {
+            throw std::runtime_error("Failed to finalize merged columns");
+        }
+        auto schema = arrow::schema({
+            arrow::field("h3_cell", arrow::uint64(), false),
+            arrow::field("change_date", arrow::uint16(), false),
+            arrow::field("count", arrow::uint32(), false),
+        });
+        std::shared_ptr<arrow::Table> merged_table =
+            arrow::Table::Make(schema, {cells, dates, counts});
         arrow_table_io::write_table(
             tmp_path, merged_table,
             arrow::KeyValueMetadata::Make({karmamap_source_seq},
