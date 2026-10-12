@@ -34,6 +34,7 @@
 #include <type_traits>
 #include <utility>
 
+#include "file_lock.hpp"
 #include "manifest.hpp"
 #include "geofabrik_cookie.hpp"
 #include "node_cache.hpp"
@@ -575,6 +576,23 @@ int main(int argc, char** argv) {
 
     bool update_incomplete = false;
     try {
+        // Serialise runs against the shared data tree (caches, diffs, suspect
+        // stores and output): one advisory flock next to the node caches,
+        // taken before any file is touched. A concurrent run (e.g. a cron
+        // update overlapping a long catch-up) fails fast instead of corrupting
+        // the dataset.
+        const std::filesystem::path cache_dir =
+            std::filesystem::path(opts.node_cache_path).parent_path();
+        if (!cache_dir.empty()) std::filesystem::create_directories(cache_dir);
+        const std::string lock_path =
+            (cache_dir / ".karmamap.lock").lexically_normal().string();
+        auto lock = FileLock::acquire(lock_path, /*block=*/false);
+        if (!lock) {
+            std::cerr << "Another karmamap run holds " << lock_path
+                      << "; refusing to modify the data concurrently\n";
+            return 1;
+        }
+
         std::filesystem::create_directories(opts.output_dir);
 
         // Source provenance. Fail fast before the passes run: import requires

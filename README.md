@@ -146,6 +146,11 @@ Three verbs, one per stage:
   (see below). An optional `N` caps the number of diffs fetched (bare `update`
   or `update 0` catch up to the current `state.txt`).
 
+Every data-changing verb takes a non-blocking advisory lock on
+`<node-cache-parent>/.karmamap.lock` before touching anything, so a second
+concurrent run (e.g. a cron `update` overlapping a long catch-up) exits with
+status 1 instead of corrupting the dataset.
+
 `karmamap import <file> <file>.state.txt` requires only the sidecar state
 file: `--output-dir`, `--node-cache` and `--node-cache-last` all have
 defaults (`data/output`, `<output-dir>/../node_positions.cache` =
