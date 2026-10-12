@@ -244,6 +244,11 @@ applied, staged, and committed (cache persist, merge into `data.parquet`,
 suspect/history finalize, manifest write) as a consistent prefix, and karmamap
 exits non-zero; the next run resumes from the committed sequence.
 
+Update periodically using a cron job like
+```bash
+*/15 * * * * cd /srv/karmamap && bash -c "docker compose --profile=build run --rm karmamap karmamap update" &> log-`date --iso`"
+```
+
 ### Serving the web frontend
 
 The `caddy` service serves everything from a single port `8080`: the web
