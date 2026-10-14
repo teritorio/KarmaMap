@@ -22,6 +22,8 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -29,9 +31,11 @@
 #include <vector>
 
 #include "arrow_table_io.hpp"
+#include "country_index.hpp"
 #include "h3_utils.hpp"
 #include "ranking.hpp"
 #include "suspect.hpp"
+#include "suspect_cell_store.hpp"
 #include "update.hpp"
 
 namespace users_history {
@@ -674,7 +678,9 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
                          const std::map<std::pair<int64_t, uint16_t>, suspect::CellSpreadDay>&
                              filter4_days,
                          const std::map<std::pair<int64_t, uint16_t>, suspect::TagCoverageDay>&
-                             filter5_days) {
+                             filter5_days,
+                         const std::string& cells_path, int h3_resolution,
+                         const country_index::CountryIndex* country_idx) {
     // Registers Arrow's compute kernels (sort_indices, take).
     auto init_status = arrow::compute::Initialize();
     if (!init_status.ok()) {
@@ -898,6 +904,14 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     // quantitative columns written into the suspect export below.
     const auto filter2_days = suspect::flagged_days(minutes_path);
 
+    // The cell store is sorted by (uid, minute), so one forward cursor aligned
+    // with the co-merge below resolves each flagged day's countries.
+    std::unique_ptr<suspect_cell_store::Reader> cell_reader;
+    if (country_idx != nullptr && !cells_path.empty() &&
+        std::filesystem::exists(cells_path)) {
+        cell_reader = std::make_unique<suspect_cell_store::Reader>(cells_path, h3_resolution);
+    }
+
     arrow::Int64Builder ind_uid_builder;
     arrow::UInt16Builder ind_day_builder;
     arrow::UInt32Builder ind_count_builder;
@@ -926,6 +940,11 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     arrow::UInt32Builder v_moves_builder;
     arrow::UInt32Builder v_max_move_builder;
     arrow::UInt8Builder v_rank_builder;
+    // countries mirrors changed_keys: a flat string array plus offsets, joined
+    // into a list array after the loop.
+    arrow::StringBuilder v_country_builder;
+    std::vector<int32_t> v_country_offsets{0};
+    int32_t v_country_total = 0;
     // The base file, the run's delta and every flag/suspect source are all
     // sorted by (uid, change_date), so the whole history is rebuilt with one
     // linear co-merge: advance the base cursor and the delta cursor to the next
@@ -937,6 +956,7 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     auto f4_it = filter4_days.begin();
     auto f5_it = filter5_days.begin();
     auto sb_it = suspect_base.begin();
+    size_t cell_i = 0;
 
     size_t bi = 0;
     auto di = delta_counts.begin();
@@ -1018,6 +1038,12 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
         while (f4_it != filter4_days.end() && f4_it->first < key) ++f4_it;
         while (f5_it != filter5_days.end() && f5_it->first < key) ++f5_it;
         while (sb_it != suspect_base.end() && sb_it->first < key) ++sb_it;
+        while (cell_reader && cell_i < cell_reader->size() &&
+               (cell_reader->uid_at(cell_i) < uid ||
+                (cell_reader->uid_at(cell_i) == uid &&
+                 cell_reader->minute_at(cell_i) / 1440u < day))) {
+            ++cell_i;
+        }
 
         const bool has_f2 = f2_it != filter2_days.end() && f2_it->first == key;
         const bool has_mv = mv_it != move_flags.end() && mv_it->first == key;
@@ -1077,6 +1103,24 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
                 }
             }
             v_tag_offsets.push_back(v_tag_keys_total);
+            // The day's distinct countries, resolved at the cell centers.
+            if (cell_reader) {
+                std::set<std::string> day_countries;
+                size_t j = cell_i;
+                while (j < cell_reader->size() && cell_reader->uid_at(j) == uid &&
+                       cell_reader->minute_at(j) / 1440u == day) {
+                    const auto [lat, lon] = h3_utils::cell_to_latlng(cell_reader->cell_at(j));
+                    if (auto iso = country_idx->lookup(lat, lon)) {
+                        day_countries.insert(*iso);
+                    }
+                    ++j;
+                }
+                for (const std::string& iso : day_countries) {
+                    append_checked(v_country_builder, iso);
+                    ++v_country_total;
+                }
+            }
+            v_country_offsets.push_back(v_country_total);
             if (has_sb) {
                 append_checked(v_moves_builder, sb_it->second.far_move_count);
                 append_checked(v_max_move_builder, sb_it->second.max_move_meters);
@@ -1120,7 +1164,7 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     // import writes no flags and never produces it; an update with no flagged
     // day writes an empty file.
     std::shared_ptr<arrow::Array> v_uid, v_user, v_day, v_flag, v_changes, v_hour_edits,
-        v_spread, v_tags, v_moves, v_max_move, v_rank;
+        v_spread, v_tags, v_countries, v_moves, v_max_move, v_rank;
     finish_checked(v_uid_builder, &v_uid);
     finish_checked(v_user_builder, &v_user);
     finish_checked(v_day_builder, &v_day);
@@ -1141,6 +1185,20 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
         }
         v_tags = *tags_result;
     }
+    {
+        std::shared_ptr<arrow::Array> country_keys, country_offsets_array;
+        finish_checked(v_country_builder, &country_keys);
+        arrow::Int32Builder offsets_builder;
+        for (int32_t offset : v_country_offsets) append_checked(offsets_builder, offset);
+        finish_checked(offsets_builder, &country_offsets_array);
+        auto countries_result =
+            arrow::ListArray::FromArrays(*country_offsets_array, *country_keys);
+        if (!countries_result.ok()) {
+            throw std::runtime_error("Failed to build countries list column: " +
+                                     countries_result.status().ToString());
+        }
+        v_countries = *countries_result;
+    }
     finish_checked(v_moves_builder, &v_moves);
     finish_checked(v_max_move_builder, &v_max_move);
     finish_checked(v_rank_builder, &v_rank);
@@ -1153,11 +1211,12 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
                        arrow::field("max_edits_per_hour", arrow::uint32(), false),
                        arrow::field("peak_spread_km2", arrow::float32(), false),
                        arrow::field("changed_keys", arrow::list(arrow::utf8()), false),
+                       arrow::field("countries", arrow::list(arrow::utf8()), false),
                        arrow::field("far_move_count", arrow::uint32(), false),
                        arrow::field("max_move_meters", arrow::uint32(), false),
                        arrow::field("ranking_at_day", arrow::uint8(), false)}),
-        {v_uid, v_user, v_day, v_flag, v_changes, v_hour_edits, v_spread, v_tags, v_moves,
-         v_max_move, v_rank});
+        {v_uid, v_user, v_day, v_flag, v_changes, v_hour_edits, v_spread, v_tags, v_countries,
+         v_moves, v_max_move, v_rank});
     // Newest-first order makes change_date (the pruning column) the compact
     // footer statistics key, with the most recent days' min/max in the first
     // row groups.

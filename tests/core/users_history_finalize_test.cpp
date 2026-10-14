@@ -1,10 +1,13 @@
 #include <gtest/gtest.h>
 
 #include <arrow/api.h>
+#include <s2/s2cell_id.h>
+#include <s2/s2latlng.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <map>
 #include <memory>
@@ -12,10 +15,13 @@
 #include <utility>
 #include <vector>
 
+#include "country_index.hpp"
+#include "h3_utils.hpp"
 #include "options.hpp"
 #include "test_helpers.hpp"
 #include "users_history.hpp"
 #include "suspect.hpp"
+#include "suspect_cell_store.hpp"
 #include "suspect_store.hpp"
 
 namespace {
@@ -234,6 +240,7 @@ struct SuspectRows {
     std::vector<uint32_t> max_edits_per_hour;
     std::vector<double> spread_km2;
     std::vector<std::vector<std::string>> tags;
+    std::vector<std::vector<std::string>> countries;
     std::vector<uint32_t> far_move_count;
     std::vector<uint32_t> max_move_meters;
     std::vector<uint8_t> ranking_at_day;
@@ -245,9 +252,9 @@ SuspectRows read_suspect(const std::string& path) {
     if (!combined_result.ok()) return {};
     const auto& t = *combined_result;
     // uid, username, change_date, suspect_flag, changes, max_edits_per_hour,
-    // peak_spread_km2, changed_keys, far_move_count, max_move_meters,
+    // peak_spread_km2, changed_keys, countries, far_move_count, max_move_meters,
     // ranking_at_day.
-    EXPECT_EQ(t->num_columns(), 11);
+    EXPECT_EQ(t->num_columns(), 12);
     SuspectRows out;
     const auto* uid = static_cast<const arrow::Int64Array*>(t->column(0)->chunk(0).get());
     const auto* user = static_cast<const arrow::StringArray*>(t->column(1)->chunk(0).get());
@@ -257,9 +264,10 @@ SuspectRows read_suspect(const std::string& path) {
     const auto* hour_edits = static_cast<const arrow::UInt32Array*>(t->column(5)->chunk(0).get());
     const auto* spread = static_cast<const arrow::FloatArray*>(t->column(6)->chunk(0).get());
     const auto* tags = static_cast<const arrow::ListArray*>(t->column(7)->chunk(0).get());
-    const auto* moves = static_cast<const arrow::UInt32Array*>(t->column(8)->chunk(0).get());
-    const auto* max_move = static_cast<const arrow::UInt32Array*>(t->column(9)->chunk(0).get());
-    const auto* rank = static_cast<const arrow::UInt8Array*>(t->column(10)->chunk(0).get());
+    const auto* countries = static_cast<const arrow::ListArray*>(t->column(8)->chunk(0).get());
+    const auto* moves = static_cast<const arrow::UInt32Array*>(t->column(9)->chunk(0).get());
+    const auto* max_move = static_cast<const arrow::UInt32Array*>(t->column(10)->chunk(0).get());
+    const auto* rank = static_cast<const arrow::UInt8Array*>(t->column(11)->chunk(0).get());
     for (int64_t i = 0; i < t->num_rows(); ++i) {
         out.uid.push_back(uid->Value(i));
         out.username.push_back(user->GetString(i));
@@ -280,6 +288,15 @@ SuspectRows read_suspect(const std::string& path) {
             row_tags.push_back(tag_values.GetString(j));
         }
         out.tags.push_back(std::move(row_tags));
+        std::vector<std::string> row_countries;
+        const int64_t country_begin = countries->value_offset(i);
+        const int64_t country_end = countries->value_offset(i + 1);
+        const auto& country_values =
+            *static_cast<const arrow::StringArray*>(countries->values().get());
+        for (int64_t j = country_begin; j < country_end; ++j) {
+            row_countries.push_back(country_values.GetString(j));
+        }
+        out.countries.push_back(std::move(row_countries));
         out.far_move_count.push_back(moves->Value(i));
         out.max_move_meters.push_back(max_move->Value(i));
         out.ranking_at_day.push_back(rank->Value(i));
@@ -1100,6 +1117,88 @@ TEST(UsersHistoryFinalize, UpdateFlagsCombineFilter5WithExistingBits) {
     EXPECT_FLOAT_EQ(v.spread_km2[1], 0.0f);
     EXPECT_EQ(v.max_edits_per_hour[0], 0u);
     EXPECT_EQ(v.max_edits_per_hour[1], 501u);
+}
+
+// The flagged day's countries are resolved from the cell store through the S2 index.
+TEST(UsersHistoryFinalize, ResolvesCountriesFromCellStore) {
+    TempDir dir;
+    const std::string history = dir.join("users_history.parquet");
+    const int res = 9;
+    const double lat = 48.8566;
+    const double lon = 2.3522;
+
+    const std::string base_stage = dir.join("base_stage");
+    std::filesystem::create_directories(base_stage);
+    write_stage(base_stage + "/stage_00000.parquet",
+                {
+                    {10, "alice", 1000, 50, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                });
+    users_history::run_finalize(base_stage, history, kDefaultUsersHistoryGroupRows,
+                                kDefaultRankingGroupRows);
+
+    // Cell store: uid 10's flagged day 1000 touched one H3 cell at (lat, lon).
+    const uint64_t h3_cell = h3_utils::location_to_cell(lat, lon, res);
+    const std::string cells_path = dir.join("suspect_cells.bin");
+    {
+        suspect_cell_store::Writer w(cells_path, res);
+        w.add(10, 1000u * 1440u + 5u, h3_cell, 30);
+        w.finish();
+    }
+    // Country index: the S2 leaf of that H3 cell's center maps to FR.
+    const auto [center_lat, center_lon] = h3_utils::cell_to_latlng(h3_cell);
+    const uint64_t leaf =
+        S2CellId(S2LatLng::FromDegrees(center_lat, center_lon)).id();
+    {
+        arrow::UInt64Builder cells;
+        arrow::UInt8Builder ids;
+        arrow::UInt8Builder levels;
+        append_ok(cells, leaf);
+        append_ok(ids, static_cast<uint8_t>(1));
+        append_ok(levels, static_cast<uint8_t>(30));
+        std::shared_ptr<arrow::Array> a_cells, a_ids, a_levels;
+        finish_ok(cells, &a_cells);
+        finish_ok(ids, &a_ids);
+        finish_ok(levels, &a_levels);
+        auto schema = arrow::schema({arrow::field("s2_cell", arrow::uint64(), false),
+                                     arrow::field("country_id", arrow::uint8(), false),
+                                     arrow::field("level", arrow::uint8(), false)});
+        test_helpers::write_table(dir.join("country.parquet"),
+                                  arrow::Table::Make(schema, {a_cells, a_ids, a_levels}));
+        std::ofstream out(dir.join("country_ids.json"));
+        out << "{\n \"0\": null,\n \"1\": \"FR\"\n}\n";
+    }
+    const country_index::CountryIndex index =
+        country_index::CountryIndex::load(dir.join("country.parquet"),
+                                          dir.join("country_ids.json"));
+
+    const std::string minutes = dir.join("suspect_minutes.bin");
+    {
+        suspect_store::Writer w(minutes);
+        w.add(10, 1000u * 1440u + 5u, 1);  // well below the filter-2 window gate
+        w.finish();
+    }
+
+    const std::string stage_root = dir.join("update_stage");
+    std::filesystem::create_directories(stage_root + "/seq_2847600");
+    // A high-activity new contributor, so filter 1 does not flag it either and
+    // the only exported row is uid 10's filter-4 day.
+    write_stage(stage_root + "/seq_2847600/stage.parquet",
+                {
+                    {12, "carol", 3000, 200, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                });
+
+    const std::map<std::pair<int64_t, uint16_t>, suspect::CellSpreadDay> filter4_days{
+        {{10, 1000}, {suspect::kFlagFilter4, 25.0}},
+    };
+    users_history::run_update_finalize(stage_root, history, kDefaultUsersHistoryGroupRows,
+                                       kDefaultRankingGroupRows, minutes, {}, filter4_days, {},
+                                       cells_path, res, &index);
+
+    const auto v = read_suspect(dir.join("suspect.parquet"));
+    ASSERT_EQ(v.uid.size(), 1u);
+    EXPECT_EQ(v.uid[0], 10);
+    EXPECT_EQ(v.day[0], 1000);
+    EXPECT_EQ(v.countries[0], (std::vector<std::string>{"FR"}));
 }
 
 }  // namespace

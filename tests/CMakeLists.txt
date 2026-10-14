@@ -8,13 +8,15 @@
 #                         (parquet_batch_writer, manifest, sort_pass,
 #                         users_history finalize) with a custom main that
 #                         initializes Arrow's compute engine.
-# Linking karmamap_core (PUBLIC) pulls Arrow, Parquet, zstd, H3 and
-# the users_history.cpp osmium includes transitively.
+# Linking karmamap_core (PUBLIC) pulls Arrow, Parquet, zstd, H3, the
+# s2geometry country index and the users_history.cpp osmium includes
+# transitively.
 
 find_package(GTest REQUIRED)
 include(GoogleTest)
 
 add_executable(unit_tests
+  unit/country_index_test.cpp
   unit/h3_utils_test.cpp
   unit/date_utils_test.cpp
   unit/file_lock_test.cpp

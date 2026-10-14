@@ -46,12 +46,15 @@
 //                    windows, peak_spread_km2 = the peak window's H3 cell
 //                    area over the day's filter-4 windows, changed_keys =
 //                    the tag keys over the filter-5 coverage threshold in
-//                    any of the day's filter-5 windows, far_move_count =
-//                    the count of that day's staged moves beyond the
-//                    filter-3 threshold at the run that first flagged the
-//                    day (see the frozen note below), max_move_meters =
-//                    the largest of those moves, ranking_at_day = the
-//                    contributor's ranking as of the day's first flag),
+//                    any of the day's filter-5 windows, countries = the
+//                    sorted ISO 3166-1 alpha-2 codes the day's cells fall
+//                    in (resolved through the S2 country index),
+//                    far_move_count = the count of that day's staged moves
+//                    beyond the filter-3 threshold at the run that first
+//                    flagged the day (see the frozen note below),
+//                    max_move_meters = the largest of those moves,
+//                    ranking_at_day = the contributor's ranking as of the
+//                    day's first flag),
 //                    sorted by (change_date, uid) with change_date
 //                    descending (newest first).
 //                    Written by the update finalize from the same merged
@@ -108,6 +111,10 @@
 #include <string_view>
 #include <unordered_map>
 #include <utility>
+
+namespace country_index {
+class CountryIndex;
+}
 
 namespace update_pass {
 class DiffScanStep;
@@ -324,9 +331,12 @@ std::unique_ptr<update_pass::DiffScanStep> make_scan_step(const std::string& sta
 // (one row per flagged (uid, change_date) with the username, the day's total
 // change count, the peak filter-2 hour span, the peak filter-4 spread, the
 // day's filter-5 tag keys, the day's far-move count, the largest of those
-// moves and the ranking frozen at the day's first flag, sorted by
-// (change_date, uid) with change_date descending (newest first)); a pure
-// import never produces it.
+// moves, the ranking frozen at the day's first flag and the sorted list of
+// countries touched that day, sorted by (change_date, uid) with change_date
+// descending (newest first)); a pure import never produces it. The `countries`
+// list is resolved on every run from the cell store at `cells_path`
+// (`h3_resolution`) through `country_index`; a null index or an empty store
+// leaves it empty.
 // `filter4_days` is the spatial-spread extension (Filter 4).
 // `filter5_days` is the tag-coverage extension (Filter 5).
 void run_update_finalize(const std::string& stage_root, const std::string& history_path,
@@ -337,6 +347,8 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
                          const std::map<std::pair<int64_t, uint16_t>, suspect::CellSpreadDay>&
                              filter4_days = {},
                          const std::map<std::pair<int64_t, uint16_t>, suspect::TagCoverageDay>&
-                             filter5_days = {});
+                             filter5_days = {},
+                         const std::string& cells_path = {}, int h3_resolution = 0,
+                         const country_index::CountryIndex* country_idx = nullptr);
 
 }  // namespace users_history

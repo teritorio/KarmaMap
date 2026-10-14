@@ -245,11 +245,13 @@ ranking) and `suspect.parquet` (the `far_move_count`, `max_move_meters` and
 `ranking_at_day` columns, the base of the carried and frozen values) as its
 three bases, and reads all of them
 before it writes the first file of the run, so a base that does not match the
-current schema aborts the update with nothing replaced. Every added column is
-therefore a schema change: an output directory written by an older build is not
-updatable, and re-importing the snapshot into a fresh output directory is the
-migration. An output directory not written by this build is likewise not
-updatable.
+current schema aborts the update with nothing replaced. Every column the
+finalize reads back
+is therefore a schema change: an output directory written by an older build is
+not updatable, and re-importing the snapshot into a fresh output directory is
+the migration. An output directory not written by this build is likewise not
+updatable. `countries` is derived, recomputed from the stores rather than read
+from the base, so an older base without it still updates in place.
 
 The `suspect_minutes.bin` minute store is the one derived file with no schema
 check: a missing store is read as an empty base, so an update against a
@@ -478,7 +480,9 @@ date filter): hyparquet fetches only the leading row groups' pages, so the
 "100 last" table never scans the whole file. Each row is one flagged
 `(uid, change_date)` with the username, the combined `suspect_flag` bits,
 the day's total change count, the peak edit count, spread and tag keys of
-whichever store-derived filter fired, its far-move count with the largest of
-them and the ranking frozen at the day's first flag. Of the flags the table
+whichever store-derived filter fired, the countries its cells fall in, its
+far-move count with the largest of them and the ranking frozen at the day's
+first flag. A country filter narrows the loaded rows to the days touching an
+ISO code. Of the flags the table
 shows one: a day carrying bit 0 (`kFlagFilter2`, the >500 modified/deleted
 objects in one hour filter) is marked as an edit burst.

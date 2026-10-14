@@ -27,6 +27,9 @@ struct Options {
     std::string suspect_minutes_path;
     std::string suspect_cells_path;
     std::string suspect_tags_path;
+    // S2 country index (country.parquet + country_ids.json) used by update to
+    // resolve flagged cells to countries.
+    std::string country_index_path;
     // Output directory for the Parquet datasets (default: $DATA_DIR/output,
     // i.e. data/output, or /data/output in the container where DATA_DIR=/data).
     std::string output_dir;

@@ -59,6 +59,12 @@ void print_usage(const char* argv0) {
         << "                            obtains and refreshes the jar itself from the OSM\n"
         << "                            account in OSM_GEOFABRIK_USER/OSM_GEOFABRIK_PASSWORD\n"
         << "                            and sends it on update's state.txt fetch\n"
+        << "  --country-index <file>    Update only: S2 country index used to resolve\n"
+        << "                            the flagged cells to countries in\n"
+        << "                            suspect.parquet; the id->ISO lookup table is\n"
+        << "                            read from country_ids.json next to it. When\n"
+        << "                            absent the countries list is left empty.\n"
+        << "                            [<node-cache-parent>/country.parquet]\n"
         << "  --pass 1|2|3|all          Import only: run only the node (1), way (2) or\n"
         << "                            merge (3) pass, or all three (default). Use\n"
         << "                            prepare-update for the incremental cache.\n"
@@ -150,6 +156,8 @@ bool parse_args(int argc, char** argv, Options* opts) {
             opts->update_url = next_value("--update-url");
         } else if (arg == "--cookie") {
             opts->cookie_path = next_value("--cookie");
+        } else if (arg == "--country-index") {
+            opts->country_index_path = next_value("--country-index");
         } else if (arg == "--h3-resolution") {
             opts->h3_resolution = std::stoi(next_value("--h3-resolution"));
         } else if (arg == "--way-batch-mb") {
@@ -258,6 +266,10 @@ bool parse_args(int argc, char** argv, Options* opts) {
         (cache_parent / "suspect_cells.bin").lexically_normal().string();
     opts->suspect_tags_path =
         (cache_parent / "suspect_tags.bin").lexically_normal().string();
+    if (opts->country_index_path.empty()) {
+        opts->country_index_path =
+            (cache_parent / "country.parquet").lexically_normal().string();
+    }
     if (opts->h3_resolution < 0 ||
         opts->h3_resolution > h3_utils::kMaxPackedCellResolution) {
         throw std::runtime_error(

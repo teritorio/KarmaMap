@@ -27,6 +27,7 @@
 #include <filesystem>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -34,6 +35,7 @@
 #include <type_traits>
 #include <utility>
 
+#include "country_index.hpp"
 #include "file_lock.hpp"
 #include "manifest.hpp"
 #include "geofabrik_cookie.hpp"
@@ -532,12 +534,35 @@ std::optional<replication_state::State> run_update_mode(
             return suspect::flagged_tag_days(tags_path, minutes_path);
         });
 
+    // A missing or unreadable country index leaves the countries lists empty
+    // rather than failing the update.
+    std::unique_ptr<country_index::CountryIndex> country_idx;
+    if (std::filesystem::exists(opts.country_index_path)) {
+        const std::filesystem::path idx_path = opts.country_index_path;
+        const std::string ids_path = (idx_path.parent_path() / "country_ids.json").string();
+        try {
+            country_idx = std::make_unique<country_index::CountryIndex>(
+                country_index::CountryIndex::load(opts.country_index_path, ids_path));
+            std::cerr << "[suspect] country index: " << country_idx->size() << " cells from "
+                      << opts.country_index_path << "\n";
+        } catch (const std::exception& e) {
+            std::cerr << "[suspect] could not load country index " << opts.country_index_path
+                      << " (" << e.what() << "); suspect countries left empty\n";
+            country_idx.reset();
+        }
+    } else {
+        std::cerr << "[suspect] country index " << opts.country_index_path
+                  << " not found; suspect countries left empty\n";
+    }
+
     timed_step("[users history] update finalize", [&] {
         users_history::run_update_finalize(history_stage_root,
                                            opts.output_dir + "/users_history.parquet",
                                            opts.users_history_group_rows,
                                            opts.ranking_group_rows, minutes_path,
-                                           move_flags, filter4_days, filter5_days);
+                                           move_flags, filter4_days, filter5_days,
+                                           cells_path, opts.h3_resolution,
+                                           country_idx.get());
     });
 
     // Provenance records the applied state: the sequence is the last applied

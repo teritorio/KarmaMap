@@ -274,8 +274,9 @@ Then open `http://localhost:8080/`.
   `(uid, change_date)` days from `suspect.parquet` (update-only), with each
   day's total change count, the number behind each filter that fired (peak
   edits/hour, peak spread in km², and the tag keys that covered >90% of an
-  hour's objects), its far-move count with the largest move, and the ranking
-  frozen at the day's first flag.
+  hour's objects), the countries its cells fall in (with a country filter),
+  its far-move count with the largest move, and the ranking frozen at the
+  day's first flag.
 - **`/how-it-works.html`** — the reader-facing guide: what each of the three
   viewers shows and how to read its numbers. It renders `web/HOW_IT_WORKS.md`
   client-side, so the Markdown file stays the single source of truth.
@@ -347,6 +348,11 @@ It writes two files:
 - `country_ids.json`: `id -> ISO 3166-1 alpha-2` lookup table, written next to
   the output and built from all valid codes of the input file (ids `1..255`,
   `0` = null).
+
+`update` reads this index (`country.parquet` next to the node cache by default,
+overridable with `--country-index`) to fill the `countries` column of
+`suspect.parquet`; when absent the column is left empty and the update still
+runs.
 
 ## Testing on a small region before the full planet
 

@@ -16,10 +16,10 @@ option(OSH_ENABLE_TESTS "Build the C++ test suite" ON)
 #   sudo apt install libosmium2-dev libprotozero-dev libexpat1-dev \
 #                     libbz2-dev zlib1g-dev libzstd-dev \
 #                     libarrow-dev libarrow-compute-dev libparquet-dev \
-#                     libgtest-dev
+#                     libabsl-dev libssl-dev libgtest-dev libs2-dev
 #
-# H3 is fetched automatically via FetchContent, which exposes its public
-# header as <h3api.h> (no "h3/" prefix).
+# H3 is fetched automatically via FetchContent (its public header is <h3api.h>,
+# no "h3/" prefix). S2 comes from the system libs2-dev.
 # ---------------------------------------------------------------------------
 
 find_path(OSMIUM_INCLUDE_DIR osmium/version.hpp)
@@ -72,7 +72,19 @@ set(ENABLE_DOCS OFF CACHE BOOL "" FORCE)
 # configure succeeds either way.
 FetchContent_MakeAvailable(h3)
 
+# Debian's libs2-dev ships no CMake config or pkg-config, so locate it like
+# protozero.
+find_path(S2_INCLUDE_DIR s2/s2cell_id.h)
+if(NOT S2_INCLUDE_DIR)
+  message(FATAL_ERROR "s2geometry not found. Install libs2-dev or set S2_INCLUDE_DIR.")
+endif()
+find_library(S2_LIBRARY s2)
+if(NOT S2_LIBRARY)
+  message(FATAL_ERROR "libs2 not found. Install libs2-dev or set S2_LIBRARY.")
+endif()
+
 add_library(karmamap_core STATIC
+  src/country_index.cpp
   src/geofabrik_cookie.cpp
   src/manifest.cpp
   src/options.cpp
@@ -93,10 +105,12 @@ target_include_directories(karmamap_core PUBLIC
   ${OSMIUM_INCLUDE_DIR}
   ${PROTOZERO_INCLUDE_DIR}
   ${ZSTD_INCLUDE_DIR}
+  ${S2_INCLUDE_DIR}
 )
 
 target_link_libraries(karmamap_core PUBLIC
   h3
+  ${S2_LIBRARY}
   Arrow::arrow_shared
   ArrowCompute::arrow_compute_shared
   Parquet::parquet_shared

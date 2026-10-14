@@ -8,8 +8,9 @@
 // (filter 4, the local extension: 20+ edits in one hour across 3+ H3 cells
 // spanning 20 km²), the mass tag keys (filter 5: every key on >90% of an hour's
 // ≥100 modified/deleted objects), the far-move count with the largest of those
-// moves (filter 3: more than 500 m), and the ranking frozen at the day's first
-// flag. Every value is stored, so a filter that did not fire reads as an empty
+// moves (filter 3: more than 500 m), the countries the day's cells touch, and
+// the ranking frozen at the day's first flag. Every value is stored, so a
+// filter that did not fire reads as an empty
 // cell. Same architecture as the users/changes viewers (page + app + query over
 // the shared lib in web/lib).
 
@@ -25,6 +26,10 @@ const LATEST = 100
 
 const statusEl = document.getElementById('status')
 const tbodyEl = document.querySelector('#suspect tbody')
+
+const filterEl = document.getElementById('country-filter')
+
+let allRows = []
 
 function setStatus(text) {
   statusEl.textContent = text
@@ -57,10 +62,10 @@ function renderSpread(row) {
   return km2 > 0 ? `<td class="value">${Math.round(km2).toLocaleString()} km&sup2;</td>` : '<td></td>'
 }
 
-// changed_keys is a list<utf8>, so hyparquet may hand back the row's values
-// flat or wrapped in the list's single intermediate group. Both are flattened
-// to one level of strings before they are joined.
-function flattenTags(value) {
+// changed_keys and countries are list<utf8>, so hyparquet may hand back the
+// row's values flat or wrapped in the list's single intermediate group. Both
+// are flattened to one level of strings before they are joined.
+function flattenList(value) {
   if (!Array.isArray(value)) return []
   const flat = []
   for (const item of value) {
@@ -76,8 +81,24 @@ function flattenTags(value) {
 }
 
 function renderTags(row) {
-  const keys = flattenTags(row.changed_keys)
+  const keys = flattenList(row.changed_keys)
   return keys.length === 0 ? '<td></td>' : `<td>${escapeHtml(keys.join(', '))}</td>`
+}
+
+// An ISO alpha-2 code as its flag emoji (regional indicators) plus the code.
+function countryLabel(code) {
+  if (!/^[A-Za-z]{2}$/.test(code)) return code
+  const upper = code.toUpperCase()
+  const base = 0x1F1E6
+  return String.fromCodePoint(base + upper.charCodeAt(0) - 65) +
+    String.fromCodePoint(base + upper.charCodeAt(1) - 65) + ` ${upper}`
+}
+
+function renderCountries(row) {
+  const codes = flattenList(row.countries)
+  return codes.length === 0
+    ? '<td></td>'
+    : `<td>${escapeHtml(codes.map(countryLabel).join(', '))}</td>`
 }
 
 function renderFarMoves(row) {
@@ -96,6 +117,7 @@ function renderMaxMove(row) {
 function renderRows(rows) {
   tbodyEl.innerHTML = rows.map((row) => `<tr>` +
     `<td>${escapeHtml(dayKey(row.change_date))}</td>` +
+    renderCountries(row) +
     `<td class="value"><a href="../users/#user=${row.username}">#${Number(row.ranking_at_day ?? 0)}</a></td>` +
     `<td class="user">${renderUserLinks(row.username)}</td>` +
     `<td class="value">${Number(row.uid)}</td>` +
@@ -106,6 +128,20 @@ function renderRows(rows) {
     renderFarMoves(row) +
     renderMaxMove(row) +
     `</tr>`).join('')
+}
+
+// The country filter is a client-side subset of the loaded rows: an exact
+// ISO alpha-2 match against the day's countries list.
+function applyFilter() {
+  const query = (filterEl?.value ?? '').trim().toUpperCase()
+  const rows = query === '' ? allRows
+    : allRows.filter((row) => flattenList(row.countries).includes(query))
+  renderRows(rows)
+  setStatus(
+    allRows.length === 0
+      ? 'No flagged days yet; the suspects dataset is empty.'
+      : `Showing ${rows.length} of the ${allRows.length} latest suspect ` +
+        `${allRows.length === 1 ? 'day' : 'days'}${query ? ` in ${query}` : ''}.`)
 }
 
 async function main() {
@@ -130,16 +166,14 @@ async function main() {
   const dataset = datasets.suspect
   setStatus(`Loading the ${LATEST} latest suspect days...`)
   try {
-    const rows = await querySuspectLatest(BASE_URL, dataset.path, dataset.footer_size, LATEST)
-    renderRows(rows)
-    setStatus(
-      rows.length === 0
-        ? 'No flagged days yet; the suspects dataset is empty.'
-        : `Showing the ${rows.length} latest suspect ${rows.length === 1 ? 'day' : 'days'}.`)
+    allRows = await querySuspectLatest(BASE_URL, dataset.path, dataset.footer_size, LATEST)
+    applyFilter()
   } catch (err) {
     console.error(err)
     setStatus(`Query failed: ${err.message}`)
   }
 }
+
+filterEl?.addEventListener('input', applyFilter)
 
 main()

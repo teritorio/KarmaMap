@@ -311,7 +311,8 @@ on its own binary store.
   | `changes` | `uint32` | The day's total change count (node/way/relation created+modified+deleted, the same value as the `count` column of `users_history.parquet`) |
   | `max_edits_per_hour` | `uint32` | The largest one-hour modified+deleted count of the flagged day, the peak quantitative value of filter 2. Recomputed over the whole persisted `suspect_minutes.bin` on every update, so a day first flagged by another filter picks its value up as soon as a later run's store fold trips filter 2. 0 when filter 2 never fired on the day |
   | `peak_spread_km2` | `float` | The largest per-window surface area of the flagged day in km² (`distinct_cells * average_hexagon_area_km2(resolution)`), the peak quantitative value of filter 4, recomputed each run as for `max_edits_per_hour`. 0 when filter 4 never fired on the day |
-  | `changed_keys` | `list<utf8>` | The sorted, de-duplicated tag keys the flagged day collected over `> 90%` of its windowed modified+deleted objects, the peak key set of filter 5, recomputed each run as for `max_edits_per_hour`. Empty when filter 5 never fired on the day. The three peak columns describe the day itself, so they change as later runs' stores fold, unlike the three frozen columns |
+  | `changed_keys` | `list<utf8>` | The sorted, de-duplicated tag keys the flagged day collected over `> 90%` of its windowed modified+deleted objects, the peak key set of filter 5, recomputed each run as for `max_edits_per_hour`. Empty when filter 5 never fired on the day. These store-derived columns describe the day itself, so they change as later runs' stores fold, unlike the three frozen columns |
+  | `countries` | `list<utf8>` | The sorted ISO 3166-1 alpha-2 codes the flagged day's `suspect_cells.bin` cells fall in, resolved from each H3 cell center through the S2 country index (`country.parquet` + `country_ids.json`, see `--country-index`). Recomputed each run like the other store-derived columns. Empty when the day has no stored cell, the index is absent, or the cells fall in ocean / an unresolved cell |
   | `far_move_count` | `uint32` | The count of that day's staged moves beyond the filter-3 threshold at the run that first flagged the day. Frozen: stamped when the day is newly flagged and carried unchanged from the base file on every later update, never recalculated. Because a day first flagged by another filter keeps its frozen value, this can be 0 even when bit 1 is set (moves staged on later runs are not re-merged into it) |
   | `max_move_meters` | `uint32` | The largest distance in meters among that day's far moves at the run that first flagged the day. Frozen on the same terms as `far_move_count`: stamped on the day it is newly flagged, carried from the base file afterwards, 0 when no move was counted. The distance is quantized to whole meters |
   | `ranking_at_day` | `uint8` | The contributor's ranking (as in `user_ranking.parquet`) at the day's first flag. Frozen: stamped when the day is newly flagged and carried unchanged from the base file on every later update, never recalculated |
@@ -323,7 +324,8 @@ on its own binary store.
   touches other days). An update that flags nothing writes an empty file; a
   pure import writes no `suspect.parquet` at all.
 
-  Adding or removing a column here is a schema change, and update mode refuses
-  to run against a base written by an older build (the column set is validated
-  before anything is replaced). Re-import the snapshot into a fresh output
-  directory to migrate.
+  `countries` is derived, not read from the base, so it needs no re-import.
+  Adding or removing a column that the finalize reads back from the base
+  is a schema change, and update mode refuses to run against a base written by
+  an older build (the column set is validated before anything is replaced);
+  re-import the snapshot into a fresh output directory to migrate.

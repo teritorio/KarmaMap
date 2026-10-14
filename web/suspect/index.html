@@ -39,10 +39,10 @@
        fixed-width column instead of stretching the row. The cap is a width on
        the cell, not a max-width: Chrome ignores max-width on a table-cell under
        table-layout: auto, and a width is a target the cell is laid out against. */
-    th:nth-child(8), td:nth-child(8) { width: 24rem; }
-    td:nth-child(8) { white-space: normal; overflow-wrap: break-word; }
+    th:nth-child(9), td:nth-child(9) { width: 24rem; }
+    td:nth-child(9) { white-space: normal; overflow-wrap: break-word; }
 
-    /* Narrow screens: the ten columns become one card per day, each value on its
+    /* Narrow screens: the eleven columns become one card per day, each value on its
        own labelled line. Every column keeps its line, a filter that did not fire
        showing a dash, so the cards line up between days. Each content string must
        match its column's <th>, or the card mislabels the value. */
@@ -62,19 +62,20 @@
         font-size: 0.7rem; text-transform: uppercase; color: var(--label);
       }
       td:nth-child(1)::before { content: "Date"; }
-      td:nth-child(2)::before { content: "Ranking at day"; }
-      td:nth-child(3)::before { content: "User"; }
-      td:nth-child(4)::before { content: "uid"; }
-      td:nth-child(5)::before { content: "Changes"; }
-      td:nth-child(6)::before { content: "Edits/h"; }
-      td:nth-child(7)::before { content: "Spread"; }
-      td:nth-child(8)::before { content: "Mass tags"; }
-      td:nth-child(9)::before { content: "Far moves"; }
-      td:nth-child(10)::before { content: "Max move"; }
-      td:nth-child(8) { width: auto; }
-      td.user, td:nth-child(8) { display: block; }
+      td:nth-child(2)::before { content: "Countries"; }
+      td:nth-child(3)::before { content: "Ranking at day"; }
+      td:nth-child(4)::before { content: "User"; }
+      td:nth-child(5)::before { content: "uid"; }
+      td:nth-child(6)::before { content: "Changes"; }
+      td:nth-child(7)::before { content: "Edits/h"; }
+      td:nth-child(8)::before { content: "Spread"; }
+      td:nth-child(9)::before { content: "Mass tags"; }
+      td:nth-child(10)::before { content: "Far moves"; }
+      td:nth-child(11)::before { content: "Max move"; }
+      td:nth-child(9) { width: auto; }
+      td.user, td:nth-child(9) { display: block; }
       td.user { font-size: 0.95rem; }
-      td.user::before, td:nth-child(8)::before { display: block; margin-bottom: 0.15rem; }
+      td.user::before, td:nth-child(9)::before { display: block; margin-bottom: 0.15rem; }
       /* Every column keeps its line so the cards line up between days; a column
          whose filter did not fire shows a dash rather than vanishing. */
       td:empty::after { content: "\2014"; color: var(--label); }
@@ -103,6 +104,9 @@
         <span class="page-desc-text">The 100 most recent user-days a review filter flagged, newest first, with the value each filter tripped on.</span>
         <a href="../how-it-works.html">Know more about it &rarr;</a>
       </p>
+      <label class="page-options">Country
+        <input id="country-filter" type="text" placeholder="e.g. FR" autocomplete="off" />
+      </label>
     </div>
 
     <div class="header-row">
@@ -115,6 +119,7 @@
       <thead>
         <tr>
           <th>Date</th>
+          <th title="distinct countries the day's cells fall in">Countries</th>
           <th class="value" title="ranking frozen at the day's first flag">Ranking at day</th>
           <th>User</th>
           <th class="value">uid</th>

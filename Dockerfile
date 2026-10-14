@@ -15,6 +15,7 @@ RUN apt-get update \
         libosmium2-dev libprotozero-dev libexpat1-dev \
         libbz2-dev zlib1g-dev libzstd-dev libcurl4-openssl-dev \
         libarrow-dev libarrow-compute-dev libparquet-dev \
+        libabsl-dev libssl-dev libs2-dev \
         libgtest-dev
 
 WORKDIR /src

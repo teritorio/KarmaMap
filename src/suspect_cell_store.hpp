@@ -13,8 +13,8 @@
 //   [header 40B][block 0]...[block N-1][directory 12*N]
 //
 // uid is big-endian with the sign bit flipped so the encoded bytes sort in
-// numeric order; minute/count are plain big-endian; h3_cell is plain big-endian
-// (packed 6-byte cell in low 48 bits, resolution re-applied from header).
+// numeric order; minute/count are plain big-endian; h3_cell is the full H3
+// index, plain big-endian (the header's resolution is only checked on read).
 // Records are unique per (uid, minute, h3_cell) — the finalize sums before
 // writing. The writer streams into ZSTD-compressed 2^18-record blocks and
 // swaps the result into place with a rename. The header carries the
