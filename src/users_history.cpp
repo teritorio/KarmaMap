@@ -35,6 +35,7 @@
 #include "h3_utils.hpp"
 #include "ranking.hpp"
 #include "suspect.hpp"
+#include "suspect_atom.hpp"
 #include "suspect_cell_store.hpp"
 #include "update.hpp"
 
@@ -1228,6 +1229,17 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     arrow_table_io::write_table(suspect_tmp, suspect_table, ranking_group_rows,
                                 {"change_date"});
     std::filesystem::rename(suspect_tmp, suspect_path);
+
+    // Publish the Atom feed next to the parquet, atomically and in the same
+    // locked run, so feed and data never diverge. A feed failure must not
+    // roll back the parquet that was just committed.
+    try {
+        suspect_atom::write_feed(
+            *suspect_table,
+            std::filesystem::path(suspect_path).replace_extension(".atom").string());
+    } catch (const std::exception& err) {
+        std::cerr << "[suspect] atom feed: " << err.what() << "\n";
+    }
 
     std::filesystem::remove_all(stage_root);
 

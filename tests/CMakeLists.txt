@@ -29,6 +29,7 @@ add_executable(unit_tests
   unit/state_test.cpp
   unit/suspect_test.cpp
   unit/suspect_store_test.cpp
+  unit/suspect_atom_test.cpp
   unit/suspect_cell_test.cpp
   unit/suspect_tag_test.cpp
 )

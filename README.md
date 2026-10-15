@@ -276,7 +276,10 @@ Then open `http://localhost:8080/`.
   edits/hour, peak spread in km², and the tag keys that covered >90% of an
   hour's objects), the countries its cells fall in (with a country filter),
   its far-move count with the largest move, and the ranking frozen at the
-  day's first flag.
+  day's first flag. The same flagged days are published as an Atom feed at
+  `/data/suspect.atom` (linked from the page head as
+  `rel="alternate" type="application/atom+xml"`), regenerated on every
+  `update` run together with `suspect.parquet`.
 - **`/how-it-works.html`** — the reader-facing guide: what each of the three
   viewers shows and how to read its numbers. It renders `web/HOW_IT_WORKS.md`
   client-side, so the Markdown file stays the single source of truth.

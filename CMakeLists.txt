@@ -94,6 +94,7 @@ add_library(karmamap_core STATIC
   src/update.cpp
   src/users_history.cpp
   src/suspect.cpp
+  src/suspect_atom.cpp
   src/suspect_tag.cpp
 )
 

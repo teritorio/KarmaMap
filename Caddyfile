@@ -7,6 +7,8 @@
 		header Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
 		header Access-Control-Allow-Headers "Range"
 		header Access-Control-Expose-Headers "Content-Range, Content-Length, Accept-Ranges"
+		@atom path /data/suspect.atom
+		header @atom Content-Type application/atom+xml
 		file_server
 	}
 
