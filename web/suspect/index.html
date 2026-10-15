@@ -35,19 +35,18 @@
     td { padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--border-light); white-space: nowrap; }
     tbody tr:last-child td { border-bottom: none; }
     td.user { font-weight: 600; }
-    /* A day can collect any number of mass-tag keys, so the list wraps inside a
-       fixed-width column instead of stretching the row. The cap is a width on
-       the cell, not a max-width: Chrome ignores max-width on a table-cell under
-       table-layout: auto, and a width is a target the cell is laid out against. */
     th:nth-child(2), td:nth-child(2) { width: 12rem; }
     td:nth-child(2) { white-space: normal; overflow-wrap: break-word; }
     th:nth-child(9), td:nth-child(9) { width: 24rem; }
     td:nth-child(9) { white-space: normal; overflow-wrap: break-word; }
 
-    /* Narrow screens: the eleven columns become one card per day, each value on its
-       own labelled line. Every column keeps its line, a filter that did not fire
-       showing a dash, so the cards line up between days. Each content string must
-       match its column's <th>, or the card mislabels the value. */
+    th .col-filter {
+      display: block; width: 100%; box-sizing: border-box; margin-top: 0.25rem;
+      font-size: 0.7rem; font-weight: normal; text-transform: none; letter-spacing: normal;
+      padding: 0.2rem 0.35rem; border: 1px solid var(--border); border-radius: 4px;
+      background: var(--surface); color: inherit;
+    }
+
     @media (max-width: 40rem) {
       #table-wrap { margin: 0.5rem; }
       table, tbody, tr { display: block; }
@@ -79,8 +78,6 @@
       td.user, td:nth-child(9) { display: block; }
       td.user { font-size: 0.95rem; }
       td.user::before, td:nth-child(9)::before { display: block; margin-bottom: 0.15rem; }
-      /* Every column keeps its line so the cards line up between days; a column
-         whose filter did not fire shows a dash rather than vanishing. */
       td:empty::after { content: "\2014"; color: var(--label); }
     }
   </style>
@@ -107,9 +104,6 @@
         <span class="page-desc-text">The 100 most recent user-days a review filter flagged, newest first, with the value each filter tripped on.</span>
         <a href="../how-it-works.html">Know more about it &rarr;</a>
       </p>
-      <label class="page-options">Country
-        <input id="country-filter" type="text" placeholder="e.g. FR" autocomplete="off" />
-      </label>
     </div>
 
     <div class="header-row">
@@ -121,17 +115,23 @@
     <table id="suspect">
       <thead>
         <tr>
-          <th>Date</th>
-          <th title="distinct countries the day's cells fall in">Countries</th>
-          <th class="value" title="ranking frozen at the day's first flag">Ranking at day</th>
-          <th>User</th>
-          <th class="value">uid</th>
-          <th class="value">Changes</th>
-          <th class="value" title="busiest hour: &gt;500 modified/deleted fired the filter">Edits/h</th>
-          <th class="value" title="widest hour: 20+ edits across 3+ cells spanning 20 km&sup2; fired the filter">Spread</th>
-          <th title="tag keys on &gt;90% of an hour's &ge;100 modified/deleted objects">Mass tags</th>
-          <th class="value">Far moves</th>
-          <th class="value" title="largest of those drags">Max move</th>
+          <th>Date<br /><input class="col-filter" data-col="date" data-filter-type="date" type="date" aria-label="Filter Date" /></th>
+          <th title="distinct countries the day's cells fall in">Countries<br />
+            <select id="country-filter" class="col-filter" data-col="countries" data-filter-type="country" aria-label="Filter Countries">
+              <option value="">All</option>
+              <option value="__NONE__">None</option>
+            </select></th>
+          <th class="value" title="ranking frozen at the day's first flag">Ranking at day<br />
+            <input class="col-filter" data-col="ranking" data-filter-type="range" data-bound="min" type="number" placeholder="min" aria-label="Minimum Ranking at day" />
+            <input class="col-filter" data-col="ranking" data-filter-type="range" data-bound="max" type="number" placeholder="max" aria-label="Maximum Ranking at day" /></th>
+          <th>User<br /><input class="col-filter" data-col="user" data-filter-type="text" type="text" placeholder="filter" aria-label="Filter User" /></th>
+          <th class="value">uid<br /><input class="col-filter" data-col="uid" data-filter-type="exact" type="text" placeholder="exact" aria-label="Filter uid" /></th>
+          <th class="value">Changes<br /><input class="col-filter" data-col="changes" data-filter-type="min" type="number" placeholder="min" aria-label="Minimum Changes" /></th>
+          <th class="value" title="busiest hour: &gt;500 modified/deleted fired the filter">Edits/h<br /><input class="col-filter" data-col="edits" data-filter-type="min" type="number" placeholder="min" aria-label="Minimum Edits per hour" /></th>
+          <th class="value" title="widest hour: 20+ edits across 3+ cells spanning 20 km&sup2; fired the filter">Spread<br /><input class="col-filter" data-col="spread" data-filter-type="min" type="number" placeholder="min km&sup2;" aria-label="Minimum Spread" /></th>
+          <th title="tag keys on &gt;90% of an hour's &ge;100 modified/deleted objects">Mass tags<br /><input class="col-filter" data-col="tags" data-filter-type="text" type="text" placeholder="filter" aria-label="Filter Mass tags" /></th>
+          <th class="value">Far moves<br /><input class="col-filter" data-col="farmoves" data-filter-type="min" type="number" placeholder="min" aria-label="Minimum Far moves" /></th>
+          <th class="value" title="largest of those drags">Max move<br /><input class="col-filter" data-col="maxmove" data-filter-type="min" type="number" placeholder="min meters" aria-label="Minimum Max move" /></th>
         </tr>
       </thead>
       <tbody></tbody>
