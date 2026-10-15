@@ -55,6 +55,17 @@ find_package(ArrowCompute REQUIRED)
 find_package(Parquet REQUIRED)
 find_package(CURL REQUIRED)
 
+foreach(_target Arrow::arrow_shared ArrowCompute::arrow_compute_shared Parquet::parquet_shared)
+    if(NOT TARGET ${_target})
+        message(FATAL_ERROR "Shared Arrow target '${_target}' not found. Install the shared development packages (libarrow-dev libarrow-compute-dev libparquet-dev).")
+    endif()
+    get_target_property(_loc ${_target} LOCATION)
+    if(_loc MATCHES "\\.a$")
+        message(FATAL_ERROR "${_target} resolved to a static archive '${_loc}'. The system Docker image must provide shared Arrow libraries (.so), not just libarrow.a.")
+    endif()
+    message(STATUS "Linking shared Arrow lib: ${_loc}")
+endforeach()
+
 include(FetchContent)
 FetchContent_Declare(
   h3
