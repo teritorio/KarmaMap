@@ -205,6 +205,7 @@ function applyFilter() {
   }))
 
   renderRows(rows)
+  syncUrlFromFilters()
   const countryQuery = (specs.countries?.selectValue ?? '').trim().toUpperCase()
   setStatus(
     allRows.length === 0
@@ -258,6 +259,50 @@ function columnText(col, row) {
   }
 }
 
+function paramName(control) {
+  const col = control.dataset.col
+  if (col === 'date') return 'date'
+  if (col === 'countries') return 'country'
+  if (col === 'user') return 'user'
+  if (col === 'uid') return 'uid'
+  if (col === 'tags') return 'tags'
+  const type = control.dataset.filterType || 'text'
+  const bound = control.dataset.bound || 'value'
+  if (type === 'range') return bound === 'max' ? `${col}_max` : `${col}_min`
+  if (type === 'min') return `${col}_min`
+  return col
+}
+
+const FILTER_PARAM_NAMES = [
+  'date', 'country', 'ranking_min', 'ranking_max', 'user', 'uid',
+  'changes_min', 'edits_min', 'spread_min', 'tags', 'farmoves_min', 'maxmove_min',
+]
+
+function applyUrlToFilters() {
+  const params = new URLSearchParams(window.location.search)
+  for (const control of document.querySelectorAll('[data-col]')) {
+    const key = paramName(control)
+    if (params.has(key)) {
+      control.value = params.get(key)
+    } else if (control.tagName === 'SELECT') {
+      control.value = ''
+    } else {
+      control.value = ''
+    }
+  }
+}
+
+function syncUrlFromFilters() {
+  const url = new URL(window.location.href)
+  for (const key of FILTER_PARAM_NAMES) url.searchParams.delete(key)
+  for (const control of document.querySelectorAll('[data-col]')) {
+    const value = String(control.value ?? '').trim()
+    if (value === '') continue
+    url.searchParams.set(paramName(control), value)
+  }
+  window.history.replaceState(null, '', url)
+}
+
 function populateCountryFilter() {
   const select = document.querySelector('select[data-col="countries"]')
   if (!select) return
@@ -298,12 +343,18 @@ async function main() {
   try {
     allRows = await querySuspectLatest(BASE_URL, dataset.path, dataset.footer_size, LATEST)
     populateCountryFilter()
+    applyUrlToFilters()
     applyFilter()
   } catch (err) {
     console.error(err)
     setStatus(`Query failed: ${err.message}`)
   }
 }
+
+window.addEventListener('popstate', () => {
+  applyUrlToFilters()
+  applyFilter()
+})
 
 document.querySelectorAll('.col-filter').forEach((control) => {
   control.addEventListener('input', applyFilter)
