@@ -39,6 +39,8 @@
        fixed-width column instead of stretching the row. The cap is a width on
        the cell, not a max-width: Chrome ignores max-width on a table-cell under
        table-layout: auto, and a width is a target the cell is laid out against. */
+    th:nth-child(2), td:nth-child(2) { width: 12rem; }
+    td:nth-child(2) { white-space: normal; overflow-wrap: break-word; }
     th:nth-child(9), td:nth-child(9) { width: 24rem; }
     td:nth-child(9) { white-space: normal; overflow-wrap: break-word; }
 
@@ -72,6 +74,7 @@
       td:nth-child(9)::before { content: "Mass tags"; }
       td:nth-child(10)::before { content: "Far moves"; }
       td:nth-child(11)::before { content: "Max move"; }
+      td:nth-child(2) { width: auto; }
       td:nth-child(9) { width: auto; }
       td.user, td:nth-child(9) { display: block; }
       td.user { font-size: 0.95rem; }
