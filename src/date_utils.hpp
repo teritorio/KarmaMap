@@ -4,7 +4,8 @@
 // for the change_date column (see h3_utils.hpp).
 
 #include <cstdint>
-#include <cstdio>
+#include <iomanip>
+#include <sstream>
 #include <string>
 
 namespace date_utils {
@@ -40,9 +41,11 @@ inline std::string iso_date(int32_t days_since_epoch) {
     int year = 0, month = 0, day = 0;
     civil_from_days(days_since_epoch, &year, &month, &day);
 
-    char buf[11];
-    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d", year, month, day);
-    return buf;
+    std::ostringstream out;
+    out << std::setw(4) << std::setfill('0') << year << '-'
+        << std::setw(2) << std::setfill('0') << month << '-'
+        << std::setw(2) << std::setfill('0') << day;
+    return out.str();
 }
 
 }  // namespace date_utils
