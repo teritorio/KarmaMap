@@ -71,15 +71,16 @@
       td:nth-child(5)::before { content: "uid"; }
       td:nth-child(6)::before { content: "Changes"; }
       td:nth-child(7)::before { content: "Edits/h"; }
-      td:nth-child(8)::before { content: "Spread"; }
-      td:nth-child(9)::before { content: "Mass tags"; }
-      td:nth-child(10)::before { content: "Far moves"; }
-      td:nth-child(11)::before { content: "Max move"; }
+      td:nth-child(8)::before { content: "Name lang events"; }
+      td:nth-child(9)::before { content: "Spread"; }
+      td:nth-child(10)::before { content: "Mass tags"; }
+      td:nth-child(11)::before { content: "Far moves"; }
+      td:nth-child(12)::before { content: "Max move"; }
       td:nth-child(2) { width: auto; }
-      td:nth-child(9) { width: auto; }
-      td.user, td:nth-child(9) { display: block; }
+      td:nth-child(10) { width: auto; }
+      td.user, td:nth-child(10) { display: block; }
       td.user { font-size: 0.95rem; }
-      td.user::before, td:nth-child(9)::before { display: block; margin-bottom: 0.15rem; }
+      td.user::before, td:nth-child(10)::before { display: block; margin-bottom: 0.15rem; }
       td:empty::after { content: "\2014"; color: var(--label); }
     }
   </style>
@@ -130,6 +131,7 @@
           <th class="value">uid<br /><input class="col-filter" data-col="uid" data-filter-type="exact" type="text" placeholder="exact" aria-label="Filter uid" /></th>
           <th class="value">Changes<br /><input class="col-filter" data-col="changes" data-filter-type="min" type="number" placeholder="min" aria-label="Minimum Changes" /></th>
           <th class="value" title="busiest hour: &gt;500 modified/deleted fired the filter">Edits/h<br /><input class="col-filter" data-col="edits" data-filter-type="min" type="number" placeholder="min" aria-label="Minimum Edits per hour" /></th>
+          <th class="value" title="objects whose name/* or wikipedia/* tags were mass-changed in an hour">Name lang events<br /><input class="col-filter" data-col="name_lang_events" data-filter-type="min" type="number" placeholder="min" aria-label="Minimum Name lang events" /></th>
           <th class="value" title="widest hour: 20+ edits across 3+ cells spanning 20 km&sup2; fired the filter">Spread<br /><input class="col-filter" data-col="spread" data-filter-type="min" type="number" placeholder="min km&sup2;" aria-label="Minimum Spread" /></th>
           <th title="tag keys on &gt;90% of an hour's &ge;100 modified/deleted objects">Mass tags<br /><input class="col-filter" data-col="tags" data-filter-type="text" type="text" placeholder="filter" aria-label="Filter Mass tags" /></th>
           <th class="value">Far moves<br /><input class="col-filter" data-col="farmoves" data-filter-type="min" type="number" placeholder="min" aria-label="Minimum Far moves" /></th>

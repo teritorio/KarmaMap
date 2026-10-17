@@ -436,6 +436,23 @@ upload of new buildings all tagged `building=yes`) is not flagged, because
 creates are excluded from both numerator and denominator to share scope with the
 minute store.
 
+Name-language (name-language abuse, **local extension, not from the original
+OSMPatrol paper**) watches the name-family and wikipedia language tags for
+mass removal or overwrite. Each object that still exists afterwards is compared
+against its prior tags (held in the persistent `object_tags.cache` base +
+`object_tags.cache.delta` sidecar, rebuilt like the incremental node cache).
+Only objects carrying at least one language variant (`name:xx` / `wikipedia:*`)
+have their tags stored; bare `name` / `wikipedia` are stored only when a
+language variant also exists. Per object, at most one event is classified
+(priority: wikipedia swap > name:* removed > bare name changed > name:*
+overwritten > bare name deleted). Typo fixes (Levenshtein ≤ 2) are skipped.
+Events are counted one per object per `(uid, UTC day, language)` and staged
+under `suspect_update_stage/langs/seq_<n>/`, folded by `fold_lang_counts` into
+`suspect_lang.bin` (variable-length records keyed by `(uid, day, lang)`,
+magic `LANG`). A day is flagged when some language bucket has `>= 1` event;
+the bit-5 flag (`0x20`) and the day's event count are exported to
+`suspect.parquet` as `name_lang_events`.
+
 ## Web viewer queries
 
 ### Changes viewer

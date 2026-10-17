@@ -84,8 +84,11 @@
 #include <string_view>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
+
+#include "object_tag_store.hpp"
 
 // Forward declarations: update.hpp includes this header, so it cannot be
 // included here (would cycle). NodeState (taken by reference to resolve way
@@ -117,9 +120,191 @@ inline constexpr uint8_t kFlagFilter4 = 0x08;
 // bit 4 (kFlagFilter5): one tag key on >90% of a 1-hour window's
 //  modified/deleted objects (min 100 objects). Local extension.
 inline constexpr uint8_t kFlagFilter5 = 0x10;
+// bit 5 (kFlagNameLanguage): name-language abuse — mass removal/overwrite of
+//  name:* / wikipedia:* language tags. Local extension, not from the paper.
+inline constexpr uint8_t kFlagNameLanguage = 0x20;
+
+// Name-language thresholds.
+inline constexpr uint32_t kNameLanguageMinEvents = 1;  // min events per (uid, day, lang)
 
 // Trailing window width in minutes (inclusive of the current minute).
 inline constexpr uint32_t kHourSpanMinutes = 60;
+
+// --- Name-language abuse tracking ---
+
+// Returns true if `key` is a name-family key with a language suffix
+// (name:xx, alt_name:xx, old_name:xx, official_name:xx, short_name:xx,
+// loc_name:xx). If so, `lang` is set to the suffix.
+inline bool is_name_lang_key(std::string_view key, std::string* lang = nullptr) {
+    constexpr std::string_view kPrefixes[] = {
+        "name:",       "alt_name:",     "old_name:",
+        "official_name:", "short_name:", "loc_name:"};
+    for (std::string_view prefix : kPrefixes) {
+        if (key.compare(0, prefix.size(), prefix) == 0) {
+            if (lang) *lang = std::string(key.substr(prefix.size()));
+            return true;
+        }
+    }
+    return false;
+}
+
+// Returns true if `key` is `wikipedia` or `wikipedia:xx`. If suffixed, `lang`
+// is set to the suffix; for bare `wikipedia`, `lang` is cleared.
+inline bool is_wikipedia_key(std::string_view key, std::string* lang = nullptr) {
+    if (key == "wikipedia") {
+        if (lang) lang->clear();
+        return true;
+    }
+    constexpr std::string_view kPrefix = "wikipedia:";
+    if (key.compare(0, kPrefix.size(), kPrefix) == 0) {
+        if (lang) *lang = std::string(key.substr(kPrefix.size()));
+        return true;
+    }
+    return false;
+}
+
+// Levenshtein distance between two strings (bounded by `limit` for early
+// exit; returns limit+1 when distance exceeds it).
+inline size_t levenshtein_bounded(std::string_view a, std::string_view b,
+                                   size_t limit) {
+    if (a.size() < b.size()) std::swap(a, b);
+    if (b.empty()) return a.size() > limit ? limit + 1 : a.size();
+    if (a.size() - b.size() > limit) return limit + 1;
+
+    std::vector<size_t> prev(b.size() + 1), curr(b.size() + 1);
+    for (size_t j = 0; j <= b.size(); ++j) prev[j] = j;
+    for (size_t i = 1; i <= a.size(); ++i) {
+        curr[0] = i;
+        size_t min_curr = curr[0];
+        for (size_t j = 1; j <= b.size(); ++j) {
+            curr[j] = std::min({
+                prev[j] + 1,
+                curr[j - 1] + 1,
+                prev[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1),
+            });
+            if (curr[j] < min_curr) min_curr = curr[j];
+        }
+        if (min_curr > limit) return limit + 1;
+        prev.swap(curr);
+    }
+    return prev[b.size()];
+}
+
+// True when old and new values for the same key are a typo fix (Levenshtein
+// <= kNameLanguageTypoLimit).
+inline constexpr size_t kNameLanguageTypoLimit = 2;
+inline bool is_typo_fix(std::string_view old_value, std::string_view new_value) {
+    return levenshtein_bounded(old_value, new_value, kNameLanguageTypoLimit) <= kNameLanguageTypoLimit;
+}
+
+// Name-language event classification result.
+enum class NameLanguageEvent {
+    kNone,
+    kWikipediaSwap,   // (e)
+    kNameLangRemoved, // (a)
+    kNameChanged,     // (b)
+    kNameLangOverwrite, // (d)
+    kNameDeleted,     // (f)
+};
+
+// Classifies a single object change into at most one name-language event.
+//
+// `prev_tags` = tags before the change (from ObjectTagState::pre()).
+// `new_tags`  = tags on the new version from the diff.
+// Returns the event and the language bucket it belongs to. `name` is the
+// bare name value from new_tags (if present and stored).
+struct NameLanguageResult {
+    NameLanguageEvent event = NameLanguageEvent::kNone;
+    std::string lang;  // language bucket for the event
+};
+
+// Classifies one object change. `has_bare_name` indicates whether the object
+// has a stored bare `name` tag in the new version (i.e. it also carries a
+// name:xx). `new_name_value` is the bare name value if stored.
+NameLanguageResult classify_name_language(
+    const object_tag_store::TagMap& prev_tags,
+    const std::vector<std::pair<std::string, std::string>>& new_tags,
+    bool has_bare_name, std::string_view new_name_value);
+
+// Per-(uid, day, language) modified/deleted object event counts.
+struct UserMinuteLangKey {
+    int64_t uid;
+    uint32_t day;   // UTC day = minute / 1440
+    std::string lang;
+
+    bool operator==(const UserMinuteLangKey& o) const {
+        return uid == o.uid && day == o.day && lang == o.lang;
+    }
+};
+
+struct UserMinuteLangKeyHash {
+    size_t operator()(const UserMinuteLangKey& k) const noexcept {
+        size_t h = std::hash<int64_t>()(k.uid);
+        h ^= std::hash<uint32_t>()(k.day) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        h ^= std::hash<std::string>()(k.lang) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+struct UserMinuteLangEntry {
+    std::string username;
+    uint32_t count = 0;
+};
+
+// Pure, osmium-free per-(uid, day, language) event counter for name-language.
+// Counts one event per object (maximum). Creates (visible version 1) and
+// whole-object deletions are excluded by the caller.
+class MinuteLangStats {
+public:
+    MinuteLangStats() = default;
+
+    void add_object(int64_t uid, std::string_view username, uint32_t day,
+                    const std::string& lang, bool visible, uint32_t version) {
+        if (visible && version == 1) return;  // created, not a mod/del
+        UserMinuteLangEntry& e = langs_[UserMinuteLangKey{uid, day, lang}];
+        if (e.username.empty()) e.username = std::string(username);
+        e.count++;
+    }
+
+    const std::unordered_map<UserMinuteLangKey, UserMinuteLangEntry, UserMinuteLangKeyHash>&
+    langs() const {
+        return langs_;
+    }
+
+    void clear() { langs_.clear(); }
+
+    size_t size() const { return langs_.size(); }
+
+private:
+    std::unordered_map<UserMinuteLangKey, UserMinuteLangEntry, UserMinuteLangKeyHash> langs_;
+};
+
+// Per-(uid, day) name-language result: the day's flag plus the primary
+// (max-count) language and its count.
+struct NameLanguageDay {
+    uint8_t flags = 0;
+    uint32_t event_count = 0;
+    std::string primary_lang;
+    uint32_t primary_count = 0;
+
+    bool operator==(const NameLanguageDay& o) const {
+        return flags == o.flags && event_count == o.event_count &&
+               primary_lang == o.primary_lang && primary_count == o.primary_count;
+    }
+};
+
+// Reads the persisted lang store and returns per (uid, day) name-language
+// results. A day is flagged when some language bucket has count >=
+// kNameLanguageMinEvents.
+std::map<std::pair<int64_t, uint16_t>, NameLanguageDay> flagged_lang_days(
+    const std::string& lang_path);
+
+// Folds one update run's staged per-(uid, day, lang) count buckets under
+// `langs_root` into the persisted binary store at `langs_path`, summing equal
+// (uid, day, lang) keys. `applied_seq` is stamped into the header for the
+// rerun-skip pattern.
+void fold_lang_counts(const std::string& langs_root, const std::string& langs_path,
+                      uint64_t applied_seq);
 
 // Filter 4 thresholds.
 inline constexpr uint32_t kFilter4MinCount  = 20;     // true edits in the 60-minute window
@@ -532,6 +717,8 @@ std::unique_ptr<update_pass::DiffScanStep> make_cells_scan_step(
     const ::update_pass::NodeState& node_state);
 std::unique_ptr<update_pass::DiffScanStep> make_tags_scan_step(
     const std::string& stage_dir);
+std::unique_ptr<update_pass::DiffScanStep> make_langs_scan_step(
+    const std::string& stage_dir, class ObjectTagState* tag_state);
 
 // Folds one update run's staged per-(uid, minute) count buckets under
 // `counts_root` (a stage dir per batch) into the persisted binary

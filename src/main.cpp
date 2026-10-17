@@ -18,6 +18,7 @@
 //   update [N]                advance the dataset along its replication diff
 //     stream (see run_update_mode).
 
+#include <osmium/handler.hpp>
 #include <osmium/io/any_input.hpp>
 #include <osmium/osm/timestamp.hpp>
 #include <osmium/visitor.hpp>
@@ -38,6 +39,7 @@
 #include "country_index.hpp"
 #include "file_lock.hpp"
 #include "manifest.hpp"
+#include "object_tag_state.hpp"
 #include "geofabrik_cookie.hpp"
 #include "node_cache.hpp"
 #include "node_cache_handler.hpp"
@@ -127,6 +129,121 @@ std::string resolve_update_cookie(const Options& opts) {
         geofabrik_cookie::ensure_valid_cookie(jar);
     }
     return jar;
+}
+
+// Collect the name-family tags worth caching for the prior-tag cache: every
+// name:* and wikipedia:* tag, plus the bare "name"/"wikipedia" keys only when
+// a language variant of the same family is also present. Sorted by key, the
+// order ObjectTagState::compact()'s base build expects. (n_tags is stored as
+// a 2-byte field, so objects with more than 255 name tags are supported.)
+object_tag_store::TagMap extract_name_tags(const osmium::TagList& tags) {
+    bool has_name_lang = false;
+    bool has_wiki_lang = false;
+    for (const osmium::Tag& tag : tags) {
+        std::string lang;
+        if (suspect::is_name_lang_key(tag.key(), &lang)) has_name_lang = true;
+        if (suspect::is_wikipedia_key(tag.key(), &lang) && !lang.empty()) has_wiki_lang = true;
+    }
+    object_tag_store::TagMap out;
+    for (const osmium::Tag& tag : tags) {
+        std::string lang;
+        const bool store =
+            suspect::is_name_lang_key(tag.key(), &lang) ||
+            (suspect::is_wikipedia_key(tag.key(), &lang) && !lang.empty()) ||
+            (tag.key() == "name" && has_name_lang) ||
+            (tag.key() == "wikipedia" && has_wiki_lang);
+        if (store) {
+            out.emplace_back(std::string(tag.key()), tag.value());
+        }
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+// Streams every object of the full-history input and records its
+// name-family tags. A deleted object's latest version drops the tags it
+// cached earlier; the last version seen per object wins, so the base ends up
+// holding the input's current state.
+class TagCacheHandler : public osmium::handler::Handler {
+public:
+    explicit TagCacheHandler(suspect::ObjectTagState& state) : state_(state) {}
+
+    void node(const osmium::Node& node) {
+        process(node.id(), node.tags(), node.visible());
+    }
+
+    void way(const osmium::Way& way) {
+        process(way.id(), way.tags(), way.visible());
+    }
+
+    void relation(const osmium::Relation& relation) {
+        process(relation.id(), relation.tags(), relation.visible());
+    }
+
+    void finish() {}
+
+    uint64_t objects() const { return objects_; }
+    uint64_t cached() const { return cached_; }
+
+private:
+    void process(int64_t object_id, const osmium::TagList& tags, bool visible) {
+        objects_++;
+        if (!visible) {
+            state_.remove_tags(object_id);
+            return;
+        }
+        auto tag_map = extract_name_tags(tags);
+        if (tag_map.empty()) {
+            state_.remove_tags(object_id);
+        } else {
+            state_.set_tags(object_id, std::move(tag_map));
+            ++cached_;
+        }
+    }
+
+    suspect::ObjectTagState& state_;
+    uint64_t objects_ = 0;
+    uint64_t cached_ = 0;
+};
+
+// Builds the name tag cache (object_tags.cache) from the full-history input,
+// mirroring how the node pass builds the node position cache: wiped and
+// rebuilt from scratch so the base reflects the current state of the input.
+// It sits next to the node caches at the same path update mode reads, so the
+// first `update` after an import starts from the import's name tags.
+void build_tag_cache(const Options& opts) {
+    const std::filesystem::path cache_parent =
+        std::filesystem::path(opts.node_cache_path).parent_path();
+    const std::string tag_cache_path =
+        (cache_parent / "object_tags.cache").lexically_normal().string();
+
+    // Wipe any previous base and its delta sidecar; the base is rebuilt from
+    // the input, never reused.
+    std::filesystem::remove(tag_cache_path);
+    std::filesystem::remove(tag_cache_path + ".delta");
+    std::filesystem::create_directories(cache_parent);
+
+    suspect::ObjectTagState tag_state(tag_cache_path);
+
+    osmium::io::File input_file(opts.input_path);
+    osmium::io::Reader reader(input_file,
+                             osmium::osm_entity_bits::node |
+                                 osmium::osm_entity_bits::way |
+                                 osmium::osm_entity_bits::relation);
+    TagCacheHandler handler(tag_state);
+    while (osmium::memory::Buffer buf = reader.read()) {
+        osmium::apply(buf, handler);
+    }
+    reader.close();
+
+    // Fold the in-memory overlay into the sorted base file (ObjectTagState::
+    // compact() requires strictly ascending object ids) and drop the delta
+    // sidecar.
+    tag_state.compact();
+
+    std::cerr << "[tag cache] wrote " << tag_cache_path
+              << " objects=" << handler.objects()
+              << " cached=" << handler.cached() << "\n";
 }
 
 void run_node_pass(const Options& opts) {
@@ -378,6 +495,14 @@ std::optional<replication_state::State> run_update_mode(
     // Filter 4 stages go under suspect_update_stage/cells/seq_<n>;
     // Filter 5 stages go under suspect_update_stage/tags/seq_<n>.
     suspect::NodeMoveSink move_sink(suspect_stage_root + "/moves");
+    // Name-language: persistent prior-tag cache (object → tags), base + delta
+    // sidecar + rebuild, mirroring the incremental node cache strategy.
+    // Lives next to the node caches, like suspect_minutes.bin etc.
+    const std::filesystem::path cache_parent =
+        std::filesystem::path(opts.node_cache_path).parent_path();
+    const std::string tag_cache_path =
+        (cache_parent / "object_tags.cache").lexically_normal().string();
+    suspect::ObjectTagState tag_state(tag_cache_path);
 
     // Diffs are merged into diffs_dir/merged.osc between flushes (a batch of a
     // single trailing diff skips the merge); the merged file and the batch's
@@ -405,10 +530,11 @@ std::optional<replication_state::State> run_update_mode(
                                      &node_state, &move_sink);
         update_pass::run_diff_scans(
             change_path, changes_root, seq, opts.way_batch_bytes, opts.h3_resolution,
-            node_state, history_stage_root + "/seq_" + std::to_string(seq),
+            node_state, &tag_state, history_stage_root + "/seq_" + std::to_string(seq),
             suspect_stage_root + "/counts/seq_" + std::to_string(seq),
             suspect_stage_root + "/cells/seq_" + std::to_string(seq),
-            suspect_stage_root + "/tags/seq_" + std::to_string(seq));
+            suspect_stage_root + "/tags/seq_" + std::to_string(seq),
+            suspect_stage_root + "/langs/seq_" + std::to_string(seq));
         move_sink.finish_seq();
     };
     const auto flush_batch = [&](uint64_t seq) {
@@ -495,6 +621,9 @@ std::optional<replication_state::State> run_update_mode(
                   << "; committing through " << applied << "\n";
     }
 
+    // Name-language: persist the prior-tag cache delta (overlay + deletions).
+    tag_state.persist_delta();
+
     std::cerr << "[update] merging staging partitions into " << changes_root << "\n";
     auto center = timed_step("[update] merge staging partitions", [&] {
         return sort_pass::merge_update_partitions(changes_root, opts.change_group_rows, applied);
@@ -533,6 +662,16 @@ std::optional<replication_state::State> run_update_mode(
         timed_step("[suspect] flag tag days", [&] {
             return suspect::flagged_tag_days(tags_path, minutes_path);
         });
+    // Name-language: fold lang buckets and compute name-language abuse flags.
+    const std::string langs_path =
+        (cache_parent / "suspect_lang.bin").lexically_normal().string();
+    timed_step("[suspect] fold lang counts", [&] {
+        suspect::fold_lang_counts(suspect_stage_root + "/langs", langs_path, applied);
+    });
+    const std::map<std::pair<int64_t, uint16_t>, suspect::NameLanguageDay> name_language_days =
+        timed_step("[suspect] flag lang days", [&] {
+            return suspect::flagged_lang_days(langs_path);
+        });
 
     // A missing or unreadable country index leaves the countries lists empty
     // rather than failing the update.
@@ -561,7 +700,7 @@ std::optional<replication_state::State> run_update_mode(
                                            opts.users_history_group_rows,
                                            opts.ranking_group_rows, minutes_path,
                                            move_flags, filter4_days, filter5_days,
-                                           cells_path, opts.h3_resolution,
+                                           name_language_days, cells_path, opts.h3_resolution,
                                            country_idx.get());
     });
 
@@ -606,6 +745,15 @@ std::optional<replication_state::State> run_update_mode(
                   << "\n";
         timed_step("[update] compact incremental cache", [&] {
             node_state.compact(opts.node_cache_last_path, opts.h3_resolution);
+        });
+    }
+    // Name-language: compact the prior-tag cache when accumulated changes
+    // reach 1/10 of the base size (same threshold as the node cache).
+    if (tag_state.changed_count() > 0 &&
+        tag_state.changed_count() >= tag_state.base_size() / 10 + 1) {
+        std::cerr << "[update] compacting prior-tag cache\n";
+        timed_step("[update] compact prior-tag cache", [&] {
+            tag_state.compact();
         });
     }
 
@@ -732,6 +880,7 @@ int main(int argc, char** argv) {
                 if (opts.run_sort_pass) {
                     spatial_center = run_sort_pass(opts);
                 }
+                build_tag_cache(opts);
                 run_users_history_pass(opts);
                 break;
             case Options::Stage::update:

@@ -107,6 +107,8 @@ add_library(karmamap_core STATIC
   src/suspect.cpp
   src/suspect_atom.cpp
   src/suspect_tag.cpp
+  src/suspect_lang.cpp
+  src/object_tag_delta.cpp
 )
 
 target_include_directories(karmamap_core PUBLIC src)

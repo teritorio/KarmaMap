@@ -244,6 +244,7 @@ struct SuspectRows {
     std::vector<uint32_t> far_move_count;
     std::vector<uint32_t> max_move_meters;
     std::vector<uint8_t> ranking_at_day;
+    std::vector<uint32_t> name_lang_events;
 };
 
 SuspectRows read_suspect(const std::string& path) {
@@ -253,8 +254,8 @@ SuspectRows read_suspect(const std::string& path) {
     const auto& t = *combined_result;
     // uid, username, change_date, suspect_flag, changes, max_edits_per_hour,
     // peak_spread_km2, changed_keys, countries, far_move_count, max_move_meters,
-    // ranking_at_day.
-    EXPECT_EQ(t->num_columns(), 12);
+    // ranking_at_day, name_lang_events.
+    EXPECT_EQ(t->num_columns(), 13);
     SuspectRows out;
     const auto* uid = static_cast<const arrow::Int64Array*>(t->column(0)->chunk(0).get());
     const auto* user = static_cast<const arrow::StringArray*>(t->column(1)->chunk(0).get());
@@ -268,6 +269,8 @@ SuspectRows read_suspect(const std::string& path) {
     const auto* moves = static_cast<const arrow::UInt32Array*>(t->column(9)->chunk(0).get());
     const auto* max_move = static_cast<const arrow::UInt32Array*>(t->column(10)->chunk(0).get());
     const auto* rank = static_cast<const arrow::UInt8Array*>(t->column(11)->chunk(0).get());
+    const auto* lang_events =
+        static_cast<const arrow::UInt32Array*>(t->column(12)->chunk(0).get());
     for (int64_t i = 0; i < t->num_rows(); ++i) {
         out.uid.push_back(uid->Value(i));
         out.username.push_back(user->GetString(i));
@@ -300,6 +303,7 @@ SuspectRows read_suspect(const std::string& path) {
         out.far_move_count.push_back(moves->Value(i));
         out.max_move_meters.push_back(max_move->Value(i));
         out.ranking_at_day.push_back(rank->Value(i));
+        out.name_lang_events.push_back(lang_events->Value(i));
     }
     return out;
 }
@@ -1192,7 +1196,7 @@ TEST(UsersHistoryFinalize, ResolvesCountriesFromCellStore) {
     };
     users_history::run_update_finalize(stage_root, history, kDefaultUsersHistoryGroupRows,
                                        kDefaultRankingGroupRows, minutes, {}, filter4_days, {},
-                                       cells_path, res, &index);
+                                       {}, cells_path, res, &index);
 
     const auto v = read_suspect(dir.join("suspect.parquet"));
     ASSERT_EQ(v.uid.size(), 1u);

@@ -680,6 +680,8 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
                              filter4_days,
                          const std::map<std::pair<int64_t, uint16_t>, suspect::TagCoverageDay>&
                              filter5_days,
+                         const std::map<std::pair<int64_t, uint16_t>, suspect::NameLanguageDay>&
+                             name_language_days,
                          const std::string& cells_path, int h3_resolution,
                          const country_index::CountryIndex* country_idx) {
     // Registers Arrow's compute kernels (sort_indices, take).
@@ -941,6 +943,7 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     arrow::UInt32Builder v_moves_builder;
     arrow::UInt32Builder v_max_move_builder;
     arrow::UInt8Builder v_rank_builder;
+    arrow::UInt32Builder v_name_lang_events_builder;
     // countries mirrors changed_keys: a flat string array plus offsets, joined
     // into a list array after the loop.
     arrow::StringBuilder v_country_builder;
@@ -956,6 +959,7 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     auto mv_it = move_flags.begin();
     auto f4_it = filter4_days.begin();
     auto f5_it = filter5_days.begin();
+    auto nl_it = name_language_days.begin();
     auto sb_it = suspect_base.begin();
     size_t cell_i = 0;
 
@@ -1038,6 +1042,7 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
         while (mv_it != move_flags.end() && mv_it->first < key) ++mv_it;
         while (f4_it != filter4_days.end() && f4_it->first < key) ++f4_it;
         while (f5_it != filter5_days.end() && f5_it->first < key) ++f5_it;
+        while (nl_it != name_language_days.end() && nl_it->first < key) ++nl_it;
         while (sb_it != suspect_base.end() && sb_it->first < key) ++sb_it;
         while (cell_reader && cell_i < cell_reader->size() &&
                (cell_reader->uid_at(cell_i) < uid ||
@@ -1050,6 +1055,7 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
         const bool has_mv = mv_it != move_flags.end() && mv_it->first == key;
         const bool has_f4 = f4_it != filter4_days.end() && f4_it->first == key;
         const bool has_f5 = f5_it != filter5_days.end() && f5_it->first == key;
+        const bool has_nl = nl_it != name_language_days.end() && nl_it->first == key;
         const bool has_sb = sb_it != suspect_base.end() && sb_it->first == key;
 
         // Forward-only filter 1: only the rows this run newly writes may pick
@@ -1060,6 +1066,7 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
         if (has_mv) flag |= mv_it->second.flags;
         if (has_f4) flag |= f4_it->second.flags;
         if (has_f5) flag |= f5_it->second.flags;
+        if (has_nl) flag |= nl_it->second.flags;
         if (!from_base) {
             const auto it = filter1_uid.find(uid);
             if (it != filter1_uid.end()) flag |= it->second;
@@ -1132,6 +1139,8 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
                 append_checked(v_rank_builder,
                                ui != uid_index.end() ? rank.ranking[ui->second] : 0);
             }
+            append_checked(v_name_lang_events_builder,
+                           has_nl ? nl_it->second.event_count : 0);
         }
     }
     std::shared_ptr<arrow::Array> ind_uid, ind_day, ind_count, ind_flag;
@@ -1165,7 +1174,7 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     // import writes no flags and never produces it; an update with no flagged
     // day writes an empty file.
     std::shared_ptr<arrow::Array> v_uid, v_user, v_day, v_flag, v_changes, v_hour_edits,
-        v_spread, v_tags, v_countries, v_moves, v_max_move, v_rank;
+        v_spread, v_tags, v_countries, v_moves, v_max_move, v_rank, v_name_lang_events;
     finish_checked(v_uid_builder, &v_uid);
     finish_checked(v_user_builder, &v_user);
     finish_checked(v_day_builder, &v_day);
@@ -1203,6 +1212,7 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
     finish_checked(v_moves_builder, &v_moves);
     finish_checked(v_max_move_builder, &v_max_move);
     finish_checked(v_rank_builder, &v_rank);
+    finish_checked(v_name_lang_events_builder, &v_name_lang_events);
     auto suspect_table = arrow::Table::Make(
         arrow::schema({arrow::field("uid", arrow::int64(), false),
                        arrow::field("username", arrow::utf8(), false),
@@ -1215,9 +1225,10 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
                        arrow::field("countries", arrow::list(arrow::utf8()), false),
                        arrow::field("far_move_count", arrow::uint32(), false),
                        arrow::field("max_move_meters", arrow::uint32(), false),
-                       arrow::field("ranking_at_day", arrow::uint8(), false)}),
+                       arrow::field("ranking_at_day", arrow::uint8(), false),
+                       arrow::field("name_lang_events", arrow::uint32(), false)}),
         {v_uid, v_user, v_day, v_flag, v_changes, v_hour_edits, v_spread, v_tags, v_countries,
-         v_moves, v_max_move, v_rank});
+         v_moves, v_max_move, v_rank, v_name_lang_events});
     // Newest-first order makes change_date (the pruning column) the compact
     // footer statistics key, with the most recent days' min/max in the first
     // row groups.

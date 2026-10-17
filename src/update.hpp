@@ -40,6 +40,7 @@
 
 #include "node_cache.hpp"
 #include "node_delta.hpp"
+#include "object_tag_state.hpp"
 #include "suspect.hpp"
 
 namespace osmium {
@@ -323,8 +324,9 @@ public:
 // run_node_update.
 void run_diff_scans(const std::string& change_path, const std::string& changes_root,
                     uint64_t seq, size_t way_batch_bytes, int h3_resolution,
-                    const NodeState& state, const std::string& history_stage,
-                    const std::string& counts_stage, const std::string& cells_stage,
-                    const std::string& tags_stage);
+                    const NodeState& state, suspect::ObjectTagState* tag_state,
+                    const std::string& history_stage, const std::string& counts_stage,
+                    const std::string& cells_stage, const std::string& tags_stage,
+                    const std::string& langs_stage);
 
 }  // namespace update_pass

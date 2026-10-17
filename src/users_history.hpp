@@ -123,6 +123,7 @@ class DiffScanStep;
 namespace suspect {
 struct CellSpreadDay;
 struct FilterDay;
+struct NameLanguageDay;
 struct MoveDay;
 struct TagCoverageDay;
 }  // namespace suspect
@@ -348,6 +349,8 @@ void run_update_finalize(const std::string& stage_root, const std::string& histo
                              filter4_days = {},
                          const std::map<std::pair<int64_t, uint16_t>, suspect::TagCoverageDay>&
                              filter5_days = {},
+                         const std::map<std::pair<int64_t, uint16_t>, suspect::NameLanguageDay>&
+                             name_language_days = {},
                          const std::string& cells_path = {}, int h3_resolution = 0,
                          const country_index::CountryIndex* country_idx = nullptr);
 

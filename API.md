@@ -10,15 +10,16 @@ The two access parts:
   count)` change counts (node + way changes merged per cell per day).
 - **Users** — `users_history.parquet` and
   `user_ranking.parquet`: per-user, per-day activity and ranking.
-- **Suspect** — `suspect_minutes.bin` and `suspect_cells.bin` (binary, not
-  Parquet): the update-only OSMPatrol filter-2 and filter-4 sources;
-  filter-3 fold stages are transient. The per-day flags (bits 0=filter 2,
-  1=filter 3, 2=filter 1, 3=filter 4) land in `users_history.parquet`, and
+- **Suspect** — `suspect_minutes.bin`, `suspect_cells.bin`, `suspect_tags.bin`,
+  `suspect_lang.bin` and `object_tags.cache` (binary, not Parquet): the
+  OSMPatrol filter-2/4/5/6 sources; filter-3 fold stages are
+  transient. The per-day flags (bits 0=filter 2, 1=filter 3, 2=filter 1,
+  3=filter 4, 5=filter 6) land in `users_history.parquet`, and
   `suspect.parquet` (update-only) re-exports the flagged days with their daily
   change count, frozen far-move count, largest far move and frozen ranking,
-  plus the peak edit count, spread and tag keys their store-derived filter
-  fired on. Filter 4 is a local extension, not from the original OSMPatrol
-  paper.
+  plus the peak edit count, spread, tag keys and name-language event count their
+  store-derived filters fired on. Filter 4 and name-language are local extensions,
+  not from the original OSMPatrol paper.
 
 ## Output layout
 
@@ -41,6 +42,9 @@ node_positions.cache.last.delta  # update-only; accumulated changes since the ba
 suspect_minutes.bin       # update-only; binary block store (filter 2)
 suspect_cells.bin         # update-only; binary block store (filter 4)
 suspect_tags.bin          # update-only; binary block store (filter 5)
+suspect_lang.bin          # update-only; binary block store (filter 6)
+object_tags.cache         # rebuilt by import; advanced by update
+object_tags.cache.delta   # accumulated tag changes since the base (update)
 diffs/                    # update-only; in-flight diff download cache
 ```
 
@@ -152,7 +156,7 @@ are two non-partitioned single files.
   | `uid` | `int64` | OSM user id |
   | `change_date` | `uint16` | UTC day (same encoding as `changes/`) |
   | `count` | `uint32` | Total activity that day: the six node/way change counters plus the three relation counters (created, modified, deleted) |
-  | `suspect_flag` | `uint8` | Per-day OSMPatrol flag: bit 0 (`0x01`) = any of the day's minutes had > 500 modified+deleted objects within a one-hour window; bit 1 (`0x02`) = a modified node moved more than 500 m that day; bit 2 (`0x04`) = the day's user has ranking < 5% (filter 1, "new users or low ranking"; a contributor who created nothing ranks 0); bit 3 (`0x08`) = distinct H3 cells touched in a trailing 1h window exceed a surface-area budget (filter 4, local extension, not from the paper); bit 4 (`0x10`) = one tag key on > 90% of the modified/deleted objects in a trailing 1h window with >= 100 total objects (filter 5, local extension). All bits are monotonic and forward-only: import writes 0; bits 0/1/3/4 are ORed by every update finalize from `suspect_minutes.bin`/`suspect_cells.bin`/`suspect_tags.bin` plus the run's move-flagged days, and bit 2 is set only on the rows that update run newly writes for a below-threshold contributor. Base rows are carried unchanged, so once set a bit persists and a ranking drop never re-flags the past |
+  | `suspect_flag` | `uint8` | Per-day OSMPatrol flag: bit 0 (`0x01`) = any of the day's minutes had > 500 modified+deleted objects within a one-hour window; bit 1 (`0x02`) = a modified node moved more than 500 m that day; bit 2 (`0x04`) = the day's user has ranking < 5% (filter 1, "new users or low ranking"; a contributor who created nothing ranks 0); bit 3 (`0x08`) = distinct H3 cells touched in a trailing 1h window exceed a surface-area budget (filter 4, local extension, not from the paper); bit 4 (`0x10`) = one tag key on > 90% of the modified/deleted objects in a trailing 1h window with >= 100 total objects (filter 5, local extension); bit 5 (`0x20`) = name-language abuse: mass removal or overwrite of `name:*` / `wikipedia:*` language tags (filter 6, local extension). All bits are monotonic and forward-only: import writes 0; bits 0/1/3/4/5 are ORed by every update finalize from their respective stores plus the run's move-flagged days, and bit 2 is set only on the rows that update run newly writes for a below-threshold contributor. Base rows are carried unchanged, so once set a bit persists and a ranking drop never re-flags the past |
 
   The per-day `tag_*` counters are aggregated during finalize and only their
   per-user sums are written (in `user_ranking.parquet`), so they never
@@ -284,6 +288,25 @@ on its own binary store.
   day's collected keys are exported as `changed_keys` of `suspect.parquet`.
   **Limitation:** a create-only mass import is not flagged.
 
+- Name-language (name-language abuse) stores per-object prior name-family tags in
+  `object_tags.cache` (base + `object_tags.cache.delta` sidecar + rebuild,
+  mirroring the incremental node cache). Only objects carrying at least one
+  language variant (`name:xx` / `wikipedia:*`) have their tags stored: `name`,
+  `name:xx`, `alt_name:xx`, `old_name:xx`, `official_name:xx`, `short_name:xx`,
+  `loc_name:xx`, `wikipedia:xx`, plus bare `name` / `wikipedia` when a language
+  variant also exists. Per-diff-batch, each modified object still visible
+  afterwards is compared against its prior tags; at most one event per object
+  is classified: (e) `wikipedia` language-prefix swap, (a) `name:xx` removed,
+  (b) bare `name` changed without the old value kept in `name:xx`/`old_name`,
+  (d) `name:xx` overwritten with a copy of bare `name`, (f) bare `name` deleted
+  entirely. Typo fixes (Levenshtein ≤ 2) are skipped. Events are counted one
+  per object per `(uid, UTC day, language)` and staged as Parquet, then folded
+  into `suspect_lang.bin` (variable-length records
+  `(uid:8, day:4, lang_len:1, lang:N, count:4)`, magic `LANG` 0x4C414E47).
+  A day is flagged when some language bucket has `>= 1` event (min-events
+  gate); the bit-5 flag and the day's event count are exported to
+  `suspect.parquet` as `name_lang_events`.
+
 - Filter 3 stages the run's detected node moves (`> 500` m, as `(uid, minute)`
   rows, gated by the sink) under the update stage root.
   `flagged_move_days` folds them into `(uid, day) -> bit-1` flags plus the
@@ -316,6 +339,7 @@ on its own binary store.
   | `far_move_count` | `uint32` | The count of that day's staged moves beyond the filter-3 threshold at the run that first flagged the day. Frozen: stamped when the day is newly flagged and carried unchanged from the base file on every later update, never recalculated. Because a day first flagged by another filter keeps its frozen value, this can be 0 even when bit 1 is set (moves staged on later runs are not re-merged into it) |
   | `max_move_meters` | `uint32` | The largest distance in meters among that day's far moves at the run that first flagged the day. Frozen on the same terms as `far_move_count`: stamped on the day it is newly flagged, carried from the base file afterwards, 0 when no move was counted. The distance is quantized to whole meters |
   | `ranking_at_day` | `uint8` | The contributor's ranking (as in `user_ranking.parquet`) at the day's first flag. Frozen: stamped when the day is newly flagged and carried unchanged from the base file on every later update, never recalculated |
+  | `name_lang_events` | `uint32` | The number of objects (max one per object) on the flagged day whose `name:*` / `wikipedia:*` language tags were removed, overwritten, or swapped, the quantitative value of filter 6. Recomputed over the whole persisted `suspect_lang.bin` on every update. 0 when filter 6 never fired on the day. |
 
   The row set is exactly the non-zero flags of `users_history.parquet`
   (written from the same merged state), so the two files always agree.

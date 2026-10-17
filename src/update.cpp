@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "h3_utils.hpp"
+#include "object_tag_state.hpp"
 #include "partitioned_parquet_writer.hpp"
 #include "users_history.hpp"
 
@@ -316,9 +317,10 @@ void run_way_update(const std::string& diff_path, const std::string& changes_roo
 
 void run_diff_scans(const std::string& change_path, const std::string& changes_root,
                     uint64_t seq, size_t way_batch_bytes, int h3_resolution,
-                    const NodeState& state, const std::string& history_stage,
-                    const std::string& counts_stage, const std::string& cells_stage,
-                    const std::string& tags_stage) {
+                    const NodeState& state, suspect::ObjectTagState* tag_state,
+                    const std::string& history_stage, const std::string& counts_stage,
+                    const std::string& cells_stage, const std::string& tags_stage,
+                    const std::string& langs_stage) {
     std::cerr << "[update way pass] " << change_path << "\n";
 
     // A rerun never reuses stale stage files.
@@ -326,10 +328,12 @@ void run_diff_scans(const std::string& change_path, const std::string& changes_r
     std::filesystem::remove_all(counts_stage);
     std::filesystem::remove_all(cells_stage);
     std::filesystem::remove_all(tags_stage);
+    std::filesystem::remove_all(langs_stage);
     std::filesystem::create_directories(history_stage);
     std::filesystem::create_directories(counts_stage);
     std::filesystem::create_directories(cells_stage);
     std::filesystem::create_directories(tags_stage);
+    std::filesystem::create_directories(langs_stage);
 
     const auto t0 = std::chrono::steady_clock::now();  // INSTR (whole shared read)
     parquet_out::PartitionedParquetWriter ways_writer(changes_root,
@@ -340,6 +344,8 @@ void run_diff_scans(const std::string& change_path, const std::string& changes_r
     std::unique_ptr<DiffScanStep> cells_step =
         suspect::make_cells_scan_step(cells_stage, h3_resolution, state);
     std::unique_ptr<DiffScanStep> tags_step = suspect::make_tags_scan_step(tags_stage);
+    std::unique_ptr<DiffScanStep> langs_step =
+        suspect::make_langs_scan_step(langs_stage, tag_state);
 
     osmium::io::File input_file(change_path);
     osmium::io::Reader reader(input_file,
@@ -351,6 +357,7 @@ void run_diff_scans(const std::string& change_path, const std::string& changes_r
         counts_step->apply(buffer);
         cells_step->apply(buffer);
         tags_step->apply(buffer);
+        langs_step->apply(buffer);
     }
     reader.close();
 
@@ -366,6 +373,7 @@ void run_diff_scans(const std::string& change_path, const std::string& changes_r
     counts_step->finish();
     cells_step->finish();
     tags_step->finish();
+    langs_step->finish();
 }
 
 }  // namespace update_pass

@@ -57,6 +57,11 @@ function renderEditsPerHour(row) {
   return n > 0 ? `<td class="value">${n.toLocaleString()}</td>` : '<td></td>'
 }
 
+function renderNameLangEvents(row) {
+  const n = Number(row.name_lang_events ?? 0)
+  return n > 0 ? `<td class="value">${n.toLocaleString()}</td>` : '<td></td>'
+}
+
 function renderSpread(row) {
   const km2 = Number(row.peak_spread_km2 ?? 0)
   return km2 > 0 ? `<td class="value">${Math.round(km2).toLocaleString()} km&sup2;</td>` : '<td></td>'
@@ -123,6 +128,7 @@ function renderRows(rows) {
     `<td class="value">${Number(row.uid)}</td>` +
     `<td class="value">${Number(row.changes ?? 0).toLocaleString()}</td>` +
     renderEditsPerHour(row) +
+    renderNameLangEvents(row) +
     renderSpread(row) +
     renderTags(row) +
     renderFarMoves(row) +
@@ -185,6 +191,7 @@ function applyFilter() {
         if (q === '') return true
         const value = col === 'changes' ? Number(row.changes ?? 0)
           : col === 'edits' ? Number(row.max_edits_per_hour ?? 0)
+          : col === 'name_lang_events' ? Number(row.name_lang_events ?? 0)
           : col === 'spread' ? Number(row.peak_spread_km2 ?? 0)
           : col === 'farmoves' ? Number(row.far_move_count ?? 0)
           : col === 'maxmove' ? Number(row.max_move_meters ?? 0)
@@ -238,6 +245,10 @@ function columnText(col, row) {
       const n = Number(row.max_edits_per_hour ?? 0)
       return n > 0 ? `${n} ${n.toLocaleString()}` : ''
     }
+    case 'name_lang_events': {
+      const n = Number(row.name_lang_events ?? 0)
+      return n > 0 ? `${n} ${n.toLocaleString()}` : ''
+    }
     case 'spread': {
       const km2 = Number(row.peak_spread_km2 ?? 0)
       return km2 > 0 ? `${km2} ${Math.round(km2)} km²` : ''
@@ -275,7 +286,8 @@ function paramName(control) {
 
 const FILTER_PARAM_NAMES = [
   'date', 'country', 'ranking_min', 'ranking_max', 'user', 'uid',
-  'changes_min', 'edits_min', 'spread_min', 'tags', 'farmoves_min', 'maxmove_min',
+  'changes_min', 'edits_min', 'name_lang_events_min', 'spread_min', 'tags',
+  'farmoves_min', 'maxmove_min',
 ]
 
 function applyUrlToFilters() {
