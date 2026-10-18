@@ -216,7 +216,10 @@ DiffMerger::DiffMerger() = default;
 DiffMerger::~DiffMerger() {
     try {
         finish();
+    } catch (const std::exception& e) {
+        std::cerr << "ERROR: DiffMerger cleanup failed: " << e.what() << "\n";
     } catch (...) {
+        std::cerr << "ERROR: DiffMerger cleanup failed with an unknown error\n";
     }
 }
 
