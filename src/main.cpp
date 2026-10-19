@@ -40,6 +40,7 @@
 #include "file_lock.hpp"
 #include "manifest.hpp"
 #include "object_tag_state.hpp"
+#include "object_tag_store.hpp"
 #include "geofabrik_cookie.hpp"
 #include "node_cache.hpp"
 #include "node_cache_handler.hpp"
@@ -161,47 +162,97 @@ object_tag_store::TagMap extract_name_tags(const osmium::TagList& tags) {
 }
 
 // Streams every object of the full-history input and records its
-// name-family tags. A deleted object's latest version drops the tags it
-// cached earlier; the last version seen per object wins, so the base ends up
-// holding the input's current state.
+// name-family tags. Only the last version of each object is kept; the
+// previous base is never reused, so nothing is accumulated in RAM beyond
+// the current object's tags.
+//
+// Requires input ordered per OSM convention: nodes (ascending id), then
+// ways (ascending id), then relations (ascending id). All versions of an
+// object are contiguous so the last version wins.
 class TagCacheHandler : public osmium::handler::Handler {
 public:
-    explicit TagCacheHandler(suspect::ObjectTagState& state) : state_(state) {}
+    explicit TagCacheHandler(object_tag_store::Writer& writer) : writer_(writer) {}
 
     void node(const osmium::Node& node) {
-        process(node.id(), node.tags(), node.visible());
+        process(ObjType::node, node.id(), node.tags(), node.visible());
     }
 
     void way(const osmium::Way& way) {
-        process(way.id(), way.tags(), way.visible());
+        process(ObjType::way, way.id(), way.tags(), way.visible());
     }
 
     void relation(const osmium::Relation& relation) {
-        process(relation.id(), relation.tags(), relation.visible());
+        process(ObjType::relation, relation.id(), relation.tags(), relation.visible());
     }
 
-    void finish() {}
+    void finish() {
+        flush_current();
+    }
 
     uint64_t objects() const { return objects_; }
     uint64_t cached() const { return cached_; }
 
 private:
-    void process(int64_t object_id, const osmium::TagList& tags, bool visible) {
-        objects_++;
-        if (!visible) {
-            state_.remove_tags(object_id);
-            return;
+    enum class ObjType { node, way, relation };
+
+    static const char* type_name(ObjType t) {
+        switch (t) {
+            case ObjType::node: return "node";
+            case ObjType::way: return "way";
+            case ObjType::relation: return "relation";
         }
-        auto tag_map = extract_name_tags(tags);
-        if (tag_map.empty()) {
-            state_.remove_tags(object_id);
+        return "unknown";
+    }
+
+    void process(ObjType type, int64_t object_id, const osmium::TagList& tags, bool visible) {
+        objects_++;
+        const int type_ordinal = static_cast<int>(type);
+        const int current_ordinal = static_cast<int>(current_type_);
+        if (type != current_type_) {
+            // Enforce expected type order: nodes, then ways, then relations.
+            if (type_ordinal < current_ordinal) {
+                flush_current();
+                throw std::runtime_error(
+                    "Object tag store input not in expected type order: " +
+                    std::string(type_name(type)) + " after " +
+                    std::string(type_name(current_type_)));
+            }
+            flush_current();
+            current_type_ = type;
+            current_id_ = 0;  // reset id check for the new type
+        }
+        if (object_id != current_id_) {
+            flush_current();
+            current_id_ = object_id;
+        }
+        if (!visible) {
+            current_tags_.clear();  // deletion wins
         } else {
-            state_.set_tags(object_id, std::move(tag_map));
-            ++cached_;
+            current_tags_ = extract_name_tags(tags);  // last version wins
         }
     }
 
-    suspect::ObjectTagState& state_;
+    void flush_current() {
+        if (!current_tags_.empty()) {
+            try {
+                writer_.add(current_id_, current_tags_,
+                            static_cast<uint8_t>(current_type_));
+                ++cached_;
+            } catch (const std::runtime_error& e) {
+                throw std::runtime_error(
+                    "Object tag store input not sorted or duplicated: " +
+                    std::string(type_name(current_type_)) + " object_id=" +
+                    std::to_string(current_id_) +
+                    " error: " + e.what());
+            }
+        }
+        current_tags_.clear();
+    }
+
+    object_tag_store::Writer& writer_;
+    ObjType current_type_ = ObjType::node;
+    int64_t current_id_ = 0;
+    object_tag_store::TagMap current_tags_;
     uint64_t objects_ = 0;
     uint64_t cached_ = 0;
 };
@@ -217,29 +268,25 @@ void build_tag_cache(const Options& opts) {
     const std::string tag_cache_path =
         (cache_parent / "object_tags.cache").lexically_normal().string();
 
-    // Wipe any previous base and its delta sidecar; the base is rebuilt from
-    // the input, never reused.
+    // Wipe any previous base; the cache is rebuilt from scratch, never reused.
     std::filesystem::remove(tag_cache_path);
     std::filesystem::remove(tag_cache_path + ".delta");
     std::filesystem::create_directories(cache_parent);
 
-    suspect::ObjectTagState tag_state(tag_cache_path);
+    object_tag_store::Writer writer(tag_cache_path);
 
     osmium::io::File input_file(opts.input_path);
     osmium::io::Reader reader(input_file,
                              osmium::osm_entity_bits::node |
                                  osmium::osm_entity_bits::way |
                                  osmium::osm_entity_bits::relation);
-    TagCacheHandler handler(tag_state);
+    TagCacheHandler handler(writer);
     while (osmium::memory::Buffer buf = reader.read()) {
         osmium::apply(buf, handler);
     }
     reader.close();
-
-    // Fold the in-memory overlay into the sorted base file (ObjectTagState::
-    // compact() requires strictly ascending object ids) and drop the delta
-    // sidecar.
-    tag_state.compact();
+    handler.finish();
+    writer.finish();
 
     std::cerr << "[tag cache] wrote " << tag_cache_path
               << " objects=" << handler.objects()

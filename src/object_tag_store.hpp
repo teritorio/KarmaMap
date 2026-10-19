@@ -201,16 +201,16 @@ public:
         if (fd_ >= 0) ::close(fd_);
     }
 
-    // Adds a record. Must be called with strictly ascending object_id.
-    // Assigns dictionary IDs to any new tag keys encountered.
-    void add(int64_t object_id, const TagMap& tags) {
+    // Adds a record. object_id must be ascending within each object type
+    // (node, way, relation); ids may restart at type boundaries.
+    void add(int64_t object_id, const TagMap& tags, uint8_t type = 0) {
         if (tags.size() > 65535) {
             throw std::runtime_error(
                 "Object tag store: too many tags per object (" +
                 std::to_string(tags.size()) + " > 65535): object_id=" +
                 std::to_string(object_id));
         }
-        if (has_pending_ && pending_id_ >= object_id) {
+        if (has_pending_ && current_type_ == type && pending_id_ >= object_id) {
             throw std::runtime_error(
                 "Object tag store input not sorted or duplicated: object_id=" +
                 std::to_string(object_id) +
@@ -230,6 +230,7 @@ public:
         }
         flush_pending();
         pending_id_ = object_id;
+        current_type_ = type;
         pending_tags_ = tags;
         has_pending_ = true;
     }
@@ -297,7 +298,7 @@ private:
         buffer_.insert(buffer_.end(), rec.begin(), rec.end());
         records_++;
         has_pending_ = false;
-        if (buffer_.size() >= (1u << 22)) flush_block();  // ~4 MiB raw per block
+        if (records_ % kRecordsPerBlock == 0) flush_block();  // kRecordsPerBlock records per block
     }
 
     void flush_block() {
@@ -329,6 +330,7 @@ private:
 
     bool has_pending_ = false;
     int64_t pending_id_ = 0;
+    uint8_t current_type_ = 0;
     TagMap pending_tags_;
 
     std::vector<uint8_t> buffer_;
