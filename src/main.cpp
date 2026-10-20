@@ -24,7 +24,9 @@
 #include <osmium/visitor.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <csignal>
 #include <filesystem>
 #include <iostream>
 #include <map>
@@ -74,6 +76,14 @@ auto timed_step(const char* label, F fn) {
         std::cerr << label << " done in " << elapsed_ms(start) << "ms\n";
         return result;
     }
+}
+
+// Set to true when SIGINT or SIGTERM is received. The handler only touches an
+// atomic flag (async-signal-safe); all cleanup happens in the read loops below.
+std::atomic<bool> g_stop_requested{false};
+
+void signal_handler(int sig) {
+    g_stop_requested.store(true, std::memory_order_relaxed);
 }
 
 // Wipes a dataset root from a previous run, so a re-run never leaves stale
@@ -166,12 +176,19 @@ object_tag_store::TagMap extract_name_tags(const osmium::TagList& tags) {
 // previous base is never reused, so nothing is accumulated in RAM beyond
 // the current object's tags.
 //
-// Requires input ordered per OSM convention: nodes (ascending id), then
-// ways (ascending id), then relations (ascending id). All versions of an
-// object are contiguous so the last version wins.
+// Writes to three separate files (object_tags.nodes/.ways/.relations.cache),
+// one per object type, so object_id needs only to be ascending within each
+// type. Input must follow OSM convention: nodes (ascending id), then ways,
+// then relations.
 class TagCacheHandler : public osmium::handler::Handler {
 public:
-    explicit TagCacheHandler(object_tag_store::Writer& writer) : writer_(writer) {}
+    TagCacheHandler(object_tag_store::Writer& node_writer,
+                    object_tag_store::Writer& way_writer,
+                    object_tag_store::Writer& relation_writer) {
+        writers_[0] = &node_writer;
+        writers_[1] = &way_writer;
+        writers_[2] = &relation_writer;
+    }
 
     void node(const osmium::Node& node) {
         process(ObjType::node, node.id(), node.tags(), node.visible());
@@ -206,17 +223,7 @@ private:
 
     void process(ObjType type, int64_t object_id, const osmium::TagList& tags, bool visible) {
         objects_++;
-        const int type_ordinal = static_cast<int>(type);
-        const int current_ordinal = static_cast<int>(current_type_);
         if (type != current_type_) {
-            // Enforce expected type order: nodes, then ways, then relations.
-            if (type_ordinal < current_ordinal) {
-                flush_current();
-                throw std::runtime_error(
-                    "Object tag store input not in expected type order: " +
-                    std::string(type_name(type)) + " after " +
-                    std::string(type_name(current_type_)));
-            }
             flush_current();
             current_type_ = type;
             current_id_ = 0;  // reset id check for the new type
@@ -235,8 +242,7 @@ private:
     void flush_current() {
         if (!current_tags_.empty()) {
             try {
-                writer_.add(current_id_, current_tags_,
-                            static_cast<uint8_t>(current_type_));
+                writers_[static_cast<int>(current_type_)]->add(current_id_, current_tags_);
                 ++cached_;
             } catch (const std::runtime_error& e) {
                 throw std::runtime_error(
@@ -249,7 +255,7 @@ private:
         current_tags_.clear();
     }
 
-    object_tag_store::Writer& writer_;
+    object_tag_store::Writer* writers_[3];
     ObjType current_type_ = ObjType::node;
     int64_t current_id_ = 0;
     object_tag_store::TagMap current_tags_;
@@ -260,33 +266,48 @@ private:
 // Builds the name tag cache (object_tags.cache) from the full-history input,
 // mirroring how the node pass builds the node position cache: wiped and
 // rebuilt from scratch so the base reflects the current state of the input.
-// It sits next to the node caches at the same path update mode reads, so the
-// first `update` after an import starts from the import's name tags.
+// Writes three type-specific files: object_tags.nodes/.ways/.relations.cache.
 void build_tag_cache(const Options& opts) {
     const std::filesystem::path cache_parent =
         std::filesystem::path(opts.node_cache_path).parent_path();
     const std::string tag_cache_path =
         (cache_parent / "object_tags.cache").lexically_normal().string();
 
-    // Wipe any previous base; the cache is rebuilt from scratch, never reused.
-    std::filesystem::remove(tag_cache_path);
-    std::filesystem::remove(tag_cache_path + ".delta");
+    // Wipe any previous base files; the cache is rebuilt from scratch, never reused.
+    std::filesystem::remove(cache_parent / "object_tags.nodes.cache");
+    std::filesystem::remove(cache_parent / "object_tags.nodes.cache.delta");
+    std::filesystem::remove(cache_parent / "object_tags.ways.cache");
+    std::filesystem::remove(cache_parent / "object_tags.ways.cache.delta");
+    std::filesystem::remove(cache_parent / "object_tags.relations.cache");
+    std::filesystem::remove(cache_parent / "object_tags.relations.cache.delta");
     std::filesystem::create_directories(cache_parent);
 
-    object_tag_store::Writer writer(tag_cache_path);
+    object_tag_store::Writer node_writer(tag_cache_path, 0);
+    object_tag_store::Writer way_writer(tag_cache_path, 1);
+    object_tag_store::Writer relation_writer(tag_cache_path, 2);
 
     osmium::io::File input_file(opts.input_path);
     osmium::io::Reader reader(input_file,
                              osmium::osm_entity_bits::node |
                                  osmium::osm_entity_bits::way |
                                  osmium::osm_entity_bits::relation);
-    TagCacheHandler handler(writer);
+    TagCacheHandler handler(node_writer, way_writer, relation_writer);
     while (osmium::memory::Buffer buf = reader.read()) {
+        if (g_stop_requested.load(std::memory_order_relaxed)) {
+            break;
+        }
         osmium::apply(buf, handler);
     }
     reader.close();
     handler.finish();
-    writer.finish();
+    node_writer.finish();
+    way_writer.finish();
+    relation_writer.finish();
+
+    if (g_stop_requested.load(std::memory_order_relaxed)) {
+        std::cerr << "[tag cache] interrupted by signal\n";
+        throw std::runtime_error("Interrupted by signal");
+    }
 
     std::cerr << "[tag cache] wrote " << tag_cache_path
               << " objects=" << handler.objects()
@@ -549,7 +570,9 @@ std::optional<replication_state::State> run_update_mode(
         std::filesystem::path(opts.node_cache_path).parent_path();
     const std::string tag_cache_path =
         (cache_parent / "object_tags.cache").lexically_normal().string();
-    suspect::ObjectTagState tag_state(tag_cache_path);
+    suspect::ObjectTagState node_tag_state(tag_cache_path, 0);
+    suspect::ObjectTagState way_tag_state(tag_cache_path, 1);
+    suspect::ObjectTagState relation_tag_state(tag_cache_path, 2);
 
     // Diffs are merged into diffs_dir/merged.osc between flushes (a batch of a
     // single trailing diff skips the merge); the merged file and the batch's
@@ -577,7 +600,8 @@ std::optional<replication_state::State> run_update_mode(
                                      &node_state, &move_sink);
         update_pass::run_diff_scans(
             change_path, changes_root, seq, opts.way_batch_bytes, opts.h3_resolution,
-            node_state, &tag_state, history_stage_root + "/seq_" + std::to_string(seq),
+            node_state, &node_tag_state, &way_tag_state, &relation_tag_state,
+            history_stage_root + "/seq_" + std::to_string(seq),
             suspect_stage_root + "/counts/seq_" + std::to_string(seq),
             suspect_stage_root + "/cells/seq_" + std::to_string(seq),
             suspect_stage_root + "/tags/seq_" + std::to_string(seq),
@@ -669,7 +693,9 @@ std::optional<replication_state::State> run_update_mode(
     }
 
     // Name-language: persist the prior-tag cache delta (overlay + deletions).
-    tag_state.persist_delta();
+    node_tag_state.persist_delta();
+    way_tag_state.persist_delta();
+    relation_tag_state.persist_delta();
 
     std::cerr << "[update] merging staging partitions into " << changes_root << "\n";
     auto center = timed_step("[update] merge staging partitions", [&] {
@@ -796,12 +822,21 @@ std::optional<replication_state::State> run_update_mode(
     }
     // Name-language: compact the prior-tag cache when accumulated changes
     // reach 1/10 of the base size (same threshold as the node cache).
-    if (tag_state.changed_count() > 0 &&
-        tag_state.changed_count() >= tag_state.base_size() / 10 + 1) {
-        std::cerr << "[update] compacting prior-tag cache\n";
-        timed_step("[update] compact prior-tag cache", [&] {
-            tag_state.compact();
-        });
+    struct TagStateInfo {
+        suspect::ObjectTagState* state;
+        uint8_t type;
+    };
+    for (auto& tsi : {TagStateInfo{&node_tag_state, 0},
+                      TagStateInfo{&way_tag_state, 1},
+                      TagStateInfo{&relation_tag_state, 2}}) {
+        if (tsi.state->changed_count() > 0 &&
+            tsi.state->changed_count() >= tsi.state->base_size() / 10 + 1) {
+            std::cerr << "[update] compacting prior-tag cache ("
+                      << object_tag_store::Writer::type_name_str(tsi.type) << ")\n";
+            timed_step("[update] compact prior-tag cache", [&] {
+                tsi.state->compact();
+            });
+        }
     }
 
     return new_source;
@@ -811,6 +846,9 @@ std::optional<replication_state::State> run_update_mode(
 
 int main(int argc, char** argv) {
     Options opts;
+
+    std::signal(SIGINT, signal_handler);
+    std::signal(SIGTERM, signal_handler);
 
     try {
         if (!parse_args(argc, argv, &opts)) {

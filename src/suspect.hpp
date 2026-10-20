@@ -718,7 +718,8 @@ std::unique_ptr<update_pass::DiffScanStep> make_cells_scan_step(
 std::unique_ptr<update_pass::DiffScanStep> make_tags_scan_step(
     const std::string& stage_dir);
 std::unique_ptr<update_pass::DiffScanStep> make_langs_scan_step(
-    const std::string& stage_dir, class ObjectTagState* tag_state);
+    const std::string& stage_dir, class ObjectTagState* node_tag_state,
+    class ObjectTagState* way_tag_state, class ObjectTagState* relation_tag_state);
 
 // Folds one update run's staged per-(uid, minute) count buckets under
 // `counts_root` (a stage dir per batch) into the persisted binary

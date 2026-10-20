@@ -36,10 +36,10 @@ constexpr uint32_t kMagic = 0x44454C54;  // "DELT"
 constexpr uint32_t kVersion = 1;
 constexpr size_t kHeaderSize = 16;
 
-void write_delta(const std::string& path,
+void write_delta(const std::string& path, uint8_t type,
                  const std::unordered_map<int64_t, suspect::TagOverlayEntry>& overlay,
                  const std::unordered_set<int64_t>& deleted);
-bool read_delta(const std::string& path,
+bool read_delta(const std::string& path, uint8_t type,
                 std::unordered_map<int64_t, suspect::TagOverlayEntry>& overlay,
                 std::unordered_set<int64_t>& deleted);
 }  // namespace object_tag_delta
@@ -48,20 +48,18 @@ namespace suspect {
 
 class ObjectTagState {
 public:
-    // `base_path` is the base store file. The delta sidecar is
-    // `base_path + ".delta"`. The entire base is loaded into an in-memory
-    // hash map at construction (only objects with language tags are stored,
-    // so the working set is small).
-    explicit ObjectTagState(const std::string& base_path)
-        : base_path_(base_path), delta_path_(base_path + ".delta") {
+    // `type`: 0=node, 1=way, 2=relation. Base file is
+    // object_tags.<nodes|ways|relations>.cache derived from `base_path`.
+    explicit ObjectTagState(const std::string& base_path, uint8_t type)
+        : type_(type), base_path_(base_path), delta_path_(base_path + ".delta") {
         if (std::filesystem::exists(base_path_)) {
-            object_tag_store::Reader base(base_path_);
+            object_tag_store::Reader base(base_path_, type_);
             for (size_t i = 0; i < base.size(); ++i) {
                 base_tags_[base.object_id_at(i)] = base.tags_at(i);
             }
         }
         // Load any existing delta sidecar as the initial overlay.
-        object_tag_delta::read_delta(delta_path_, overlay_, deleted_);
+        object_tag_delta::read_delta(delta_path_, type_, overlay_, deleted_);
     }
 
     ObjectTagState(const ObjectTagState&) = delete;
@@ -123,7 +121,7 @@ public:
     // Phase 1: durably writes overlay + deletions to the delta sidecar.
     void persist_delta() const {
         if (changed_count() == 0) return;
-        object_tag_delta::write_delta(delta_path_, overlay_, deleted_);
+        object_tag_delta::write_delta(delta_path_, type_, overlay_, deleted_);
     }
 
     // Phase 2: rewrites the base as base + overlay minus deletions, then
@@ -142,21 +140,20 @@ public:
             merged.erase(id);
         }
 
-        // Rewrite base tmp+rename.
-        const std::string tmp = base_path_ + ".tmp";
+        // Rewrite base. Writer places the final file at the type-specific
+        // path derived from base_path_; no extra rename needed.
         {
-            object_tag_store::Writer writer(tmp);
+            object_tag_store::Writer writer(base_path_, type_);
             for (const auto& [id, tags] : merged) {
                 writer.add(id, tags);
             }
             writer.finish();
         }
-        std::filesystem::rename(tmp, base_path_);
 
         // Re-load base from the new file.
         base_tags_.clear();
         if (std::filesystem::exists(base_path_)) {
-            object_tag_store::Reader base(base_path_);
+            object_tag_store::Reader base(base_path_, type_);
             for (size_t i = 0; i < base.size(); ++i) {
                 base_tags_[base.object_id_at(i)] = base.tags_at(i);
             }
@@ -170,6 +167,7 @@ public:
     }
 
 private:
+    uint8_t type_ = 0;
     std::string base_path_;
     std::string delta_path_;
     std::unordered_map<int64_t, object_tag_store::TagMap> base_tags_;

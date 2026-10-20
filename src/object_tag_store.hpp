@@ -178,9 +178,16 @@ inline std::pair<int64_t, TagMap> parse_record_dict(const uint8_t* p, const uint
 // end of the file (before the block directory) at finish().
 class Writer {
 public:
-    explicit Writer(const std::string& path)
-        : final_path_(path), tmp_path_(path + ".tmp") {
-        const std::filesystem::path dir = std::filesystem::path(final_path_).parent_path();
+    // `type`: 0=node, 1=way, 2=relation. Writes to
+    // <parent>/object_tags.<nodes|ways|relations>.cache derived from `path`
+    // by replacing the final filename's stem with "object_tags.<type>".
+    explicit Writer(const std::string& path, uint8_t type)
+        : type_(type) {
+        const std::filesystem::path p(path);
+        const std::string type_name = type_name_str(type);
+        final_path_ = p.parent_path() / ("object_tags." + type_name + ".cache");
+        tmp_path_ = final_path_.string() + ".tmp";
+        const std::filesystem::path dir = final_path_.parent_path();
         if (!dir.empty()) std::filesystem::create_directories(dir);
         fd_ = ::open(tmp_path_.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (fd_ < 0) {
@@ -201,16 +208,25 @@ public:
         if (fd_ >= 0) ::close(fd_);
     }
 
-    // Adds a record. object_id must be ascending within each object type
-    // (node, way, relation); ids may restart at type boundaries.
-    void add(int64_t object_id, const TagMap& tags, uint8_t type = 0) {
+    static std::string type_name_str(uint8_t type) {
+        switch (type) {
+            case 0: return "nodes";
+            case 1: return "ways";
+            case 2: return "relations";
+            default: throw std::runtime_error("Invalid object tag store type: " + std::to_string(type));
+        }
+    }
+
+    // Adds a record. object_id must be strictly ascending. type is fixed at
+    // construction and not stored per-record.
+    void add(int64_t object_id, const TagMap& tags) {
         if (tags.size() > 65535) {
             throw std::runtime_error(
                 "Object tag store: too many tags per object (" +
                 std::to_string(tags.size()) + " > 65535): object_id=" +
                 std::to_string(object_id));
         }
-        if (has_pending_ && current_type_ == type && pending_id_ >= object_id) {
+        if (has_pending_ && pending_id_ >= object_id) {
             throw std::runtime_error(
                 "Object tag store input not sorted or duplicated: object_id=" +
                 std::to_string(object_id) +
@@ -230,7 +246,6 @@ public:
         }
         flush_pending();
         pending_id_ = object_id;
-        current_type_ = type;
         pending_tags_ = tags;
         has_pending_ = true;
     }
@@ -324,13 +339,13 @@ private:
         uint32_t comp_size;
     };
 
-    std::string final_path_;
+    std::filesystem::path final_path_;
     std::string tmp_path_;
     int fd_ = -1;
 
     bool has_pending_ = false;
     int64_t pending_id_ = 0;
-    uint8_t current_type_ = 0;
+    uint8_t type_ = 0;
     TagMap pending_tags_;
 
     std::vector<uint8_t> buffer_;
@@ -350,10 +365,16 @@ private:
 // end of the file and uses it to decode key IDs in records.
 class Reader {
 public:
-    explicit Reader(const std::string& path) {
-        int fd = ::open(path.c_str(), O_RDONLY);
+    // `type`: 0=node, 1=way, 2=relation. Reads from
+    // <parent>/object_tags.<nodes|ways|relations>.cache derived from `path`.
+    explicit Reader(const std::string& path, uint8_t type)
+        : type_(type) {
+        const std::filesystem::path p(path);
+        const std::string type_name = Writer::type_name_str(type);
+        const std::string actual_path = p.parent_path() / ("object_tags." + type_name + ".cache");
+        int fd = ::open(actual_path.c_str(), O_RDONLY);
         if (fd < 0) {
-            throw std::runtime_error("Object tag store " + path + " not found");
+            throw std::runtime_error("Object tag store " + actual_path + " not found");
         }
 
         uint8_t header[kHeaderSize];
@@ -582,6 +603,7 @@ private:
     uint64_t block_count_ = 0;
     size_t size_ = 0;
     const uint8_t* data_ = nullptr;
+    uint8_t type_ = 0;
     mutable std::vector<Block> directory_;
     mutable std::vector<uint8_t> cached_buf_;
     mutable size_t cached_block_ = static_cast<size_t>(-1);

@@ -275,23 +275,30 @@ NameLanguageResult classify_name_language(
 
 class SuspectLangScanHandler : public osmium::handler::Handler {
 public:
-    SuspectLangScanHandler(std::string stage_dir, ObjectTagState* tag_state)
-        : stage_dir_(std::move(stage_dir)), tag_state_(tag_state) {}
+    SuspectLangScanHandler(std::string stage_dir,
+                           ObjectTagState* node_tag_state,
+                           ObjectTagState* way_tag_state,
+                           ObjectTagState* relation_tag_state)
+        : stage_dir_(std::move(stage_dir)) {
+        tag_states_[0] = node_tag_state;
+        tag_states_[1] = way_tag_state;
+        tag_states_[2] = relation_tag_state;
+    }
 
     void node(const osmium::Node& node) {
-        process(static_cast<int64_t>(node.id()), static_cast<int64_t>(node.uid()),
+        process(0, static_cast<int64_t>(node.id()), static_cast<int64_t>(node.uid()),
                 object_user(node), node.timestamp(), extract_tag_pairs(node.tags()),
                 node.visible(), static_cast<uint32_t>(node.version()));
     }
 
     void way(const osmium::Way& way) {
-        process(static_cast<int64_t>(way.id()), static_cast<int64_t>(way.uid()),
+        process(1, static_cast<int64_t>(way.id()), static_cast<int64_t>(way.uid()),
                 object_user(way), way.timestamp(), extract_tag_pairs(way.tags()),
                 way.visible(), static_cast<uint32_t>(way.version()));
     }
 
     void relation(const osmium::Relation& relation) {
-        process(static_cast<int64_t>(relation.id()),
+        process(2, static_cast<int64_t>(relation.id()),
                 static_cast<int64_t>(relation.uid()), object_user(relation),
                 relation.timestamp(), extract_tag_pairs(relation.tags()),
                 relation.visible(), static_cast<uint32_t>(relation.version()));
@@ -314,7 +321,8 @@ private:
             h3_utils::timestamp_to_utc_day(ts.seconds_since_epoch()));
     }
 
-    void process(int64_t object_id, int64_t uid, const std::string& username,
+    void process(uint8_t type, int64_t object_id, int64_t uid,
+                 const std::string& username,
                  const osmium::Timestamp& ts,
                  const std::vector<std::pair<std::string, std::string>>& new_tags,
                  bool visible, uint32_t version) {
@@ -322,14 +330,14 @@ private:
         if (!visible) {
             // Whole-object deleted: clear prior tags from the cache so a
             // later recreation doesn't compare against stale state.
-            tag_state_->remove_tags(object_id);
+            tag_states_[type]->remove_tags(object_id);
             return;
         }
         if (version == 1) return;  // create
 
         uint32_t day = day_from_ts(ts);
 
-        const object_tag_store::TagMap& prev_tags = tag_state_->pre(object_id);
+        const object_tag_store::TagMap& prev_tags = tag_states_[type]->pre(object_id);
 
         // Determine whether bare name / wikipedia are stored in the new
         // version (stored only when a language variant also exists).
@@ -364,7 +372,7 @@ private:
             if (store) new_tag_map.emplace_back(k, v);
         }
         std::sort(new_tag_map.begin(), new_tag_map.end());
-        tag_state_->set_tags(object_id, std::move(new_tag_map));
+        tag_states_[type]->set_tags(object_id, std::move(new_tag_map));
 
         if (stats_.size() >= kFlushThreshold) flush_stage();
     }
@@ -380,7 +388,7 @@ private:
     }
 
     std::string stage_dir_;
-    ObjectTagState* tag_state_;
+    ObjectTagState* tag_states_[3];
     MinuteLangStats stats_;
 
     uint64_t objects_ = 0;
@@ -394,8 +402,11 @@ private:
 
 class LangsScanStep : public update_pass::DiffScanStep {
 public:
-    LangsScanStep(const std::string& stage_dir, ObjectTagState* tag_state)
-        : handler_(stage_dir, tag_state) {}
+    LangsScanStep(const std::string& stage_dir,
+                  ObjectTagState* node_tag_state,
+                  ObjectTagState* way_tag_state,
+                  ObjectTagState* relation_tag_state)
+        : handler_(stage_dir, node_tag_state, way_tag_state, relation_tag_state) {}
 
     void apply(const osmium::memory::Buffer& buffer) override {
         osmium::apply(buffer, handler_);
@@ -415,8 +426,12 @@ private:
 }  // namespace
 
 std::unique_ptr<update_pass::DiffScanStep> make_langs_scan_step(
-    const std::string& stage_dir, suspect::ObjectTagState* tag_state) {
-    return std::make_unique<LangsScanStep>(stage_dir, tag_state);
+    const std::string& stage_dir,
+    ObjectTagState* node_tag_state,
+    ObjectTagState* way_tag_state,
+    ObjectTagState* relation_tag_state) {
+    return std::make_unique<LangsScanStep>(stage_dir, node_tag_state, way_tag_state,
+                                           relation_tag_state);
 }
 
 // ---------------------------------------------------------------------------

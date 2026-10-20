@@ -7,11 +7,13 @@
 
 namespace object_tag_delta {
 
-void write_delta(const std::string& path,
+void write_delta(const std::string& path, uint8_t type,
                  const std::unordered_map<int64_t, suspect::TagOverlayEntry>& overlay,
                  const std::unordered_set<int64_t>& deleted) {
-    const std::string tmp = path + ".tmp";
-    const std::filesystem::path dir = std::filesystem::path(path).parent_path();
+    const std::filesystem::path p(path);
+    const std::string type_name = object_tag_store::Writer::type_name_str(type);
+    const std::string tmp = (p.parent_path() / ("object_tags." + type_name + ".cache.delta.tmp")).string();
+    const std::filesystem::path dir = p.parent_path();
     if (!dir.empty()) std::filesystem::create_directories(dir);
 
     int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -67,15 +69,19 @@ void write_delta(const std::string& path,
         throw std::runtime_error("Failed to fsync object tag delta");
     }
     ::close(fd);
-    std::filesystem::rename(tmp, path);
+    const std::string final_path = (p.parent_path() / ("object_tags." + object_tag_store::Writer::type_name_str(type) + ".cache.delta")).string();
+    std::filesystem::rename(tmp, final_path);
 }
 
-bool read_delta(const std::string& path,
+bool read_delta(const std::string& path, uint8_t type,
                 std::unordered_map<int64_t, suspect::TagOverlayEntry>& overlay,
                 std::unordered_set<int64_t>& deleted) {
-    if (!std::filesystem::exists(path)) return false;
+    const std::filesystem::path p(path);
+    const std::string type_name = object_tag_store::Writer::type_name_str(type);
+    const std::string actual_path = (p.parent_path() / ("object_tags." + type_name + ".cache.delta")).string();
+    if (!std::filesystem::exists(actual_path)) return false;
 
-    int fd = ::open(path.c_str(), O_RDONLY);
+    int fd = ::open(actual_path.c_str(), O_RDONLY);
     if (fd < 0) return false;
 
     uint8_t header[kHeaderSize];

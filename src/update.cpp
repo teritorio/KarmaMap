@@ -320,7 +320,9 @@ void run_way_update(const std::string& diff_path, const std::string& changes_roo
 
 void run_diff_scans(const std::string& change_path, const std::string& changes_root,
                     uint64_t seq, size_t way_batch_bytes, int h3_resolution,
-                    const NodeState& state, suspect::ObjectTagState* tag_state,
+                    const NodeState& state, suspect::ObjectTagState* node_tag_state,
+                    suspect::ObjectTagState* way_tag_state,
+                    suspect::ObjectTagState* relation_tag_state,
                     const std::string& history_stage, const std::string& counts_stage,
                     const std::string& cells_stage, const std::string& tags_stage,
                     const std::string& langs_stage) {
@@ -348,7 +350,8 @@ void run_diff_scans(const std::string& change_path, const std::string& changes_r
         suspect::make_cells_scan_step(cells_stage, h3_resolution, state);
     std::unique_ptr<DiffScanStep> tags_step = suspect::make_tags_scan_step(tags_stage);
     std::unique_ptr<DiffScanStep> langs_step =
-        suspect::make_langs_scan_step(langs_stage, tag_state);
+        suspect::make_langs_scan_step(langs_stage, node_tag_state, way_tag_state,
+                                      relation_tag_state);
 
     osmium::io::File input_file(change_path);
     osmium::io::Reader reader(input_file,
