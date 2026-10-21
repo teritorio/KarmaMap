@@ -70,6 +70,11 @@
       padding: 0 1rem 2rem; font-size: 0.8rem; color: var(--label);
     }
     #doc-footer a { color: var(--label); }
+
+    /* Guide tabs: one per document, at the right of the description row. */
+    .doc-nav {
+      flex: 0 0 auto; margin-left: auto; gap: 1rem; white-space: nowrap;
+    }
   </style>
 </head>
 <body>
@@ -91,6 +96,12 @@
       <p class="page-desc">
         <span class="page-desc-text">What each page shows and what its numbers mean.</span>
       </p>
+      <nav class="header-nav doc-nav" aria-label="Guide">
+        <a href="./how-it-works.html" data-doc="">all</a>
+        <a href="./how-it-works.html?doc=changes" data-doc="changes">changes</a>
+        <a href="./how-it-works.html?doc=users" data-doc="users">users</a>
+        <a href="./how-it-works.html?doc=suspect" data-doc="suspect">suspects</a>
+      </nav>
     </div>
   </div>
 
@@ -100,11 +111,12 @@
         <a href="./HOW_IT_WORKS.md">HOW_IT_WORKS.md</a> directly.</p>
       <noscript>
         <p>This page renders the Markdown guide in your browser, which needs
-        JavaScript enabled. <a href="./HOW_IT_WORKS.md">Read HOW_IT_WORKS.md</a> instead.</p>
+        JavaScript enabled. <a href="./HOW_IT_WORKS.md">Read HOW_IT_WORKS.md</a>
+        instead.</p>
       </noscript>
     </article>
     <footer id="doc-footer">
-      Source: <a href="./HOW_IT_WORKS.md" type="text/markdown">HOW_IT_WORKS.md</a>
+      Source: <a id="doc-source" href="./HOW_IT_WORKS.md" type="text/markdown">HOW_IT_WORKS.md</a>
     </footer>
   </main>
 

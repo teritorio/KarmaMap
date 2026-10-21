@@ -281,8 +281,10 @@ Then open `http://localhost:8080/`.
   `rel="alternate" type="application/atom+xml"`), regenerated on every
   `update` run together with `suspect.parquet`.
 - **`/how-it-works.html`** — the reader-facing guide: what each of the three
-  viewers shows and how to read its numbers. It renders `web/HOW_IT_WORKS.md`
-  client-side, so the Markdown file stays the single source of truth.
+  viewers shows and how to read its numbers. It renders the Markdown
+  client-side, one file per viewer (`web/HOW_IT_WORKS.md` for the overview and
+  `web/<page>/HOW_IT_WORKS.md` for changes, users and suspects), picked with
+  `?doc=`, so the Markdown files stay the single source of truth.
 
 Clients read the files with byte-range requests: hyparquet's
 `asyncBufferFromUrl` opens each file and fetches the footer, row-group
