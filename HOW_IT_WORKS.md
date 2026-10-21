@@ -496,10 +496,14 @@ node/way-only (relations are ranking-only).
 date filter): hyparquet fetches only the leading row groups' pages, so the
 "100 last" table never scans the whole file. Each row is one flagged
 `(uid, change_date)` with the username, the combined `suspect_flag` bits,
-the day's total change count, the peak edit count, spread and tag keys of
-whichever store-derived filter fired, the countries its cells fall in, its
-far-move count with the largest of them and the ranking frozen at the day's
-first flag. A country filter narrows the loaded rows to the days touching an
-ISO code. Of the flags the table
+the day's total change count, the peak edit count, spread, tag keys and
+language event count of whichever store-derived filter fired, the countries
+its cells fall in, its far-move count with the largest of them and the ranking
+frozen at the day's first flag. A country filter narrows the loaded rows to
+the days touching an ISO code: it is a text input backed by a datalist of the
+codes the loaded rows contain (value = bare code so typed prefixes still
+match, label = the flag), with a `NONE` sentinel for the rows whose cells
+resolve to no country, and the flag of the entered code is rendered next to
+the field. Of the flags the table
 shows one: a day carrying bit 0 (`kFlagFilter2`, the >500 modified/deleted
 objects in one hour filter) is marked as an edit burst.

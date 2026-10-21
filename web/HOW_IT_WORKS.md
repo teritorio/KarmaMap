@@ -185,36 +185,62 @@ The table is populated only after the dataset has been updated from the OSM
 replication stream. On a freshly imported dataset there is nothing to flag
 and the page says so.
 
+### Filtering the table
+
+Every column header carries a filter and the table narrows as you type. The
+filters only pick out the days worth looking at next; they never change what
+was flagged.
+
+- **Date** takes one UTC day, **uid** an exact id, **Ranking at day** a range.
+- **Changes**, **Edits/h**, **Name lang events**, **Spread**, **Far moves** and
+  **Max move** take a minimum, so `200` on `Edits/h` keeps the days with at
+  least 200 edits in their busiest hour.
+- **User** and **Mass tags** match text: the username and the tag keys.
+- **Countries** takes one ISO 3166-1 alpha-2 code. Type it (`FR`) or pick it
+  from the list of the codes the loaded days actually contain, and the flag of
+  that country is shown next to the field. `No country` keeps the days with no
+  country at all: either no cell was recorded for the day, or its cells fall
+  where the country index does not resolve.
+
+The address bar keeps the filters, so copying the URL reopens the same
+filtered shortlist. The status line says how many of the 100 loaded days are
+showing.
+
 ### The columns
 
 | Column | Meaning |
 |---|---|
 | **Date** | The UTC day the filter fired. |
+| **Countries** | The distinct countries the day's edited cells fall in, as ISO 3166-1 alpha-2 codes with their flag. Each cell's centre is resolved through a country index, so the column is empty for a day whose cells fall in the sea or in a cell the index does not resolve. |
 | **Ranking at day** | The user's ranking **frozen at the moment that day was first flagged**, not today's. Click it to open the user's page. |
 | **User** / **uid** | The account and its numeric id. |
 | **Changes** | Everything that user changed that day, nodes, ways and relations together. A burst day shows a large number here. |
 | **Edits/h** | The busiest hour of that day: the largest number of objects modified or deleted within any single hour. Shown only when it is above 500, the point at which filter 2 fires. |
+| **Name lang events** | How many objects on that day had their language tags (`name:xx`, `wikipedia:xx`) removed, overwritten or swapped, the value filter 6 fires on. Shown only when that filter fired. |
 | **Spread** | The widest hour of that day: the largest area its edits covered, in km². Shown only when it reaches 20 km² over at least 3 distinct H3 cells, the point at which filter 4 fires. |
 | **Mass tags** | The tag keys that covered more than 90% of an hour's modified or deleted objects on that day, where that hour held at least 100 objects — the keys filter 5 fires on. A day can list more than one key. |
 | **Far moves** | How many times that day the user dragged a node more than 500 m. |
 | **Max move** | The longest of those drags, in meters or kilometers. |
 
-The four number columns are blank unless the filter they belong to fired, so
-an empty cell means that filter did not apply to the day. `Edits/h` and
-`Spread` describe the day itself and are rebuilt from the stored data on every
-update, so a day first flagged by a different filter picks them up later.
-`Ranking at day` and `Max move` are recorded once, the first time a day is
-flagged, and then kept as they were — they are not recomputed as the user's
-ranking grows or as later edits arrive, so an empty `Max move` does not always
-mean none happened: it can also mean the day was first flagged by another
-filter.
+The metric columns are blank unless the filter they belong to fired, so an
+empty cell means that filter did not apply to the day. `Edits/h`, `Spread`,
+`Mass tags` and `Name lang events` describe the day itself and are rebuilt from
+the stored data on every update, so a day first flagged by a different filter
+picks them up later. `Ranking at day`, `Far moves` and `Max move` are recorded
+once, the first time a day is flagged, and then kept as they were: they are not
+recomputed as the user's ranking grows or as later edits arrive, so an empty
+`Max move` does not always mean none happened: it can also mean the day was
+first flagged by another filter.
 
 ### The filters
 
 The three filters are the ones proposed in the paper this project follows.
-A fourth and fifth filter are local extensions, **not from the paper**; Filter 5
-flags when one tag key covers >90% of a 1-hour window's modified/deleted objects
-(minimum 100 objects).
+Three more are local extensions, **not from the paper**: filter 4 fires when a
+user's edits in one hour span at least 3 cells covering 20 km², filter 5 when
+one tag key covers >90% of a 1-hour window's modified/deleted objects (minimum
+100 objects), and filter 6 when language tags are removed, overwritten or
+swapped on an object.
+
 A filter is only an automatic rule that marks days for review: it forms no
 judgement about the edit itself, and nothing is hidden, blocked or reverted
 because of it.
@@ -226,16 +252,21 @@ because of it.
 | 3. Far move | A node dragged more than 500 m | A raised `Far moves` count and a `Max move` distance |
 | 4. Spatial spread | Edits in 1h span ≥3 H3 cells whose combined area ≥ 20 km² | A `Spread` of at least 20 km² |
 | 5. Tag activity | One tag key on >90% of modified/deleted objects in a 1h window with ≥100 total | The keys listed in `Mass tags` |
+| 6. Language tags | A language variant (`name:xx`, `wikipedia:xx`) removed, overwritten or swapped, on at least one object of that day and language | The object count in `Name lang events` |
 
-Two details about how they are applied:
+Three details about how they are applied:
 
 - **Filter 1 only looks forward.** It marks the days a low-ranking
   contributor edits *from now on*. As someone builds a history their
   ranking rises, and the days already marked stay marked — but the past is
   never re-examined because a ranking later dropped.
-- **Filters 2, 3, 4 and 5 follow bursts and mistakes, not people.** All four
-  fire on activity, so a single flagged day says nothing about a contributor's
-  usual behaviour; the whole timeline on the users page is the context.
+- **Filters 2, 3, 4, 5 and 6 follow bursts and mistakes, not people.** All
+  five fire on activity, so a single flagged day says nothing about a
+  contributor's usual behaviour; the whole timeline on the users page is the
+  context.
+- **Filter 6 ignores near misses.** A bare `name` value that moved by at most
+  two characters is treated as a typo fix and not counted, and an object counts
+  once per day and language however many of its tags changed.
 
 ## Reference
 
