@@ -27,7 +27,6 @@ const LATEST = 100
 const statusEl = document.getElementById('status')
 const tbodyEl = document.querySelector('#suspect tbody')
 
-const filterEl = document.getElementById('country-filter')
 const flagEl = document.getElementById('country-flag')
 
 let allRows = []
@@ -107,6 +106,18 @@ function countryLabel(code) {
   return `${countryFlag(code)} ${code.toUpperCase()}`
 }
 
+// The code a country filter holds. The input keeps a bare code so the
+// datalist still matches what the reviewer types; the flag is rendered
+// beside the field.
+function countryCode(text) {
+  return String(text ?? '').trim()
+    .replace(/^\p{Regional_Indicator}{2}\s*/u, '')
+    .toUpperCase()
+}
+
+// The sentinel the "no country" entry of the datalist carries.
+const NO_COUNTRY = 'NONE'
+
 function renderCountries(row) {
   const codes = flattenList(row.countries)
   return codes.length === 0
@@ -155,16 +166,11 @@ function applyFilter() {
     if (!specs[col]) specs[col] = {}
     const type = control.dataset.filterType || 'text'
     const bound = control.dataset.bound || 'value'
-    if (control.tagName === 'SELECT') {
-      specs[col].selectValue = control.value
-      specs[col].type = 'country'
+    specs[col].type = type
+    if (type === 'range') {
+      specs[col][bound] = control.value
     } else {
-      specs[col].type = type
-      if (type === 'range') {
-        specs[col][bound] = control.value
-      } else {
-        specs[col].value = control.value
-      }
+      specs[col].value = control.value
     }
   }
 
@@ -176,10 +182,10 @@ function applyFilter() {
         return dayKey(row.change_date) === value
       }
       case 'country': {
-        const choice = spec.selectValue ?? ''
-        if (choice === '' || choice === 'ALL') return true
-        if (choice === '__NONE__') return flattenList(row.countries).length === 0
-        return flattenList(row.countries).includes(choice)
+        const choice = countryCode(spec.value)
+        if (choice === '') return true
+        if (choice === NO_COUNTRY) return flattenList(row.countries).length === 0
+        return flattenList(row.countries).some((c) => String(c).toUpperCase() === choice)
       }
       case 'text': {
         const q = (spec.value ?? '').trim().toLowerCase()
@@ -221,18 +227,16 @@ function applyFilter() {
 
   renderRows(rows)
   syncUrlFromFilters()
-  const countryChoice = (specs.countries?.selectValue ?? '').trim()
+  const countryChoice = countryCode(specs.countries?.value)
   if (flagEl) {
-    flagEl.textContent = countryChoice && countryChoice !== '__NONE__'
-      ? countryFlag(countryChoice)
-      : ''
+    flagEl.textContent = countryChoice === NO_COUNTRY ? '' : countryFlag(countryChoice)
   }
-  const countryQuery = countryChoice.toUpperCase()
+  const countryQuery = countryChoice === NO_COUNTRY ? 'no country' : countryChoice
   setStatus(
     allRows.length === 0
       ? 'No flagged days yet; the suspects dataset is empty.'
       : `Showing ${rows.length} of the ${allRows.length} latest suspect ` +
-        `${allRows.length === 1 ? 'day' : 'days'}${countryQuery && countryQuery !== '__NONE__' ? ` in ${countryQuery}` : ''}.`)
+        `${allRows.length === 1 ? 'day' : 'days'}${countryQuery ? ` in ${countryQuery}` : ''}.`)
 }
 
 // Text used to match a row against a column filter: includes both the raw
@@ -308,13 +312,7 @@ function applyUrlToFilters() {
   const params = new URLSearchParams(window.location.search)
   for (const control of document.querySelectorAll('[data-col]')) {
     const key = paramName(control)
-    if (params.has(key)) {
-      control.value = params.get(key)
-    } else if (control.tagName === 'SELECT') {
-      control.value = ''
-    } else {
-      control.value = ''
-    }
+    control.value = params.has(key) ? params.get(key) : ''
   }
 }
 
@@ -322,27 +320,34 @@ function syncUrlFromFilters() {
   const url = new URL(window.location.href)
   for (const key of FILTER_PARAM_NAMES) url.searchParams.delete(key)
   for (const control of document.querySelectorAll('[data-col]')) {
-    const value = String(control.value ?? '').trim()
+    const key = paramName(control)
+    const value = key === 'country'
+      ? countryCode(control.value)
+      : String(control.value ?? '').trim()
     if (value === '') continue
-    url.searchParams.set(paramName(control), value)
+    url.searchParams.set(key, value)
   }
   window.history.replaceState(null, '', url)
 }
 
+// Fills the datalist behind the country input with the codes present in the
+// loaded rows. Each entry keeps the bare code as its value, so typing a
+// prefix still matches, and carries the flag as its label.
 function populateCountryFilter() {
-  const select = document.querySelector('select[data-col="countries"]')
-  if (!select) return
-  const existing = new Set(Array.from(select.options).map((opt) => opt.value))
+  const list = document.getElementById('country-list')
+  if (!list) return
   const codes = [...new Set(allRows.flatMap((row) => flattenList(row.countries)))]
     .sort((a, b) => String(a).localeCompare(String(b)))
-  for (const code of codes) {
-    if (existing.has(code)) continue
+  const options = codes.map((code) => {
     const option = document.createElement('option')
     option.value = code
-    option.textContent = countryLabel(code)
-    select.appendChild(option)
-    existing.add(code)
-  }
+    option.label = countryLabel(code)
+    return option
+  })
+  const none = document.createElement('option')
+  none.value = NO_COUNTRY
+  none.label = 'No country'
+  list.replaceChildren(none, ...options)
 }
 
 async function main() {

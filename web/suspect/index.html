@@ -49,9 +49,14 @@
       background: var(--surface); color: inherit;
     }
 
-    /* Flag of the country picked in the Countries selector, shown on its own
-       line so it stays readable next to the narrow select. */
-    .country-flag { display: block; margin-top: 0.2rem; font-size: 1.1rem; line-height: 1.2; }
+    /* Country field and its flag share one line: the field hugs the typed
+       code and the flag follows it. */
+    .country-field { display: flex; align-items: center; gap: 0.25rem; }
+    .country-field .col-filter {
+      width: auto; field-sizing: content; min-width: 3rem; max-width: 100%;
+      flex: 0 1 auto;
+    }
+    .country-flag { flex: none; font-size: 1rem; line-height: 1; }
     .country-flag:empty { display: none; }
 
     @media (max-width: 40rem) {
@@ -125,11 +130,11 @@
         <tr>
           <th>Date<br /><input class="col-filter" data-col="date" data-filter-type="date" type="date" aria-label="Filter Date" /></th>
           <th title="distinct countries the day's cells fall in">Countries<br />
-            <select id="country-filter" class="col-filter" data-col="countries" data-filter-type="country" aria-label="Filter Countries">
-              <option value="">All</option>
-              <option value="__NONE__">None</option>
-            </select>
-            <span id="country-flag" class="country-flag"></span></th>
+            <span class="country-field">
+              <input id="country-filter" class="col-filter" data-col="countries" data-filter-type="country" type="text" list="country-list" size="4" placeholder="FR" autocomplete="off" aria-label="Filter Countries" />
+              <span id="country-flag" class="country-flag"></span>
+            </span>
+            <datalist id="country-list"></datalist></th>
           <th class="value" title="ranking frozen at the day's first flag">Ranking at day<br />
             <input class="col-filter" data-col="ranking" data-filter-type="range" data-bound="min" type="number" placeholder="min" aria-label="Minimum Ranking at day" />
             <input class="col-filter" data-col="ranking" data-filter-type="range" data-bound="max" type="number" placeholder="max" aria-label="Maximum Ranking at day" /></th>
