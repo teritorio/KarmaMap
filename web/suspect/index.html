@@ -49,6 +49,11 @@
       background: var(--surface); color: inherit;
     }
 
+    /* Flag of the country picked in the Countries selector, shown on its own
+       line so it stays readable next to the narrow select. */
+    .country-flag { display: block; margin-top: 0.2rem; font-size: 1.1rem; line-height: 1.2; }
+    .country-flag:empty { display: none; }
+
     @media (max-width: 40rem) {
       #table-wrap { margin: 0.5rem; }
       table, tbody, tr { display: block; }
@@ -123,7 +128,8 @@
             <select id="country-filter" class="col-filter" data-col="countries" data-filter-type="country" aria-label="Filter Countries">
               <option value="">All</option>
               <option value="__NONE__">None</option>
-            </select></th>
+            </select>
+            <span id="country-flag" class="country-flag"></span></th>
           <th class="value" title="ranking frozen at the day's first flag">Ranking at day<br />
             <input class="col-filter" data-col="ranking" data-filter-type="range" data-bound="min" type="number" placeholder="min" aria-label="Minimum Ranking at day" />
             <input class="col-filter" data-col="ranking" data-filter-type="range" data-bound="max" type="number" placeholder="max" aria-label="Maximum Ranking at day" /></th>

@@ -28,6 +28,7 @@ const statusEl = document.getElementById('status')
 const tbodyEl = document.querySelector('#suspect tbody')
 
 const filterEl = document.getElementById('country-filter')
+const flagEl = document.getElementById('country-flag')
 
 let allRows = []
 
@@ -90,13 +91,20 @@ function renderTags(row) {
   return keys.length === 0 ? '<td></td>' : `<td>${escapeHtml(keys.join(', '))}</td>`
 }
 
-// An ISO alpha-2 code as its flag emoji (regional indicators) plus the code.
-function countryLabel(code) {
-  if (!/^[A-Za-z]{2}$/.test(code)) return code
+// An ISO alpha-2 code as its flag emoji (regional indicators), empty for
+// anything that is not a code.
+function countryFlag(code) {
+  if (!/^[A-Za-z]{2}$/.test(code)) return ''
   const upper = code.toUpperCase()
   const base = 0x1F1E6
   return String.fromCodePoint(base + upper.charCodeAt(0) - 65) +
-    String.fromCodePoint(base + upper.charCodeAt(1) - 65) + ` ${upper}`
+    String.fromCodePoint(base + upper.charCodeAt(1) - 65)
+}
+
+// An ISO alpha-2 code as its flag emoji (regional indicators) plus the code.
+function countryLabel(code) {
+  if (!/^[A-Za-z]{2}$/.test(code)) return code
+  return `${countryFlag(code)} ${code.toUpperCase()}`
 }
 
 function renderCountries(row) {
@@ -213,7 +221,13 @@ function applyFilter() {
 
   renderRows(rows)
   syncUrlFromFilters()
-  const countryQuery = (specs.countries?.selectValue ?? '').trim().toUpperCase()
+  const countryChoice = (specs.countries?.selectValue ?? '').trim()
+  if (flagEl) {
+    flagEl.textContent = countryChoice && countryChoice !== '__NONE__'
+      ? countryFlag(countryChoice)
+      : ''
+  }
+  const countryQuery = countryChoice.toUpperCase()
   setStatus(
     allRows.length === 0
       ? 'No flagged days yet; the suspects dataset is empty.'
@@ -325,7 +339,7 @@ function populateCountryFilter() {
     if (existing.has(code)) continue
     const option = document.createElement('option')
     option.value = code
-    option.textContent = code
+    option.textContent = countryLabel(code)
     select.appendChild(option)
     existing.add(code)
   }
